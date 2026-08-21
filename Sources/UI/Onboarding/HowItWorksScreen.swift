@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// **A2 How it works.** The single explanatory screen, and it exists to set the
 /// two expectations that otherwise become support traffic:

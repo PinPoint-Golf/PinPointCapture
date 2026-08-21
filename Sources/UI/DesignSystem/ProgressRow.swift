@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// One step of a multi-step wait: a status glyph, a plain-language title, and a
 /// mono detail line underneath carrying the engineering fact.

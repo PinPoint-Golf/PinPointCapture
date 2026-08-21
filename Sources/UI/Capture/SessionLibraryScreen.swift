@@ -20,6 +20,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 struct SessionLibraryScreen: View {
 

@@ -53,7 +53,10 @@ public struct VideoMode: Sendable, Hashable, Identifiable {
         }
     }
 
-    static func fpsText(_ value: Double) -> String {
+    /// Frame rate as the design writes it: whole numbers bare, otherwise one
+    /// decimal — `150`, `149.6`. Public so a screen never reimplements it and
+    /// ends up showing `149.60` in one place and `150` in another.
+    public static func fpsText(_ value: Double) -> String {
         value == value.rounded()
             ? String(format: "%.0f", value)
             : String(format: "%.1f", value)

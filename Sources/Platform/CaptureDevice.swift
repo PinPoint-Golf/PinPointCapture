@@ -14,6 +14,7 @@
 //  their equivalents stay behind implementations of this protocol.
 
 import Foundation
+import CaptureCore
 
 /// Why a capture device could not be opened or armed, in platform-neutral terms.
 public enum CaptureDeviceError: Error, Sendable, Equatable {

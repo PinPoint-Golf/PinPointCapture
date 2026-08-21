@@ -6,6 +6,7 @@
 
 import AVFoundation
 import Foundation
+import CaptureCore
 
 public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable {
 

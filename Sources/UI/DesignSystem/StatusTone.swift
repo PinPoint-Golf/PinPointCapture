@@ -11,6 +11,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// The semantic colour role shared by every design-system component.
 ///

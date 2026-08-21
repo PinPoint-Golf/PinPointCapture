@@ -7,7 +7,7 @@
 
 import Foundation
 import Testing
-@testable import PinPointCapture
+@testable import CaptureCore
 
 @Suite("Capability")
 struct CapabilityTests {

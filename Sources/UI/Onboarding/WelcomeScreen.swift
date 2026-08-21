@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// **A1 Welcome.** The mark, the name, one line of description, and then the
 /// only thing on this screen that is not decoration: what *this* device, the one

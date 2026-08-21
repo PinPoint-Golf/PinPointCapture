@@ -10,6 +10,7 @@
 //  why this sits in the design system rather than on the Core types themselves.
 
 import Foundation
+import CaptureCore
 
 public extension StatusTone {
 

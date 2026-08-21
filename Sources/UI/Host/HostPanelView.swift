@@ -22,6 +22,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 public struct HostPanelView: View {
 

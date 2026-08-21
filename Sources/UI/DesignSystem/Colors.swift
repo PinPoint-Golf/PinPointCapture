@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 // MARK: - Brand and status tokens (asset catalogue)
 

@@ -16,9 +16,10 @@ build/
 *.dSYM
 
 # SwiftPM
+# ⚠ Not `Packages/` — that ignores our own first-party local package. SPM's own
+# checkouts live in .build/ and .swiftpm/, which are covered below.
 .swiftpm/
 .build/
-Packages/
 Package.resolved
 
 # Xcode user state

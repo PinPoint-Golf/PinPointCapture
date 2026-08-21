@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// A grouped-background card carrying one sentence of explanation, optionally
 /// with an SF Symbol, an eyebrow, or a short title.

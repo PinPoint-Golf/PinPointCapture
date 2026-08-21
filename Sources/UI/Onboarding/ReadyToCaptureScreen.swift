@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// **A7 Ready to capture.** Claimed and measured capability shown together, in
 /// the one place a user will actually read them.

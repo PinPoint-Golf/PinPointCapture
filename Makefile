@@ -10,14 +10,17 @@ APP         := PinPointCapture.app
 BUNDLE_ID   := uk.co.pinpointgolf.capture
 CONFIG      ?= Debug
 DERIVED     := build
-SIM_NAME    ?= iPhone 16
+# ⚠ Resolved at run time, not hardcoded. The installed simulator set changes
+# with every Xcode release — an iOS 27 runtime ships iPhone 17s and no 16.
+SIM_NAME    ?= $(shell xcrun simctl list devices available 2>/dev/null \
+                 | grep -oE 'iPhone [0-9]+( Pro)?' | head -1)
 SIM_DEST    ?= generic/platform=iOS Simulator
 TEST_DEST   ?= platform=iOS Simulator,name=$(SIM_NAME)
 DEV_DEST    ?= generic/platform=iOS
 XCB         := xcbeautify --quieter
 DEVICE_APP  := $(DERIVED)/Build/Products/$(CONFIG)-iphoneos/$(APP)
 
-.PHONY: all gen build build-device _udid test device deploy lint clean help
+.PHONY: all gen build build-device _udid test test-core test-app device deploy lint clean help
 
 all: build
 
@@ -79,19 +82,38 @@ c=[x for x in d if x.get("connectionProperties",{}).get("tunnelState")=="connect
 print(c[0]["hardwareProperties"]["udid"] if c else "")' "$$tmp" 2>/dev/null || true; \
 	rm -f "$$tmp"
 
-test: $(PROJECT)
+# Everything. Core first: it is the fast one, and if the layer seam is broken
+# there is no point booting a simulator to find out.
+test: test-core test-app
+
+# ⚠ The one to reach for. Runs natively on the host in milliseconds — no
+# simulator, no runtime download, no Xcode. Includes the layer purity gate that
+# fails the build if Core imports a platform framework (REQ-PORT-3).
+test-core:
+	@cd Packages/Core && swift test
+
+test-app: $(PROJECT)
 	@if ! xcrun simctl list runtimes 2>/dev/null | grep -q 'iOS'; then \
-		echo "make test: no iOS simulator runtime is installed."; \
-		echo "  Install one from Xcode > Settings > Components, then retry."; \
+		echo "make test-app: no iOS simulator runtime is installed."; \
+		echo "  Run: xcodebuild -downloadPlatform iOS"; \
+		echo "  (make test-core needs no simulator and covers the Core layer.)"; \
 		exit 1; \
 	fi
+	@if [ -z "$(SIM_NAME)" ]; then \
+		echo "make test-app: no available iPhone simulator found."; exit 1; \
+	fi
+	@echo "simulator: $(SIM_NAME)"
+	@# ⚠ NOT piped through `xcbeautify --quieter`, which swallows swift-testing's
+	@# output entirely and leaves only XCTest's "Executed 0 tests" summary — so a
+	@# passing suite looks like an empty one. Filter to the result lines instead.
 	set -o pipefail && xcodebuild test \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
 		-destination '$(TEST_DEST)' \
 		-derivedDataPath $(DERIVED) \
-		| $(XCB)
+		| grep -E '^(◇|✔|✘)|error:|Test run|\*\* TEST' || \
+		(echo "make test-app: no test output — see the xcresult bundle"; exit 1)
 
 device:
 	@xcrun devicectl list devices

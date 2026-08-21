@@ -29,6 +29,12 @@ settings:
     Release:
       SWIFT_COMPILATION_MODE: wholemodule
 
+packages:
+  # First-party local package. ⛔ It links no platform framework, which is how
+  # REQ-PORT-3 becomes a build error rather than something to remember to grep.
+  CaptureCore:
+    path: Packages/Core
+
 targets:
   PinPointCapture:
     type: application
@@ -40,6 +46,8 @@ targets:
           - "**/*.md"
           - "**/.gitkeep"
           - "**/.DS_Store"
+    dependencies:
+      - package: CaptureCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: uk.co.pinpointgolf.capture

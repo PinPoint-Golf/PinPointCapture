@@ -21,6 +21,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 public struct ConnectHostView: View {
 

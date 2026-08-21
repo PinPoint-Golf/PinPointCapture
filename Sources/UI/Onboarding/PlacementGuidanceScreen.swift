@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// **A5 Set it down.** Guidance, not configuration.
 ///

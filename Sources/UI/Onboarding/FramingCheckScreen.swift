@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// **A6 Framing check.** The screen that prevents a wasted session
 /// (REQ-SETUP-1, REQ-LIGHT-2).

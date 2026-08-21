@@ -9,6 +9,7 @@
 import AVFoundation
 import SwiftUI
 import UIKit
+import CaptureCore
 
 /// A `UIView` whose backing layer *is* the preview layer, so the layer resizes
 /// with the view for free. Doing this with a sublayer instead means resizing it

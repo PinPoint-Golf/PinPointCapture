@@ -11,6 +11,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 enum CaptureScreenStyle {
 

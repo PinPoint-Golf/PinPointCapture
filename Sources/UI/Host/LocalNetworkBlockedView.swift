@@ -13,6 +13,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 public struct LocalNetworkBlockedView: View {
 

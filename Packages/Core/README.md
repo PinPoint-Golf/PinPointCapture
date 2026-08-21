@@ -1,4 +1,6 @@
-# Core — platform-neutral logic and state
+# CaptureCore — platform-neutral logic and state
+
+A local Swift package, consumed by the app target via `project.yml`.
 
 Shared logic and state: capture state machine, ring-buffer policy, shot arbitration
 client, transfer queue, session store, sync-state tracking (REQ-PORT-1, "Core logic"
@@ -32,3 +34,38 @@ row).
 
 Do not pre-generalise. The obligation is that the seams exist and stay clean, not that
 every interface be built against a hypothetical second implementation (REQ-PORT-14).
+
+## Why this is a package
+
+It began as a directory in the app target. Making it a package buys two things and
+deliberately does not buy a third:
+
+- **Encapsulation.** Anything the app reaches for has to be `public` on purpose.
+  Extracting it immediately surfaced three members that screens had been reaching
+  into by accident.
+- **Speed.** `swift test` runs the whole suite natively on the host in
+  milliseconds — no simulator, no runtime download, no Xcode. CI needs none of
+  those either.
+- **⚠ NOT the seam.** A package boundary does *not* stop a target importing
+  `AVFoundation`: system frameworks come from the SDK, not from declared
+  dependencies. This was tested, not assumed. The seam is held by
+  `Tests/CaptureCoreTests/LayerPurityTests.swift`, which fails the build on a
+  forbidden import — the same way `libwrist` asserts its sans-I/O rule in
+  `tests/purity.cmake` rather than trusting a convention.
+
+## Running the tests
+
+```
+swift test              # from this directory
+make test-core          # from the repo root
+```
+
+## Relationship to libppcp
+
+Most of what lives here will eventually be owned by `libppcp`, the MIT C reference
+implementation of PPCP. It is Swift for now because the protocol specification is
+normative and precedes implementation (§14.2), so the API is not something to
+settle as a side effect of app work.
+
+Keeping this package platform-free is what makes that later change a substitution
+rather than a rewrite. The layer purity test is what keeps it platform-free.

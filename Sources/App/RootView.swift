@@ -10,6 +10,7 @@
 //  the whole routing surface.
 
 import SwiftUI
+import CaptureCore
 
 /// Pushed destinations. Sheets are separate, because a sheet is a presentation
 /// decision rather than a place in a stack.

@@ -1,4 +1,5 @@
 import SwiftUI
+import CaptureCore
 
 /// Application entry point and composition root.
 ///

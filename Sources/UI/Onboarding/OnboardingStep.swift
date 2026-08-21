@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import CaptureCore
 
 /// The onboarding sequence, in flow order.
 ///

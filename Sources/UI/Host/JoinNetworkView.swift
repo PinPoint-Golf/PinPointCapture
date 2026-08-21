@@ -14,6 +14,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 public struct JoinNetworkView: View {
 

@@ -9,6 +9,7 @@
 
 import AVFoundation
 import Foundation
+import CaptureCore
 
 public struct PermissionsService: Sendable {
 

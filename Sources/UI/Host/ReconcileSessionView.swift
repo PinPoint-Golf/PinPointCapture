@@ -12,6 +12,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// One candidate session held by the host, with the evidence for the match.
 ///

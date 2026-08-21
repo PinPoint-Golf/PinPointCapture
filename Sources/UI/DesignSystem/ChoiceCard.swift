@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// A large, selectable card: title, description, and optional evidence chips.
 /// Selected state is a 2pt accent border, an accent wash, and a filled

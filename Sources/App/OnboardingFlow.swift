@@ -5,6 +5,7 @@
 //  refused permission and a marginal light reading are decisions, not blocks.
 
 import SwiftUI
+import CaptureCore
 
 struct OnboardingFlow: View {
     @Bindable var model: AppModel

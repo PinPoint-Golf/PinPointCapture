@@ -12,6 +12,7 @@
 //  those fields are added to the data rather than to the code.
 
 import Foundation
+import CaptureCore
 
 public struct DeviceProfile: Sendable, Codable {
     /// "iPhone 16" — no public API reports this, so it is data.

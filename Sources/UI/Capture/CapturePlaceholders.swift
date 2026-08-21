@@ -21,6 +21,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 // MARK: - C1 live preview
 

@@ -10,6 +10,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 public extension Font {
 

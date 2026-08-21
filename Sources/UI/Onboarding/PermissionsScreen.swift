@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// **A4 What it needs.** Four permissions, each shown as what it *buys the user*
 /// — never as an API name.

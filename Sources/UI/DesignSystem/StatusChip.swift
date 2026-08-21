@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// A small pill carrying one short phrase in a ``StatusTone``.
 ///

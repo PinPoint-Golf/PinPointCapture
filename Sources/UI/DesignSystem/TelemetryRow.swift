@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// A plain-language label on the left and a measured value, in SF Mono, on the
 /// right. The spine of A7's five-row summary, B3's five-row telemetry list, and

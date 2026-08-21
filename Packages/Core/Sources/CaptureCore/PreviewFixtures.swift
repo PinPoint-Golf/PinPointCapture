@@ -11,7 +11,10 @@ import Foundation
 public enum PreviewFixtures {
     /// A fixed clock so previews and snapshots do not drift. 21 August 2026.
     public static let sessionStart = Date(timeIntervalSince1970: 1_787_336_400) // 18:20 UTC
-    static func at(_ hour: Int, _ minute: Int, _ second: Int) -> Date {
+    /// A fixed instant on the fixture's day, so previews and snapshots do not
+    /// drift. Public because screen previews build their own sample shots and
+    /// gap windows from it.
+    public static func at(_ hour: Int, _ minute: Int, _ second: Int) -> Date {
         var c = DateComponents()
         c.year = 2026; c.month = 8; c.day = 21
         c.hour = hour; c.minute = minute; c.second = second

@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 /// A small upper-case mono label with wide tracking, sitting above the thing it
 /// names: `PAIRING` on B2, `THIS DEVICE` on A1's capability card,

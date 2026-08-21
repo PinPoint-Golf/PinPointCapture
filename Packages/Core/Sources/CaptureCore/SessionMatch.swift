@@ -37,7 +37,7 @@ public struct SessionMatchCandidate: Identifiable, Sendable, Hashable {
         case likely, unlikely
 
         /// Upper case here because these are the badges as designed.
-        var chipTitle: String {
+        public var chipTitle: String {
             switch self {
             case .likely: "LIKELY"
             case .unlikely: "UNLIKELY"

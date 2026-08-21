@@ -21,6 +21,7 @@
 //
 
 import SwiftUI
+import CaptureCore
 
 // MARK: - Screen-local model
 
