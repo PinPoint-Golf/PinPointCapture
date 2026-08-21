@@ -23,7 +23,7 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     ]
 
     private let session = AVCaptureSession()
-    private let sampleQueue = DispatchQueue(label: "uk.co.pinpointgolf.capture.samples",
+    private let sampleQueue = DispatchQueue(label: "org.pinpointstudio.capture.samples",
                                             qos: .userInitiated)
     private var activeDevice: AVCaptureDevice?
 

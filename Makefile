@@ -7,7 +7,7 @@
 SCHEME      := PinPointCapture
 PROJECT     := PinPointCapture.xcodeproj
 APP         := PinPointCapture.app
-BUNDLE_ID   := uk.co.pinpointgolf.capture
+BUNDLE_ID   := org.pinpointstudio.capture
 CONFIG      ?= Debug
 DERIVED     := build
 # ⚠ Resolved at run time, not hardcoded. The installed simulator set changes
@@ -41,7 +41,11 @@ gen:
 $(PROJECT):
 	@$(MAKE) --no-print-directory gen
 
-build: $(PROJECT)
+# ⚠ Depends on `gen`, not on $(PROJECT). project.yml globs Sources/, so adding a
+# new file leaves project.yml untouched and a timestamp rule would rebuild a
+# stale project that omits it — surfacing as "cannot find X in scope".
+# xcodegen takes well under a second; correctness is worth more than that.
+build: gen
 	set -o pipefail && xcodebuild build \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
@@ -55,7 +59,7 @@ build: $(PROJECT)
 # provisioning profile; with `generic/platform=iOS` it cannot, and fails with the
 # misleading "Your team has no devices" rather than naming the phone.
 # Override with:  make build-device UDID=<udid>
-build-device: $(PROJECT)
+build-device: gen
 	@set -e; \
 	udid="$(UDID)"; \
 	if [ -z "$$udid" ]; then udid=$$($(MAKE) --no-print-directory _udid); fi; \
@@ -92,7 +96,7 @@ test: test-core test-app
 test-core:
 	@cd Packages/Core && swift test
 
-test-app: $(PROJECT)
+test-app: gen
 	@if ! xcrun simctl list runtimes 2>/dev/null | grep -q 'iOS'; then \
 		echo "make test-app: no iOS simulator runtime is installed."; \
 		echo "  Run: xcodebuild -downloadPlatform iOS"; \

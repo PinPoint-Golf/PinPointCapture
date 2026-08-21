@@ -25,6 +25,25 @@ public enum Lens: String, Sendable, CaseIterable {
         case .unknown: "Unknown"
         }
     }
+
+    /// Preference when two modes are otherwise equal. Lower wins.
+    ///
+    /// ⚠ Wide is the default capture lens. Ultra-wide offers the same 1080p240 on
+    /// current iPhones, so without this an arbitrary tie-break can select it —
+    /// and it carries heavy distortion. REQ-OPT-6 treats it as the fallback that
+    /// behind-the-golfer placement in a small studio may *force* (UC-2), not as
+    /// something to drift into because two formats sorted equal.
+    ///
+    /// Lens choice is calibration-affecting and forbidden to change within a
+    /// session, so picking it by accident is expensive.
+    public var captureRank: Int {
+        switch self {
+        case .wide: 0
+        case .telephoto: 1
+        case .ultraWide: 2
+        case .unknown: 3
+        }
+    }
 }
 
 /// One capture mode the device advertises.
@@ -150,7 +169,12 @@ public struct DeviceCapability: Sendable {
     /// temporal resolution for spatial is the wrong direction when shaft tracking
     /// needs ≥100 fps and measures speed from streak length.
     public var bestMode: VideoMode? {
-        claimed.max { ($0.fps, $0.height) < ($1.fps, $1.height) }
+        claimed.max {
+            // Note the inverted lens term: `captureRank` is lower-is-better, so it
+            // is negated to keep the whole comparison higher-is-better.
+            ($0.fps, $0.height, -$0.lens.captureRank)
+                < ($1.fps, $1.height, -$1.lens.captureRank)
+        }
     }
 
     /// The lenses this device offers, in a canonical order.

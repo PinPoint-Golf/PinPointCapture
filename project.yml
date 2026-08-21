@@ -1,7 +1,7 @@
 name: PinPointCapture
 
 options:
-  bundleIdPrefix: uk.co.pinpointgolf
+  bundleIdPrefix: org.pinpointstudio
   deploymentTarget:
     iOS: "18.0"
   createIntermediateGroups: true
@@ -50,7 +50,7 @@ targets:
       - package: CaptureCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: uk.co.pinpointgolf.capture
+        PRODUCT_BUNDLE_IDENTIFIER: org.pinpointstudio.capture
         PRODUCT_NAME: PinPointCapture
         INFOPLIST_FILE: Support/Info.plist
         GENERATE_INFOPLIST_FILE: NO
@@ -81,7 +81,7 @@ targets:
       - target: PinPointCapture
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: uk.co.pinpointgolf.capture.tests
+        PRODUCT_BUNDLE_IDENTIFIER: org.pinpointstudio.capture.tests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PinPointCapture.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PinPointCapture"
         BUNDLE_LOADER: "$(TEST_HOST)"

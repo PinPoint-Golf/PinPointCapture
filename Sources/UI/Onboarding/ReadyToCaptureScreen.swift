@@ -73,11 +73,22 @@ public struct ReadyToCaptureScreen: View {
                     )
                 }
 
+                // ⚠ Always present, even unmeasured. Omitting the row when the
+                // self-test has not run leaves A7 quietly claiming only what the
+                // device *advertises*, which is the exact conflation REQ-CAP-1/2
+                // exists to prevent — and the user cannot notice an absent row.
                 if let measured = capability.measured {
                     TelemetryRow(
                         "Measured, sustained",
                         measured.displaySummary,
                         spokenValue: "\(fpsText(measured.achievedFPS)) frames per second, \(measured.droppedFrames) dropped"
+                    )
+                } else {
+                    TelemetryRow(
+                        "Measured, sustained",
+                        "not measured yet",
+                        tone: .warning,
+                        spokenValue: "not measured yet"
                     )
                 }
 

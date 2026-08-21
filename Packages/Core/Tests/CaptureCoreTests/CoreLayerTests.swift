@@ -93,6 +93,44 @@ struct CapabilityTests {
         #expect(stillsOnly.verdictSentence().contains("Below what a host will accept"))
     }
 
+    /// ⚠ Regression. An iPhone 16 offers 1080p240 on BOTH the wide and the
+    /// ultra-wide lens, so an arbitrary tie-break selected ultra-wide and A7 read
+    /// "Lens — Ultra-wide · locked". Ultra-wide is the cramped-studio fallback
+    /// (REQ-OPT-6), carries heavy distortion, and lens choice is
+    /// calibration-affecting and forbidden to change mid-session.
+    @Test("Wide wins a tie against ultra-wide at the same resolution and rate")
+    func wideWinsTheLensTieBreak() {
+        let capability = DeviceCapability(
+            modelIdentifier: "iPhone17,3", modelName: "iPhone 16",
+            claimed: [
+                VideoMode(width: 1920, height: 1080, fps: 240, lens: .ultraWide),
+                VideoMode(width: 1920, height: 1080, fps: 240, lens: .wide)
+            ]
+        )
+        #expect(capability.bestMode?.lens == .wide)
+
+        // ...and the order they enumerate in must not change the answer.
+        let reversed = DeviceCapability(
+            modelIdentifier: "iPhone17,3", modelName: "iPhone 16",
+            claimed: capability.claimed.reversed()
+        )
+        #expect(reversed.bestMode?.lens == .wide)
+    }
+
+    /// A tie-break must never override a genuinely better mode.
+    @Test("Lens preference does not outrank frame rate")
+    func lensNeverBeatsFrameRate() {
+        let capability = DeviceCapability(
+            modelIdentifier: "x", modelName: "x",
+            claimed: [
+                VideoMode(width: 1920, height: 1080, fps: 120, lens: .wide),
+                VideoMode(width: 1920, height: 1080, fps: 240, lens: .ultraWide)
+            ]
+        )
+        #expect(capability.bestMode?.fps == 240)
+        #expect(capability.bestMode?.lens == .ultraWide)
+    }
+
     @Test("Measured rate is reported to one decimal, as the design shows it")
     func measuredSummaryFormatting() {
         let measured = MeasuredCapability(

@@ -50,18 +50,35 @@ struct RootView: View {
 
     var body: some View {
         Group {
+            #if DEBUG
+            if let id = DebugLaunch.screenID {
+                // `-ppcpScreen A6` on the launch command line. Never reachable in
+                // a release build — the whole gallery compiles out.
+                DebugScreenGallery(screenID: id, model: model)
+                    .task { model.refreshCapability() }
+            } else if model.hasCompletedOnboarding {
+                captureStack
+            } else {
+                onboarding
+            }
+            #else
             if model.hasCompletedOnboarding {
                 captureStack
             } else {
-                OnboardingFlow(
-                    model: model,
-                    onConnectHost: { sheet = .connectHost },
-                    onFinish: {}
-                )
+                onboarding
             }
+            #endif
         }
         .sheet(item: $sheet, content: sheetContent(for:))
         .preferredColorScheme(.dark)
+    }
+
+    private var onboarding: some View {
+        OnboardingFlow(
+            model: model,
+            onConnectHost: { sheet = .connectHost },
+            onFinish: {}
+        )
     }
 
     // MARK: Capture stack — C1 is the root
