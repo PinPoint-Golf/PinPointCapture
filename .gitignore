@@ -1,0 +1,5 @@
+#Claude
+CLAUDE.md
+
+# Claude-specific artefacts stay local (skills, notes, settings)
+.claude/
