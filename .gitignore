@@ -3,3 +3,28 @@ CLAUDE.md
 
 # Claude-specific artefacts stay local (skills, notes, settings)
 .claude/
+
+# Xcode project is generated from project.yml by XcodeGen — never commit it
+*.xcodeproj
+*.xcworkspace
+
+# Build products and derived data
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# SwiftPM
+.swiftpm/
+.build/
+Packages/
+Package.resolved
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# macOS
+.DS_Store

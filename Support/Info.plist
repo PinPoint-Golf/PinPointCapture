@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en_GB</string>
+	<key>CFBundleDisplayName</key>
+	<string>PinPoint Capture</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+
+	<!-- Permission copy: benefit sentences, never API names. Source: design/mockup v1 README, screen A4. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Focus, exposure, white balance and stabilisation stay locked while armed, so measurements hold across a session.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The sound of impact gives every shot an exact time, and lines two shots up on impact rather than on clip start.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>How the device is tilted, and which way is down. Improves how views line up.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>To reach your Studio host directly. Only a host you have paired with can receive video, ever.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ppcp._tcp</string>
+	</array>
+
+	<!-- Dark appearance only in this design pass. -->
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
+
+	<key>UILaunchScreen</key>
+	<dict/>
+
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+
+	<!-- Capture is landscape in use, onboarding is portrait; both supported for now. -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

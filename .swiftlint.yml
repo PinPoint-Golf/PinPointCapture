@@ -1,0 +1,43 @@
+# Light touch. The point is catching genuine mistakes, not enforcing a house style,
+# and above all not fighting the way SwiftUI is naturally written.
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - build
+  - DerivedData
+  - .build
+
+disabled_rules:
+  # SwiftUI view bodies are long, deeply nested and built from trailing closures.
+  # That is the idiom, not a smell.
+  - line_length
+  - function_body_length
+  - type_body_length
+  - file_length
+  - closure_body_length
+  - nesting
+  - multiple_closures_with_trailing_closure
+  - trailing_closure
+  - cyclomatic_complexity
+  # Placeholder scaffolding and previews trip these for no benefit.
+  - todo
+  - identifier_name
+
+opt_in_rules:
+  - empty_count
+  - unneeded_parentheses_in_closure_argument
+  - toggle_bool
+  - last_where
+  - first_where
+  - contains_over_first_not_nil
+  - force_unwrapping
+
+analyzer_rules:
+  - unused_import
+
+force_cast: error
+force_try: error
+force_unwrapping: warning

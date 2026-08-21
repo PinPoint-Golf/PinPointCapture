@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas"><style>body{margin:0;background:#EDEBE6;font-family:-apple-system,'SF Pro Text','Helvetica Neue',Helvetica,sans-serif;-webkit-font-smoothing:antialiased}a{color:#1F6F43;text-decoration:none}a:hover{color:#134A2C;text-decoration:underline}</style></helmet>
+<div style="padding:56px 64px 96px;display:flex;flex-direction:column;gap:72px;color:#17150F">
+
+<header style="display:flex;flex-direction:column;gap:28px;max-width:1180px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+<span style="font:600 11px/1 ui-monospace,'SF Mono',Menlo,monospace;letter-spacing:1.2px;text-transform:uppercase;padding:6px 9px;border-radius:5px;background:#17150F;color:#fff">Turn 1</span>
+<h1 style="margin:0;font:700 40px/1.05 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-1.1px">PinPointCapture — iOS &amp; iPadOS</h1>
+</div>
+<p style="margin:0;max-width:760px;font:400 17px/1.55 -apple-system,sans-serif;color:rgba(23,21,15,0.72);text-wrap:pretty">A first pass at the app, weighted towards the two areas you called out: first-run setup and the link to a Studio host. Dark, system-native iOS throughout — a camera tool that lives on a tripod in a bay or at a range, where a light UI would glare and a bright screen behind the golfer is a distraction. One tint (system green) carries state; red, orange and blue are used only in their system meanings.</p>
+<div style="display:flex;gap:20px;flex-wrap:wrap">
+<div style="flex:1 1 300px;min-width:280px;background:#fff;border:1px solid rgba(23,21,15,0.09);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:10px">
+<h3 style="margin:0;font:600 13px/1 -apple-system,sans-serif;letter-spacing:0.4px;text-transform:uppercase;color:rgba(23,21,15,0.45)">What I assumed</h3>
+<p style="margin:0;font:400 14px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.8)">Onboarding never assumes a host is nearby (UC-1 is the normal case). The offline path is offered as a first-class choice, not a fallback. Permissions are asked one screen at a time with the reason stated in plain terms, since a single Local Network refusal makes the app look broken.</p>
+</div>
+<div style="flex:1 1 300px;min-width:280px;background:#fff;border:1px solid rgba(23,21,15,0.09);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:10px">
+<h3 style="margin:0;font:600 13px/1 -apple-system,sans-serif;letter-spacing:0.4px;text-transform:uppercase;color:rgba(23,21,15,0.45)">The system</h3>
+<p style="margin:0;font:400 14px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.8)">SF for everything, SF Mono for any number a golfer could not have guessed — offsets, residuals, frame intervals. Grouped inset lists, large titles, 50pt filled buttons, 44pt minimum targets. Green means retained and in sync; orange means degraded but capturing; red means the host is gone; capture status never turns red.</p>
+</div>
+<div style="flex:1 1 300px;min-width:280px;background:#fff;border:1px solid rgba(23,21,15,0.09);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:10px">
+<h3 style="margin:0;font:600 13px/1 -apple-system,sans-serif;letter-spacing:0.4px;text-transform:uppercase;color:rgba(23,21,15,0.45)">Open, for you</h3>
+<p style="margin:0;font:400 14px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.8)">Audio retention (OPEN-2) is shown as a visible, changeable setting during onboarding — worth confirming that wording. Markup tools, the diagnostic bundle, review mode and voice club tagging are named but not designed yet. Placement diagrams are placeholders; real illustration or photography would carry those screens better.</p>
+</div>
+</div>
+</header>
+
+<section id="flow-a" style="display:flex;flex-direction:column;gap:26px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;border-bottom:1px solid rgba(23,21,15,0.12);padding-bottom:14px">
+<span style="font:700 13px/1 ui-monospace,'SF Mono',Menlo,monospace;padding:7px 10px;border-radius:6px;background:#17150F;color:#fff">A</span>
+<h2 style="margin:0;font:600 24px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.5px">Onboarding</h2>
+<span style="font:400 15px/1.3 -apple-system,sans-serif;color:rgba(23,21,15,0.55)">Seven screens, about ninety seconds. Ends with a device that is placed well and knows what it can sustain.</span>
+</div>
+<div style="display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start">
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;justify-content:space-between;padding:0 24px 34px">
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:26px;text-align:center;padding-bottom:20px">
+<svg width="96" height="96" viewBox="0 0 96 96" fill="none"><circle cx="48" cy="48" r="45" stroke="#30D158" stroke-opacity="0.28" stroke-width="2"></circle><circle cx="48" cy="48" r="28" stroke="#30D158" stroke-opacity="0.5" stroke-width="2"></circle><circle cx="48" cy="48" r="9" fill="#30D158"></circle><path d="M48 0v22M48 74v22M0 48h22M74 48h22" stroke="#30D158" stroke-opacity="0.55" stroke-width="2"></path></svg>
+<div style="display:flex;flex-direction:column;gap:14px">
+<h1 style="margin:0;font:700 34px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.9px">PinPointCapture</h1>
+<p style="margin:0;font:400 17px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.62);text-wrap:pretty">A high-speed, time-synchronised capture source for PinPoint Studio. Set it on a tripod and it does the rest.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;padding:16px 18px;border-radius:14px;background:rgba(48,209,88,0.1);border:1px solid rgba(48,209,88,0.22)">
+<span style="font:600 13px/1 ui-monospace,'SF Mono',Menlo,monospace;letter-spacing:0.6px;color:#30D158">THIS DEVICE</span>
+<span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.78)">iPhone 15 Pro — 1080p at up to 240 fps, wide and ultra-wide. Good for capture.</span>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:14px">
+<div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Get started</div>
+<div style="height:50px;border-radius:14px;color:#30D158;font:600 17px/50px -apple-system,sans-serif;text-align:center">I have a pairing code</div>
+</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">A1</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Welcome</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">The device tells the user what it is capable of before asking for anything. Capability is honest from the first screen, and a weaker device says so here rather than at arm time.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 24px 34px">
+<h1 style="margin:18px 0 34px;font:700 34px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.9px">How it works</h1>
+<div style="flex:1;display:flex;flex-direction:column;gap:30px">
+<div style="display:flex;gap:18px;align-items:flex-start"><div style="flex:none;width:44px;height:44px;border-radius:12px;background:rgba(48,209,88,0.14);display:flex;align-items:center;justify-content:center;font:600 17px/1 ui-monospace,Menlo,monospace;color:#30D158">1</div><div style="display:flex;flex-direction:column;gap:5px"><span style="font:600 17px/1.3 -apple-system,sans-serif">Place the device</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">On a tripod, facing the mat. Down the line, face on, or behind you — it works out which and tells the host.</span></div></div>
+<div style="display:flex;gap:18px;align-items:flex-start"><div style="flex:none;width:44px;height:44px;border-radius:12px;background:rgba(48,209,88,0.14);display:flex;align-items:center;justify-content:center;font:600 17px/1 ui-monospace,Menlo,monospace;color:#30D158">2</div><div style="display:flex;flex-direction:column;gap:5px"><span style="font:600 17px/1.3 -apple-system,sans-serif">Arm it, then hit</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">It records continuously and keeps the few seconds around each impact. Nothing to press between shots.</span></div></div>
+<div style="display:flex;gap:18px;align-items:flex-start"><div style="flex:none;width:44px;height:44px;border-radius:12px;background:rgba(48,209,88,0.14);display:flex;align-items:center;justify-content:center;font:600 17px/1 ui-monospace,Menlo,monospace;color:#30D158">3</div><div style="display:flex;flex-direction:column;gap:5px"><span style="font:600 17px/1.3 -apple-system,sans-serif">Review between shots</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">Step frame by frame from impact and draw on it. Reviewing never stops the camera.</span></div></div>
+<div style="display:flex;gap:18px;align-items:flex-start"><div style="flex:none;width:44px;height:44px;border-radius:12px;background:rgba(48,209,88,0.14);display:flex;align-items:center;justify-content:center;font:600 17px/1 ui-monospace,Menlo,monospace;color:#30D158">4</div><div style="display:flex;flex-direction:column;gap:5px"><span style="font:600 17px/1.3 -apple-system,sans-serif">Send to Studio when you can</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">Now over Wi-Fi, or at home over a cable. Sessions wait on the device until Studio confirms it has them.</span></div></div>
+</div>
+<div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center;margin-top:24px">Continue</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">A2</span><span style="font:600 15px/1.2 -apple-system,sans-serif">How it works</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">One explanatory screen only, and it sets the two expectations that prevent support questions later: you do not press record, and video may arrive at Studio much later than the shot did.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 24px 34px">
+<h1 style="margin:18px 0 8px;font:700 34px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.9px">Where are you today?</h1>
+<p style="margin:0 0 28px;font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">This only changes what happens next. You can switch whenever you like.</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px">
+<div style="border-radius:18px;background:#1C1C1E;border:2px solid #30D158;padding:22px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:center;justify-content:space-between"><span style="font:600 20px/1.2 -apple-system,sans-serif">In a studio, with a host</span><svg width="24" height="24" viewBox="0 0 24 24" fill="#30D158"><circle cx="12" cy="12" r="12"></circle><path d="M6.5 12.4l3.6 3.6 7-7.6" stroke="#000" stroke-width="2.2" fill="none" stroke-linecap="round"></path></svg></div>
+<span style="font:400 15px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">Pair with PinPoint Studio. Shots are correlated as you hit them and the video follows across the network.</span>
+<div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:4px"><span style="font:600 12px/1 -apple-system,sans-serif;padding:7px 10px;border-radius:8px;background:rgba(48,209,88,0.14);color:#30D158">Scan a code to pair</span><span style="font:600 12px/1 -apple-system,sans-serif;padding:7px 10px;border-radius:8px;background:rgba(120,120,128,0.2);color:rgba(235,235,245,0.7)">Wi-Fi or cable</span></div>
+</div>
+<div style="border-radius:18px;background:#1C1C1E;border:1px solid rgba(84,84,88,0.55);padding:22px;display:flex;flex-direction:column;gap:12px">
+<span style="font:600 20px/1.2 -apple-system,sans-serif">At a range, on my own</span>
+<span style="font:400 15px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">Capture and review here. The session is complete on the device and goes to Studio later — tonight, or next week.</span>
+<div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:4px"><span style="font:600 12px/1 -apple-system,sans-serif;padding:7px 10px;border-radius:8px;background:rgba(120,120,128,0.2);color:rgba(235,235,245,0.7)">No network needed</span><span style="font:600 12px/1 -apple-system,sans-serif;padding:7px 10px;border-radius:8px;background:rgba(120,120,128,0.2);color:rgba(235,235,245,0.7)">Nothing is lost</span></div>
+</div>
+<div style="display:flex;gap:12px;align-items:flex-start;padding:16px 18px;border-radius:14px;background:rgba(120,120,128,0.14)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="flex:none;margin-top:1px"><circle cx="10" cy="10" r="9" stroke="rgba(235,235,245,0.5)" stroke-width="1.6"></circle><path d="M10 8.6v5.2M10 5.6v1.2" stroke="rgba(235,235,245,0.7)" stroke-width="1.8" stroke-linecap="round"></path></svg><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">A host that appears mid-session is picked up automatically. A host that disappears is not a problem — capture carries on either way.</span></div>
+</div>
+<div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center;margin-top:22px">Continue</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">A3</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Host or standalone</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">The offline choice is given equal visual weight and equal copy length. The footnote does the real work: it removes the fear of picking wrong, which is what makes people abandon setup.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 20px 34px">
+<h1 style="margin:18px 4px 8px;font:700 34px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.9px">What it needs</h1>
+<p style="margin:0 4px 24px;font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Four permissions, and what each one is actually for.</p>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px">
+<div style="border-radius:14px;background:#1C1C1E;padding:18px;display:flex;gap:14px;align-items:flex-start"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" style="flex:none;margin-top:2px"><rect x="1.5" y="5.5" width="23" height="16" rx="4" stroke="#30D158" stroke-width="1.8"></rect><circle cx="13" cy="13.5" r="4.5" stroke="#30D158" stroke-width="1.8"></circle></svg><div style="flex:1;display:flex;flex-direction:column;gap:5px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span style="font:600 17px/1.2 -apple-system,sans-serif">Camera</span><span style="font:600 13px/1 -apple-system,sans-serif;color:#30D158">Allowed</span></div><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Focus, exposure, white balance and stabilisation stay locked while armed, so measurements hold across a session.</span></div></div>
+<div style="border-radius:14px;background:#1C1C1E;padding:18px;display:flex;flex-direction:column;gap:14px"><div style="display:flex;gap:14px;align-items:flex-start"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" style="flex:none;margin-top:2px"><rect x="9" y="2" width="8" height="13" rx="4" stroke="#30D158" stroke-width="1.8"></rect><path d="M5.5 12.5a7.5 7.5 0 0 0 15 0M13 20v4" stroke="#30D158" stroke-width="1.8" stroke-linecap="round"></path></svg><div style="flex:1;display:flex;flex-direction:column;gap:5px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span style="font:600 17px/1.2 -apple-system,sans-serif">Microphone</span><span style="font:600 13px/1 -apple-system,sans-serif;color:#30D158">Allowed</span></div><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">The sound of impact gives every shot an exact time, and lines two shots up on impact rather than on clip start.</span></div></div><div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-radius:10px;background:rgba(120,120,128,0.18)"><div style="display:flex;flex-direction:column;gap:3px"><span style="font:600 13px/1.2 -apple-system,sans-serif;color:rgba(235,235,245,0.85)">Audio kept</span><span style="font:400 13px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.6)">0.5 s around impact only</span></div><span style="font:600 15px/1 -apple-system,sans-serif;color:#30D158">Change</span></div></div>
+<div style="border-radius:14px;background:#1C1C1E;padding:18px;display:flex;flex-direction:column;gap:14px"><div style="display:flex;gap:14px;align-items:flex-start"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" style="flex:none;margin-top:2px"><path d="M2 9.5a16 16 0 0 1 22 0M6 14a11 11 0 0 1 14 0M9.5 18.5a6 6 0 0 1 7 0" stroke="#30D158" stroke-width="1.8" stroke-linecap="round"></path><circle cx="13" cy="22.5" r="1.8" fill="#30D158"></circle></svg><div style="flex:1;display:flex;flex-direction:column;gap:5px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span style="font:600 17px/1.2 -apple-system,sans-serif">Local network</span><span style="font:600 13px/1 -apple-system,sans-serif;color:rgba(235,235,245,0.45)">Needed to pair</span></div><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">To reach your Studio host directly. Only a host you have paired with can receive video, ever.</span></div></div><div style="height:44px;border-radius:11px;background:#30D158;color:#fff;font:600 16px/44px -apple-system,sans-serif;text-align:center">Allow local network</div></div>
+<div style="border-radius:14px;background:#1C1C1E;padding:18px;display:flex;gap:14px;align-items:flex-start"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" style="flex:none;margin-top:2px"><circle cx="13" cy="13" r="10.5" stroke="#30D158" stroke-width="1.8"></circle><path d="M13 5v8l5 3.5" stroke="#30D158" stroke-width="1.8" stroke-linecap="round"></path></svg><div style="flex:1;display:flex;flex-direction:column;gap:5px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span style="font:600 17px/1.2 -apple-system,sans-serif">Motion</span><span style="font:600 13px/1 -apple-system,sans-serif;color:#30D158">Allowed</span></div><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">How the device is tilted, and which way is down. Improves how views line up.</span></div></div>
+</div>
+<p style="margin:18px 4px 0;font:400 13px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.45)">No analytics, ever. Nothing leaves this device unless you send it.</p>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">A4</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Permissions</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Each row gives the benefit, not the API. Audio retention is exposed here rather than buried in Settings, because a continuously open microphone in a lesson deserves an explicit answer up front. Local network is requested last and framed as pairing, so a refusal reads as a choice about hosts, not a broken app.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 20px 34px">
+<h1 style="margin:18px 4px 8px;font:700 34px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.9px">Set it down</h1>
+<p style="margin:0 4px 20px;font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Anywhere you like. Behind you works well in a small bay.</p>
+<div style="flex:none;height:260px;border-radius:16px;border:1.5px dashed rgba(235,235,245,0.28);background:rgba(120,120,128,0.1);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px"><span style="font:600 13px/1 ui-monospace,Menlo,monospace;letter-spacing:0.8px;color:rgba(235,235,245,0.45)">PLACEHOLDER</span><span style="font:400 14px/1.4 -apple-system,sans-serif;color:rgba(235,235,245,0.5);text-align:center;max-width:250px">Placement diagram — the three common positions around a mat, with rough distances</span></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;padding-top:20px">
+<div style="display:flex;gap:12px;align-items:flex-start"><span style="font:600 15px/1.45 -apple-system,sans-serif;color:#30D158;flex:none">·</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.72)">Tripod, or anything that will not move. Handheld will not do.</span></div>
+<div style="display:flex;gap:12px;align-items:flex-start"><span style="font:600 15px/1.45 -apple-system,sans-serif;color:#30D158;flex:none">·</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.72)">Roughly hip height, landscape, whole swing in view.</span></div>
+<div style="display:flex;gap:12px;align-items:flex-start"><span style="font:600 15px/1.45 -apple-system,sans-serif;color:#30D158;flex:none">·</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.72)">As much light on the ball as you can manage. Indoors, this matters more than anything else.</span></div>
+<div style="display:flex;gap:12px;align-items:flex-start"><span style="font:600 15px/1.45 -apple-system,sans-serif;color:#30D158;flex:none">·</span><span style="font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.72)">Once armed, leave the lens alone. Switching lens mid-session restarts calibration.</span></div>
+</div>
+<div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Check the framing</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">A5</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Placement guidance</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Guidance, not configuration — the app classifies its own viewpoint rather than asking. The diagram is a placeholder; a real drawing would let most of this text go away.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;inset:0;background:#0C0C0D"></div>
+<div style="position:absolute;top:54px;left:0;right:0;height:470px;border-top:1px solid rgba(255,255,255,0.06);border-bottom:1px solid rgba(255,255,255,0.06);background:linear-gradient(180deg,#1a1c1a,#0f100f);display:flex;align-items:center;justify-content:center"><div style="display:flex;flex-direction:column;align-items:center;gap:6px"><span style="font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:0.8px;color:rgba(235,235,245,0.32)">CAMERA PREVIEW</span><span style="font:400 13px/1.4 -apple-system,sans-serif;color:rgba(235,235,245,0.28)">live, 1080p150, locked</span></div></div>
+<div style="position:absolute;top:120px;left:96px;width:190px;height:330px;border:2px solid rgba(48,209,88,0.85);border-radius:6px"></div>
+<div style="position:absolute;top:104px;left:96px;font:600 11px/1 ui-monospace,Menlo,monospace;letter-spacing:0.6px;color:#30D158">GOLFER · IN FRAME</div>
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="position:relative;height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center;z-index:5"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="position:absolute;top:540px;left:0;right:0;bottom:0;padding:0 20px 34px;display:flex;flex-direction:column;z-index:5">
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:0 4px 14px"><h2 style="margin:0;font:700 26px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.6px">Framing check</h2><span style="font:600 13px/1 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">DTL · RIGHT-HANDED</span></div>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden">
+<div style="display:flex;gap:12px;align-items:center;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><svg width="22" height="22" viewBox="0 0 24 24" fill="#30D158" style="flex:none"><circle cx="12" cy="12" r="12"></circle><path d="M6.5 12.4l3.6 3.6 7-7.6" stroke="#000" stroke-width="2.2" fill="none" stroke-linecap="round"></path></svg><span style="flex:1;font:400 16px/1.3 -apple-system,sans-serif">In frame at address</span></div>
+<div style="display:flex;gap:12px;align-items:center;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><svg width="22" height="22" viewBox="0 0 24 24" fill="#30D158" style="flex:none"><circle cx="12" cy="12" r="12"></circle><path d="M6.5 12.4l3.6 3.6 7-7.6" stroke="#000" stroke-width="2.2" fill="none" stroke-linecap="round"></path></svg><span style="flex:1;font:400 16px/1.3 -apple-system,sans-serif">Club still in frame at the top</span></div>
+<div style="display:flex;gap:12px;align-items:center;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><svg width="22" height="22" viewBox="0 0 24 24" fill="#30D158" style="flex:none"><circle cx="12" cy="12" r="12"></circle><path d="M6.5 12.4l3.6 3.6 7-7.6" stroke="#000" stroke-width="2.2" fill="none" stroke-linecap="round"></path></svg><span style="flex:1;font:400 16px/1.3 -apple-system,sans-serif">Device is steady</span></div>
+<div style="display:flex;gap:12px;align-items:flex-start;padding:14px 16px"><svg width="22" height="22" viewBox="0 0 24 24" fill="#FF9F0A" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="12"></circle><path d="M12 6v8M12 16.4v1.6" stroke="#000" stroke-width="2.2" stroke-linecap="round"></path></svg><div style="flex:1;display:flex;flex-direction:column;gap:4px"><span style="font:400 16px/1.3 -apple-system,sans-serif">Light is marginal</span><span style="font:400 13.5px/1.4 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.55)">1/1600 s · ISO 2200 · 150 fps</span><span style="font:400 13.5px/1.4 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">The shaft will be noisy near impact. Add light, or drop to 120 fps for a brighter frame.</span></div></div>
+</div>
+<div style="flex:1"></div>
+<div style="display:flex;gap:12px"><div style="flex:1;height:50px;border-radius:14px;background:rgba(120,120,128,0.24);color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Use 120 fps</div><div style="flex:1;height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Arm anyway</div></div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">A6</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Framing check</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">The screen that stops a wasted session. Warnings never block arming — they state the consequence and offer the trade, and the light warning names the numbers so an experienced user can judge for themselves.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 20px 34px">
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:28px;padding:0 4px 30px">
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="31" fill="rgba(48,209,88,0.14)"></circle><path d="M18 33.5l9.5 9.5L46 22" stroke="#30D158" stroke-width="4" stroke-linecap="round"></path></svg>
+<div style="display:flex;flex-direction:column;gap:12px"><h1 style="margin:0;font:700 34px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.9px">Ready to capture</h1><p style="margin:0;font:400 17px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">This is what the device will do. It is recorded with every shot, so Studio always knows what it received.</p></div>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden">
+<div style="display:flex;justify-content:space-between;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="font:400 16px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Capture</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace">1080p · 150 fps</span></div>
+<div style="display:flex;justify-content:space-between;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="font:400 16px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Measured, sustained</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace">149.6 fps · 0 drops</span></div>
+<div style="display:flex;justify-content:space-between;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="font:400 16px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Lens</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace">Wide · locked</span></div>
+<div style="display:flex;justify-content:space-between;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="font:400 16px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Kept per shot</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace">3.0 s around impact</span></div>
+<div style="display:flex;justify-content:space-between;padding:14px 16px"><span style="font:400 16px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Room for</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace">about 40 sessions</span></div>
+</div>
+<div style="display:flex;gap:12px;align-items:center;padding:14px 16px;border-radius:12px;background:rgba(120,120,128,0.14)"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="flex:none"><circle cx="10" cy="10" r="9" stroke="rgba(235,235,245,0.45)" stroke-width="1.6"></circle><path d="M10 8.6v5.2M10 5.6v1.2" stroke="rgba(235,235,245,0.7)" stroke-width="1.8" stroke-linecap="round"></path></svg><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Not connected to a host. Everything is kept here until you send it.</span></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:14px"><div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Start a session</div><div style="height:50px;border-radius:14px;color:#30D158;font:600 17px/50px -apple-system,sans-serif;text-align:center">Connect a host first</div></div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">A7</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Ready</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Claimed and measured capability are both shown, side by side, in the only place a user will read them. It is also the receipt for the self-test, so a later argument about frame rate has somewhere to start.</p></sc-if>
+</div>
+</div>
+
+</div>
+</section>
+
+<section id="flow-b" style="display:flex;flex-direction:column;gap:26px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;border-bottom:1px solid rgba(23,21,15,0.12);padding-bottom:14px">
+<span style="font:700 13px/1 ui-monospace,'SF Mono',Menlo,monospace;padding:7px 10px;border-radius:6px;background:#17150F;color:#fff">B</span>
+<h2 style="margin:0;font:600 24px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.5px">Host connectivity</h2>
+<span style="font:400 15px/1.3 -apple-system,sans-serif;color:rgba(23,21,15,0.55)">Pairing in one action, and four honest answers for when the network is not on your side. B3 is live — tap the states.</span>
+</div>
+<div style="display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start">
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;inset:0;background:#08090A"></div>
+<div style="position:absolute;top:150px;left:66px;width:262px;height:262px;border-radius:20px;background:rgba(120,120,128,0.08)"></div>
+<div style="position:absolute;top:150px;left:66px;width:56px;height:56px;border-top:3px solid #30D158;border-left:3px solid #30D158;border-top-left-radius:20px"></div>
+<div style="position:absolute;top:150px;left:272px;width:56px;height:56px;border-top:3px solid #30D158;border-right:3px solid #30D158;border-top-right-radius:20px"></div>
+<div style="position:absolute;top:356px;left:66px;width:56px;height:56px;border-bottom:3px solid #30D158;border-left:3px solid #30D158;border-bottom-left-radius:20px"></div>
+<div style="position:absolute;top:356px;left:272px;width:56px;height:56px;border-bottom:3px solid #30D158;border-right:3px solid #30D158;border-bottom-right-radius:20px"></div>
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="position:relative;height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center;z-index:5"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="position:relative;z-index:5;padding:8px 24px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 17px/1 -apple-system,sans-serif;color:#30D158">Cancel</span><span style="font:600 17px/1 -apple-system,sans-serif">Connect a host</span><span style="width:48px"></span></div>
+<div style="position:absolute;top:434px;left:0;right:0;bottom:0;padding:0 20px 34px;display:flex;flex-direction:column;gap:18px;z-index:5">
+<p style="margin:0;padding:0 4px;font:400 17px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.8);text-align:center;text-wrap:pretty">In Studio, open <span style="font-weight:600;color:#fff">Devices — Add a device</span> and point the camera at the code on screen.</p>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden">
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex:none"><rect x="2.5" y="4" width="19" height="14" rx="2.5" stroke="#30D158" stroke-width="1.7"></rect><path d="M8 21h8" stroke="#30D158" stroke-width="1.7" stroke-linecap="round"></path></svg><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:400 16px/1.3 -apple-system,sans-serif">Bay 3 — Mac Studio</span><span style="font:400 13px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">On this network · paired yesterday</span></div><span style="font:600 15px/1 -apple-system,sans-serif;color:#30D158">Connect</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex:none"><rect x="4" y="2.5" width="16" height="19" rx="3" stroke="rgba(235,235,245,0.55)" stroke-width="1.7"></rect><path d="M8 7h8M8 11h8M8 15h4" stroke="rgba(235,235,245,0.55)" stroke-width="1.7" stroke-linecap="round"></path></svg><span style="flex:1;font:400 16px/1.3 -apple-system,sans-serif">Enter the six-digit code</span><svg width="8" height="14" viewBox="0 0 8 14" fill="none"><path d="M1.5 1.5L6.5 7l-5 5.5" stroke="rgba(235,235,245,0.32)" stroke-width="2" stroke-linecap="round"></path></svg></div>
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex:none"><path d="M7 3.5h10a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2z" stroke="rgba(235,235,245,0.55)" stroke-width="1.7"></path><path d="M12 7v9" stroke="rgba(235,235,245,0.55)" stroke-width="1.7" stroke-linecap="round"></path></svg><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:400 16px/1.3 -apple-system,sans-serif">Use a cable instead</span><span style="font:400 13px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">Steadier timing, no network at all</span></div><svg width="8" height="14" viewBox="0 0 8 14" fill="none"><path d="M1.5 1.5L6.5 7l-5 5.5" stroke="rgba(235,235,245,0.32)" stroke-width="2" stroke-linecap="round"></path></svg></div>
+</div>
+<div style="height:50px;border-radius:14px;color:#30D158;font:600 17px/50px -apple-system,sans-serif;text-align:center">Capture without a host</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">B1</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Scan to pair</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Scanning is the screen, not an option on it: the camera is already live and the reticle is the first thing you see. Discovered hosts, a typed code and a cable sit underneath in descending order of reliability. Every path here completes discovery, pairing and authentication in one action.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 20px 34px">
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:30px;padding:0 4px 40px">
+<div style="display:flex;flex-direction:column;gap:10px"><span style="font:600 13px/1 ui-monospace,Menlo,monospace;letter-spacing:0.8px;color:#30D158">PAIRING</span><h1 style="margin:0;font:700 30px/1.15 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.7px">Bay 3 — Mac Studio</h1><span style="font:400 15px/1.4 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">PinPoint Studio 0.9.4 · protocol PPCP 1.0</span></div>
+<div style="display:flex;flex-direction:column;gap:20px">
+<div style="display:flex;gap:14px;align-items:flex-start"><svg width="24" height="24" viewBox="0 0 24 24" fill="#30D158" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="12"></circle><path d="M6.5 12.4l3.6 3.6 7-7.6" stroke="#000" stroke-width="2.2" fill="none" stroke-linecap="round"></path></svg><div style="display:flex;flex-direction:column;gap:3px"><span style="font:400 17px/1.3 -apple-system,sans-serif">Private channel open</span><span style="font:400 13.5px/1.35 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">TLS-PSK from the code you scanned</span></div></div>
+<div style="display:flex;gap:14px;align-items:flex-start"><svg width="24" height="24" viewBox="0 0 24 24" fill="#30D158" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="12"></circle><path d="M6.5 12.4l3.6 3.6 7-7.6" stroke="#000" stroke-width="2.2" fill="none" stroke-linecap="round"></path></svg><div style="display:flex;flex-direction:column;gap:3px"><span style="font:400 17px/1.3 -apple-system,sans-serif">Capability agreed</span><span style="font:400 13.5px/1.35 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">1080p150 accepted · view: DTL</span></div></div>
+<div style="display:flex;gap:14px;align-items:flex-start"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="10.8" stroke="rgba(235,235,245,0.22)" stroke-width="2.4"></circle><path d="M12 1.2a10.8 10.8 0 0 1 10.8 10.8" stroke="#30D158" stroke-width="2.4" stroke-linecap="round"></path></svg><div style="display:flex;flex-direction:column;gap:3px"><span style="font:400 17px/1.3 -apple-system,sans-serif">Matching clocks</span><span style="font:400 13.5px/1.35 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">14 of 20 exchanges · offset −3.184 ms · drift 18 ppm</span></div></div>
+<div style="display:flex;gap:14px;align-items:flex-start"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="10.8" stroke="rgba(235,235,245,0.22)" stroke-width="2.4"></circle></svg><div style="display:flex;flex-direction:column;gap:3px"><span style="font:400 17px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.45)">Camera warmed and locked</span></div></div>
+</div>
+<div style="padding:16px 18px;border-radius:14px;background:rgba(120,120,128,0.14);display:flex;flex-direction:column;gap:6px"><span style="font:600 14px/1.3 -apple-system,sans-serif">Why the wait</span><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Twenty round trips get the two clocks agreeing to a fraction of a frame. It is checked again against the sound of every shot.</span></div>
+</div>
+<div style="height:50px;border-radius:14px;background:rgba(120,120,128,0.24);color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Cancel</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">B2</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Handshake</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">A few seconds of waiting, made legible rather than hidden behind a spinner. Plain-language step names with the engineering detail underneath in mono, and a short note explaining why sync is not instant — the friendly register doing work.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 20px 34px">
+<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 4px 16px"><span style="font:600 17px/1 -apple-system,sans-serif;color:#30D158">Session</span><span style="font:600 17px/1 -apple-system,sans-serif">Host</span><span style="font:600 17px/1 -apple-system,sans-serif;color:#30D158">Log</span></div>
+<div style="display:flex;padding:3px;border-radius:10px;background:rgba(120,120,128,0.22);margin:0 4px 20px">
+<sc-for list="{{ connTabs }}" as="tab" hint-placeholder-count="4"><div onClick="{{ tab.pick }}" style="{{ tab.style }}">{{ tab.label }}</div></sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;flex:1">
+<div style="border-radius:18px;background:#1C1C1E;padding:22px;display:flex;flex-direction:column;gap:16px">
+<div style="display:flex;align-items:center;gap:12px"><div style="width:12px;height:12px;border-radius:6px;background:{{ connColor }};flex:none"></div><span style="flex:1;font:700 22px/1.15 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.4px">{{ connTitle }}</span></div>
+<div style="display:flex;flex-direction:column;gap:3px"><span style="font:600 17px/1.3 -apple-system,sans-serif">{{ hostName }}</span><span style="font:400 14px/1.35 -apple-system,sans-serif;color:rgba(235,235,245,0.55)">{{ connSub }}</span></div>
+<p style="margin:0;font:400 15px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.72);text-wrap:pretty">{{ connNote }}</p>
+</div>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden">
+<sc-for list="{{ connRows }}" as="row" hint-placeholder-count="5"><div style="display:flex;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="font:400 15.5px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">{{ row.k }}</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace;text-align:right">{{ row.v }}</span></div></sc-for>
+</div>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden">
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="flex:1;font:400 16px/1.3 -apple-system,sans-serif">Send video over</span><span style="font:400 15px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">Wi-Fi and cable</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px"><span style="flex:1;font:400 16px/1.3 -apple-system,sans-serif">Export a diagnostic bundle</span><svg width="8" height="14" viewBox="0 0 8 14" fill="none"><path d="M1.5 1.5L6.5 7l-5 5.5" stroke="rgba(235,235,245,0.32)" stroke-width="2" stroke-linecap="round"></path></svg></div>
+</div>
+</div>
+<div style="height:50px;border-radius:14px;background:rgba(120,120,128,0.24);color:{{ connColor }};font:600 17px/50px -apple-system,sans-serif;text-align:center;margin-top:18px">{{ connAction }}</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">B3</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Host panel — four live states</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">The segmented control here is a review device, not a real control — tap through Connected, Weak, Lost and Reconnecting. One layout carries all four: the colour and the sentence change, the structure does not. Note that even in Lost, the first fact reported is that capture is still running.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;inset:0;background:#0C0C0D"></div>
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="position:relative;height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center;z-index:5"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="position:absolute;left:0;right:0;bottom:0;background:#1C1C1E;border-radius:28px 28px 0 0;padding:28px 24px 40px;display:flex;flex-direction:column;gap:22px;z-index:5">
+<div style="width:38px;height:5px;border-radius:3px;background:rgba(235,235,245,0.3);align-self:center"></div>
+<svg width="48" height="48" viewBox="0 0 24 24" fill="none" style="align-self:center"><path d="M2 8.5a16 16 0 0 1 20 0" stroke="#FF9F0A" stroke-width="1.9" stroke-linecap="round"></path><path d="M5.2 12.4a11 11 0 0 1 13.6 0M8.6 16.2a6 6 0 0 1 6.8 0" stroke="#FF9F0A" stroke-width="1.9" stroke-linecap="round"></path><circle cx="12" cy="20" r="1.7" fill="#FF9F0A"></circle></svg>
+<div style="display:flex;flex-direction:column;gap:12px;text-align:center"><h2 style="margin:0;font:700 26px/1.2 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.6px">Join the studio network?</h2><p style="margin:0;font:400 16px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.65);text-wrap:pretty">The code you scanned includes a network. Joining <span style="font-weight:600;color:#fff">PinPoint-Bay3</span> keeps the link stable and off the guest Wi-Fi.</p></div>
+<div style="border-radius:14px;background:rgba(120,120,128,0.18);overflow:hidden">
+<div style="display:flex;justify-content:space-between;padding:13px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="font:400 15px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Network</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace">PinPoint-Bay3</span></div>
+<div style="display:flex;justify-content:space-between;padding:13px 16px"><span style="font:400 15px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Internet</span><span style="font:600 15px/1.3 ui-monospace,Menlo,monospace">No — local only</span></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px"><div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Join network</div><div style="height:50px;border-radius:14px;color:#30D158;font:600 17px/50px -apple-system,sans-serif;text-align:center">Stay on current Wi-Fi</div></div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">B4</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Join the host network</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Offered when the pairing code carries a network, so the app removes the network problem instead of diagnosing it. The loss of internet is stated plainly, since that is the thing a user notices ten minutes later.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 20px 34px">
+<h1 style="margin:18px 4px 8px;font:700 32px/1.12 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.8px">Studio has part of this session already</h1>
+<p style="margin:0 4px 22px;font:400 15px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">It looks like the same range session. Nothing is merged until you say so.</p>
+<div style="display:flex;flex-direction:column;gap:14px;flex:1">
+<div style="border-radius:18px;background:#1C1C1E;border:2px solid #30D158;padding:20px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px"><div style="display:flex;flex-direction:column;gap:4px"><span style="font:600 18px/1.25 -apple-system,sans-serif">Wednesday range · 18:20</span><span style="font:400 14px/1.35 -apple-system,sans-serif;color:rgba(235,235,245,0.55)">Studio holds 29 shots from a launch monitor</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:7px 9px;border-radius:8px;background:rgba(48,209,88,0.16);color:#30D158;flex:none">LIKELY</span></div>
+<div style="display:flex;flex-direction:column;gap:8px"><div style="display:flex;justify-content:space-between"><span style="font:400 14px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Shot spacing matches</span><span style="font:600 14px/1.3 ui-monospace,Menlo,monospace">29 of 29</span></div><div style="display:flex;justify-content:space-between"><span style="font:400 14px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">Largest disagreement</span><span style="font:600 14px/1.3 ui-monospace,Menlo,monospace">41 ms</span></div></div>
+</div>
+<div style="border-radius:18px;background:#1C1C1E;border:1px solid rgba(84,84,88,0.55);padding:20px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px"><div style="display:flex;flex-direction:column;gap:4px"><span style="font:600 18px/1.25 -apple-system,sans-serif">Wednesday lesson · 16:05</span><span style="font:400 14px/1.35 -apple-system,sans-serif;color:rgba(235,235,245,0.55)">12 shots, face-on cameras</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:7px 9px;border-radius:8px;background:rgba(120,120,128,0.24);color:rgba(235,235,245,0.65);flex:none">UNLIKELY</span></div>
+</div>
+<div style="display:flex;gap:12px;align-items:flex-start;padding:16px 18px;border-radius:14px;background:rgba(255,159,10,0.1);border:1px solid rgba(255,159,10,0.22)"><svg width="20" height="20" viewBox="0 0 24 24" fill="#FF9F0A" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="12"></circle><path d="M12 6v8M12 16.4v1.6" stroke="#000" stroke-width="2.2" stroke-linecap="round"></path></svg><span style="font:400 14px/1.45 -apple-system,sans-serif;color:rgba(235,235,245,0.72)">Shots 30 to 41 have no launch monitor record. They will arrive as video only.</span></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;margin-top:18px"><div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Review the 41 shots</div><div style="height:50px;border-radius:14px;color:#30D158;font:600 17px/50px -apple-system,sans-serif;text-align:center">Send as a new session</div></div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">B5</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Reconcile before sending</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Candidate matches with the evidence for each, and no automatic merge. Coverage gaps are surfaced here rather than discovered in Studio, so nobody analyses a shot that has no sensor data behind it.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="height:798px;display:flex;flex-direction:column;padding:0 20px 34px">
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:26px;padding:0 4px 30px">
+<svg width="56" height="56" viewBox="0 0 24 24" fill="none"><path d="M2 8.5a16 16 0 0 1 20 0M5.2 12.4a11 11 0 0 1 13.6 0M8.6 16.2a6 6 0 0 1 6.8 0" stroke="rgba(235,235,245,0.3)" stroke-width="1.9" stroke-linecap="round"></path><circle cx="12" cy="20" r="1.7" fill="rgba(235,235,245,0.3)"></circle><path d="M3 3l18 18" stroke="#FF453A" stroke-width="2" stroke-linecap="round"></path></svg>
+<div style="display:flex;flex-direction:column;gap:12px"><h1 style="margin:0;font:700 30px/1.15 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.7px">iOS is blocking the local network</h1><p style="margin:0;font:400 16px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.65);text-wrap:pretty">Without it the app cannot reach a host on Wi-Fi. It has no effect on capture — you can record all day like this.</p></div>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden">
+<div style="display:flex;flex-direction:column;gap:4px;padding:16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><span style="font:600 16px/1.3 -apple-system,sans-serif">To fix it</span><span style="font:400 14.5px/1.5 -apple-system,sans-serif;color:rgba(235,235,245,0.62)">Settings — PinPointCapture — turn on Local Network, then come back.</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px"><span style="flex:1;font:400 16px/1.3 -apple-system,sans-serif;color:#30D158">Open Settings</span><svg width="8" height="14" viewBox="0 0 8 14" fill="none"><path d="M1.5 1.5L6.5 7l-5 5.5" stroke="rgba(235,235,245,0.32)" stroke-width="2" stroke-linecap="round"></path></svg></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px"><span style="font:600 13px/1 -apple-system,sans-serif;letter-spacing:0.5px;color:rgba(235,235,245,0.45)">OR CARRY ON WITHOUT IT</span>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden">
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:400 16px/1.3 -apple-system,sans-serif">Connect by cable</span><span style="font:400 13px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">Does not need this permission</span></div><svg width="8" height="14" viewBox="0 0 8 14" fill="none"><path d="M1.5 1.5L6.5 7l-5 5.5" stroke="rgba(235,235,245,0.32)" stroke-width="2" stroke-linecap="round"></path></svg></div>
+<div style="display:flex;align-items:center;gap:12px;padding:15px 16px"><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:400 16px/1.3 -apple-system,sans-serif">Capture on my own</span><span style="font:400 13px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">Send to Studio later</span></div><svg width="8" height="14" viewBox="0 0 8 14" fill="none"><path d="M1.5 1.5L6.5 7l-5 5.5" stroke="rgba(235,235,245,0.32)" stroke-width="2" stroke-linecap="round"></path></svg></div>
+</div>
+</div>
+</div>
+<div style="height:50px;border-radius:14px;background:#30D158;color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Try again</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">B6</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Local network refused</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">The failure that otherwise makes the app look permanently broken. It names the cause, gives the exact Settings path, and offers two routes that do not need the permission at all — so a refusal costs a golfer a network, not a session.</p></sc-if>
+</div>
+</div>
+
+</div>
+</section>
+
+<section id="flow-c" style="display:flex;flex-direction:column;gap:26px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;border-bottom:1px solid rgba(23,21,15,0.12);padding-bottom:14px">
+<span style="font:700 13px/1 ui-monospace,'SF Mono',Menlo,monospace;padding:7px 10px;border-radius:6px;background:#17150F;color:#fff">C</span>
+<h2 style="margin:0;font:600 24px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.5px">Capture, replay and the session</h2>
+<span style="font:400 15px/1.3 -apple-system,sans-serif;color:rgba(23,21,15,0.55)">Sketched at the same fidelity so the flow reads end to end, but less resolved than A and B.</span>
+</div>
+<div style="display:flex;gap:40px;flex-wrap:wrap;align-items:flex-start">
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;inset:0;background:linear-gradient(180deg,#1a1c1a,#0d0e0d)"></div>
+<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center"><span style="font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:0.8px;color:rgba(235,235,245,0.22)">LIVE PREVIEW · ARMED</span></div>
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="position:relative;height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center;z-index:5"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="position:relative;z-index:5;padding:10px 20px 0;display:flex;justify-content:space-between;align-items:center;gap:10px">
+<div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-radius:20px;background:rgba(48,209,88,0.18);border:1px solid rgba(48,209,88,0.4)"><div style="width:9px;height:9px;border-radius:5px;background:#30D158"></div><span style="font:600 14px/1 -apple-system,sans-serif;color:#30D158">Armed</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:9px 14px;border-radius:20px;background:rgba(28,28,30,0.7)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M2 8.5a16 16 0 0 1 20 0M5.2 12.4a11 11 0 0 1 13.6 0" stroke="#30D158" stroke-width="2.2" stroke-linecap="round"></path><circle cx="12" cy="18.5" r="1.9" fill="#30D158"></circle></svg><span style="font:600 14px/1 -apple-system,sans-serif">Bay 3</span></div>
+</div>
+<div style="position:absolute;top:150px;right:20px;z-index:5;display:flex;flex-direction:column;gap:1px;border-radius:12px;overflow:hidden;background:rgba(28,28,30,0.72);padding:12px 14px;min-width:132px">
+<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0"><span style="font:400 12px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">fps</span><span style="font:600 13px/1.3 ui-monospace,Menlo,monospace">149.6</span></div>
+<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0"><span style="font:400 12px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">buffer</span><span style="font:600 13px/1.3 ui-monospace,Menlo,monospace">10.0 s</span></div>
+<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0"><span style="font:400 12px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">sync</span><span style="font:600 13px/1.3 ui-monospace,Menlo,monospace;color:#30D158">0.4 ms</span></div>
+<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0"><span style="font:400 12px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">heat</span><span style="font:600 13px/1.3 ui-monospace,Menlo,monospace">nominal</span></div>
+</div>
+<div style="position:absolute;left:0;right:0;bottom:0;z-index:5;padding:22px 20px 38px;background:linear-gradient(180deg,rgba(0,0,0,0),rgba(0,0,0,0.72) 40%);display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:center;gap:14px">
+<div style="width:74px;height:74px;border-radius:12px;background:#26282a;border:1px solid rgba(255,255,255,0.14);display:flex;align-items:center;justify-content:center;flex:none"><span style="font:600 10px/1.3 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.35);text-align:center">LAST<br>SHOT</span></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:4px"><span style="font:600 17px/1.2 -apple-system,sans-serif">Shot 41 · 7 iron</span><span style="font:400 14px/1.3 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">12 s ago · sent, confirmed</span></div>
+<div style="width:48px;height:48px;border-radius:24px;background:rgba(120,120,128,0.32);display:flex;align-items:center;justify-content:center;flex:none"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M5 3l14 9-14 9z"></path></svg></div>
+</div>
+<div style="display:flex;gap:12px"><div style="flex:1;height:50px;border-radius:14px;background:rgba(120,120,128,0.32);color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center">Session · 41</div><div style="flex:1;height:50px;border-radius:14px;background:rgba(255,69,58,0.22);color:#FF453A;font:600 17px/50px -apple-system,sans-serif;text-align:center">Disarm</div></div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">C1</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Armed</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Readable from two metres away on a tripod: one green pill, one host chip, and the last shot with its sync state. The telemetry rail is small on purpose — reassurance for whoever wants it, ignorable for everyone else.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;inset:0;background:#000"></div>
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="position:relative;height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center;z-index:5"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="position:relative;z-index:5;padding:8px 20px 12px;display:flex;justify-content:space-between;align-items:center"><span style="font:600 17px/1 -apple-system,sans-serif;color:#30D158">Done</span><div style="display:flex;flex-direction:column;align-items:center;gap:2px"><span style="font:600 16px/1.1 -apple-system,sans-serif">Shot 41 · 7 iron</span><span style="font:400 12px/1.1 -apple-system,sans-serif;color:rgba(235,235,245,0.5)">still armed</span></div><span style="font:600 17px/1 -apple-system,sans-serif;color:#30D158">Compare</span></div>
+<div style="position:absolute;top:130px;left:0;right:0;height:430px;background:#111213;display:flex;align-items:center;justify-content:center"><span style="font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:0.8px;color:rgba(235,235,245,0.24)">FRAME AT IMPACT − 0.0067 s</span></div>
+<div style="position:absolute;top:560px;left:0;right:0;bottom:0;padding:20px 20px 34px;display:flex;flex-direction:column;gap:20px;z-index:5">
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="position:relative;height:44px;border-radius:8px;background:rgba(120,120,128,0.2);overflow:hidden">
+<div style="position:absolute;left:0;top:0;bottom:0;width:52%;background:rgba(48,209,88,0.14)"></div>
+<div style="position:absolute;left:52%;top:0;bottom:0;width:2px;background:#30D158"></div>
+<div style="position:absolute;left:24%;top:0;bottom:0;width:1px;background:rgba(235,235,245,0.35)"></div>
+</div>
+<div style="display:flex;justify-content:space-between"><span style="font:400 12px/1 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">TOP</span><span style="font:600 12px/1 ui-monospace,Menlo,monospace;color:#30D158">IMPACT 0.0000 s</span><span style="font:400 12px/1 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">+1.2 s</span></div>
+</div>
+<div style="display:flex;align-items:center;gap:10px">
+<div style="flex:1;height:54px;border-radius:13px;background:rgba(120,120,128,0.24);display:flex;align-items:center;justify-content:center;gap:6px"><svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M19 3L5 12l14 9z"></path></svg><span style="font:600 14px/1 ui-monospace,Menlo,monospace">−1</span></div>
+<div style="flex:none;width:64px;height:54px;border-radius:13px;background:rgba(120,120,128,0.24);display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M5 3l14 9-14 9z"></path></svg></div>
+<div style="flex:1;height:54px;border-radius:13px;background:rgba(120,120,128,0.24);display:flex;align-items:center;justify-content:center;gap:6px"><span style="font:600 14px/1 ui-monospace,Menlo,monospace">+1</span><svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M5 3l14 9-14 9z"></path></svg></div>
+<div style="flex:none;width:64px;height:54px;border-radius:13px;background:rgba(48,209,88,0.18);display:flex;align-items:center;justify-content:center"><span style="font:600 14px/1 ui-monospace,Menlo,monospace;color:#30D158">¼×</span></div>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+<div style="display:flex;gap:8px"><div style="width:48px;height:48px;border-radius:12px;background:rgba(48,209,88,0.18);display:flex;align-items:center;justify-content:center"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M3 21L21 3" stroke="#30D158" stroke-width="2.2" stroke-linecap="round"></path></svg></div><div style="width:48px;height:48px;border-radius:12px;background:rgba(120,120,128,0.24);display:flex;align-items:center;justify-content:center"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#fff" stroke-width="2.2"></circle></svg></div><div style="width:48px;height:48px;border-radius:12px;background:rgba(120,120,128,0.24);display:flex;align-items:center;justify-content:center"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 20c6-2 10-8 16-16" stroke="#fff" stroke-width="2.2" stroke-linecap="round"></path></svg></div></div>
+<div style="display:flex;align-items:center;gap:8px;padding:11px 14px;border-radius:12px;background:rgba(48,209,88,0.14)"><svg width="15" height="15" viewBox="0 0 24 24" fill="#30D158"><circle cx="12" cy="12" r="12"></circle><path d="M6.5 12.4l3.6 3.6 7-7.6" stroke="#000" stroke-width="2.4" fill="none" stroke-linecap="round"></path></svg><span style="font:600 13px/1 -apple-system,sans-serif;color:#30D158">In Studio</span></div>
+</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">C2</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Replay and markup</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">The timeline is in time, zeroed on impact, with the backswing anchor marked. Frame steps are big enough to hit in a glove. "Still armed" in the title bar is the promise that reviewing costs you nothing.</p></sc-if>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:14px;width:393px">
+<div style="position:relative;width:393px;height:852px;flex:none;background:#000;border-radius:54px;box-shadow:0 0 0 12px #17171a,0 0 0 13px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="position:absolute;inset:0;background:#000"></div>
+<div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);width:124px;height:35px;background:#000;border-radius:20px;z-index:6"></div>
+<div style="position:relative;height:54px;padding:16px 32px 0;display:flex;justify-content:space-between;align-items:center;z-index:5"><span style="font:600 16px/1 -apple-system,sans-serif;letter-spacing:0.3px">9:41</span><svg width="70" height="12" viewBox="0 0 70 12" fill="#fff"><rect x="0" y="7" width="3" height="5" rx="1"></rect><rect x="5" y="5" width="3" height="7" rx="1"></rect><rect x="10" y="3" width="3" height="9" rx="1"></rect><rect x="15" y="1" width="3" height="11" rx="1"></rect><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="13" height="5" rx="1.5"></rect><rect x="67.4" y="4.6" width="2" height="3.4" rx="1" fill-opacity="0.45"></rect></svg></div>
+<div style="position:relative;height:744px;display:flex;flex-direction:column;padding:0 20px 34px;z-index:5">
+<h1 style="margin:14px 4px 4px;font:700 32px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.8px">Wednesday range</h1>
+<p style="margin:0 4px 18px;font:400 15px/1.4 -apple-system,sans-serif;color:rgba(235,235,245,0.6)">41 shots · 18:20 to 19:36 · 12 still to send</p>
+<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:14px;background:rgba(48,209,88,0.1);border:1px solid rgba(48,209,88,0.2);margin-bottom:16px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" style="flex:none"><path d="M12 3v12M7 10.5l5 5 5-5M4 20h16" stroke="#30D158" stroke-width="2" stroke-linecap="round"></path></svg><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:600 15px/1.25 -apple-system,sans-serif">Sending to Bay 3</span><span style="font:400 13px/1.25 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.6)">shot 30 of 41 · 218 MB left</span></div><span style="font:600 15px/1 -apple-system,sans-serif;color:#30D158">Pause</span></div>
+<div style="border-radius:14px;background:#1C1C1E;overflow:hidden;flex:1">
+<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="width:50px;height:50px;border-radius:9px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:600 16px/1.2 -apple-system,sans-serif">41 · 7 iron</span><span style="font:400 13px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:36:02 · 3.0 s</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:6px 9px;border-radius:7px;background:rgba(48,209,88,0.16);color:#30D158">In Studio</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="width:50px;height:50px;border-radius:9px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:600 16px/1.2 -apple-system,sans-serif">40 · 7 iron</span><span style="font:400 13px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:35:14 · 3.0 s</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:6px 9px;border-radius:7px;background:rgba(48,209,88,0.16);color:#30D158">In Studio</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="width:50px;height:50px;border-radius:9px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:600 16px/1.2 -apple-system,sans-serif">39 · 7 iron</span><span style="font:400 13px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:34:41 · 3.0 s</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:6px 9px;border-radius:7px;background:rgba(10,132,255,0.18);color:#5AA9FF">Sending 61%</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="width:50px;height:50px;border-radius:9px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:600 16px/1.2 -apple-system,sans-serif">38 · practice swing</span><span style="font:400 13px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:33:58 · no impact</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:6px 9px;border-radius:7px;background:rgba(120,120,128,0.24);color:rgba(235,235,245,0.6)">On device</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="width:50px;height:50px;border-radius:9px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:600 16px/1.2 -apple-system,sans-serif">37 · 9 iron</span><span style="font:400 13px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:31:20 · 3.0 s</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:6px 9px;border-radius:7px;background:rgba(120,120,128,0.24);color:rgba(235,235,245,0.6)">On device</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:12px 14px"><div style="width:50px;height:50px;border-radius:9px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:600 16px/1.2 -apple-system,sans-serif">36 · 9 iron</span><span style="font:400 13px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:30:47 · 3.0 s</span></div><span style="font:600 12px/1 -apple-system,sans-serif;padding:6px 9px;border-radius:7px;background:rgba(120,120,128,0.24);color:rgba(235,235,245,0.6)">On device</span></div>
+</div>
+<div style="height:50px;border-radius:14px;background:rgba(120,120,128,0.24);color:#fff;font:600 17px/50px -apple-system,sans-serif;text-align:center;margin-top:16px">Export the whole session</div>
+</div>
+<div style="position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:138px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5);z-index:6"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">C3</span><span style="font:600 15px/1.2 -apple-system,sans-serif">Session library</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Per-shot sync state on every row, in three words rather than an icon: On device, Sending, In Studio. The device library is its own store, so "In Studio" means confirmed there — never merely uploaded.</p></sc-if>
+</div>
+</div>
+
+</div>
+</section>
+
+<section id="flow-d" style="display:flex;flex-direction:column;gap:26px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;border-bottom:1px solid rgba(23,21,15,0.12);padding-bottom:14px">
+<span style="font:700 13px/1 ui-monospace,'SF Mono',Menlo,monospace;padding:7px 10px;border-radius:6px;background:#17150F;color:#fff">D</span>
+<h2 style="margin:0;font:600 24px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.5px">iPad</h2>
+<span style="font:400 15px/1.3 -apple-system,sans-serif;color:rgba(23,21,15,0.55)">Same app, more room: the thing an iPad earns is capture and review at once.</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:14px;width:1194px;max-width:100%">
+<div style="position:relative;width:1194px;height:834px;background:#000;border-radius:32px;box-shadow:0 0 0 13px #17171a,0 0 0 14px #2e2e33,0 20px 44px rgba(0,0,0,0.3);overflow:hidden;color:#fff;font-family:-apple-system,'SF Pro Text','Helvetica Neue',sans-serif">
+<div style="height:30px;padding:0 26px;display:flex;justify-content:space-between;align-items:center;background:#0a0a0b"><span style="font:600 13px/1 -apple-system,sans-serif">9:41 Mon 21 Aug</span><div style="display:flex;align-items:center;gap:10px"><span style="font:600 12px/1 ui-monospace,Menlo,monospace;color:#30D158">ARMED</span><svg width="52" height="11" viewBox="0 0 70 12" fill="#fff"><path d="M27 3.8a8 8 0 0 1 9.6 0L31.8 10z"></path><rect x="46" y="2" width="20" height="9" rx="3" fill="none" stroke="#fff" stroke-opacity="0.45"></rect><rect x="48" y="4" width="15" height="5" rx="1.5"></rect></svg></div></div>
+<div style="height:804px;display:flex">
+<div style="flex:1.35;position:relative;background:linear-gradient(180deg,#1a1c1a,#0d0e0d);display:flex;flex-direction:column;justify-content:space-between;padding:22px">
+<div style="display:flex;justify-content:space-between;align-items:flex-start">
+<div style="display:flex;align-items:center;gap:9px;padding:10px 15px;border-radius:20px;background:rgba(48,209,88,0.18);border:1px solid rgba(48,209,88,0.4)"><div style="width:9px;height:9px;border-radius:5px;background:#30D158"></div><span style="font:600 14px/1 -apple-system,sans-serif;color:#30D158">Armed · Bay 3 connected</span></div>
+<div style="display:flex;gap:14px;padding:11px 16px;border-radius:12px;background:rgba(28,28,30,0.7)"><span style="font:600 13px/1 ui-monospace,Menlo,monospace">149.6 fps</span><span style="font:600 13px/1 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">|</span><span style="font:600 13px/1 ui-monospace,Menlo,monospace">sync 0.4 ms</span><span style="font:600 13px/1 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">|</span><span style="font:600 13px/1 ui-monospace,Menlo,monospace">nominal</span></div>
+</div>
+<div style="align-self:center;font:600 12px/1 ui-monospace,Menlo,monospace;letter-spacing:0.8px;color:rgba(235,235,245,0.22)">LIVE PREVIEW · DTL · RIGHT-HANDED</div>
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:14px;background:rgba(28,28,30,0.72)"><span style="font:600 15px/1 -apple-system,sans-serif">7 iron</span><span style="font:600 15px/1 -apple-system,sans-serif;color:#30D158">Change</span></div>
+<div style="display:flex;gap:12px"><div style="padding:0 22px;height:48px;border-radius:13px;background:rgba(120,120,128,0.3);font:600 16px/48px -apple-system,sans-serif">Framing check</div><div style="padding:0 22px;height:48px;border-radius:13px;background:rgba(255,69,58,0.22);color:#FF453A;font:600 16px/48px -apple-system,sans-serif">Disarm</div></div>
+</div>
+</div>
+<div style="flex:1;background:#000;border-left:0.5px solid rgba(84,84,88,0.6);display:flex;flex-direction:column">
+<div style="padding:18px 22px 12px;display:flex;justify-content:space-between;align-items:baseline"><span style="font:700 24px/1.1 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.5px">Shot 41</span><span style="font:600 15px/1 -apple-system,sans-serif;color:#30D158">Compare</span></div>
+<div style="margin:0 22px;height:270px;border-radius:14px;background:#111213;display:flex;align-items:center;justify-content:center"><span style="font:600 11px/1 ui-monospace,Menlo,monospace;letter-spacing:0.8px;color:rgba(235,235,245,0.24)">IMPACT − 0.0067 s</span></div>
+<div style="padding:16px 22px 8px;display:flex;flex-direction:column;gap:8px">
+<div style="position:relative;height:36px;border-radius:8px;background:rgba(120,120,128,0.2);overflow:hidden"><div style="position:absolute;left:0;top:0;bottom:0;width:52%;background:rgba(48,209,88,0.14)"></div><div style="position:absolute;left:52%;top:0;bottom:0;width:2px;background:#30D158"></div><div style="position:absolute;left:24%;top:0;bottom:0;width:1px;background:rgba(235,235,245,0.35)"></div></div>
+<div style="display:flex;justify-content:space-between"><span style="font:400 11px/1 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">TOP</span><span style="font:600 11px/1 ui-monospace,Menlo,monospace;color:#30D158">IMPACT</span><span style="font:400 11px/1 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">+1.2 s</span></div>
+</div>
+<div style="padding:8px 22px 14px;display:flex;gap:10px"><div style="flex:1;height:46px;border-radius:12px;background:rgba(120,120,128,0.24);font:600 14px/46px ui-monospace,Menlo,monospace;text-align:center">−1</div><div style="flex:none;width:58px;height:46px;border-radius:12px;background:rgba(120,120,128,0.24);display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M5 3l14 9-14 9z"></path></svg></div><div style="flex:1;height:46px;border-radius:12px;background:rgba(120,120,128,0.24);font:600 14px/46px ui-monospace,Menlo,monospace;text-align:center">+1</div><div style="flex:none;width:58px;height:46px;border-radius:12px;background:rgba(48,209,88,0.18);color:#30D158;font:600 14px/46px ui-monospace,Menlo,monospace;text-align:center">¼×</div></div>
+<div style="flex:1;border-top:0.5px solid rgba(84,84,88,0.6);overflow:hidden">
+<div style="display:flex;align-items:center;gap:12px;padding:11px 22px;border-bottom:0.5px solid rgba(84,84,88,0.6);background:rgba(48,209,88,0.07)"><div style="width:44px;height:44px;border-radius:8px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:600 15px/1.2 -apple-system,sans-serif">41 · 7 iron</span><span style="font:400 12px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:36:02</span></div><span style="font:600 11px/1 -apple-system,sans-serif;padding:6px 8px;border-radius:6px;background:rgba(48,209,88,0.16);color:#30D158">In Studio</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:11px 22px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="width:44px;height:44px;border-radius:8px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:600 15px/1.2 -apple-system,sans-serif">40 · 7 iron</span><span style="font:400 12px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:35:14</span></div><span style="font:600 11px/1 -apple-system,sans-serif;padding:6px 8px;border-radius:6px;background:rgba(48,209,88,0.16);color:#30D158">In Studio</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:11px 22px;border-bottom:0.5px solid rgba(84,84,88,0.6)"><div style="width:44px;height:44px;border-radius:8px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:600 15px/1.2 -apple-system,sans-serif">39 · 7 iron</span><span style="font:400 12px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:34:41</span></div><span style="font:600 11px/1 -apple-system,sans-serif;padding:6px 8px;border-radius:6px;background:rgba(10,132,255,0.18);color:#5AA9FF">Sending</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:11px 22px"><div style="width:44px;height:44px;border-radius:8px;background:#26282a;flex:none"></div><div style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:600 15px/1.2 -apple-system,sans-serif">38 · practice swing</span><span style="font:400 12px/1.2 ui-monospace,Menlo,monospace;color:rgba(235,235,245,0.5)">19:33:58</span></div><span style="font:600 11px/1 -apple-system,sans-serif;padding:6px 8px;border-radius:6px;background:rgba(120,120,128,0.24);color:rgba(235,235,245,0.6)">On device</span></div>
+</div>
+</div>
+</div>
+<div style="position:absolute;bottom:7px;left:50%;transform:translateX(-50%);width:230px;height:5px;border-radius:3px;background:rgba(255,255,255,0.5)"></div>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:baseline;gap:9px"><span style="font:700 11px/1 ui-monospace,Menlo,monospace;padding:4px 7px;border-radius:5px;background:rgba(23,21,15,0.08)">D1</span><span style="font:600 15px/1.2 -apple-system,sans-serif">iPad, armed and reviewing</span></div>
+<sc-if value="{{ showRationale }}" hint-placeholder-val="{{ true }}"><p style="margin:0;font:400 13.5px/1.6 -apple-system,sans-serif;color:rgba(23,21,15,0.6);text-wrap:pretty">Landscape, permanent two-pane: live capture left, review and shot list right. Onboarding and pairing are the same screens presented as centred sheets rather than a redesign. An iPad on a tripod is usually further away, so the status line runs across the top at a size you can read from the mat.</p></sc-if>
+</div>
+</div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:14px;max-width:820px;border-top:1px solid rgba(23,21,15,0.12);padding-top:26px">
+<h2 style="margin:0;font:600 20px/1.2 -apple-system,'SF Pro Display',sans-serif;letter-spacing:-0.4px">Where I would go next</h2>
+<p style="margin:0;font:400 15px/1.65 -apple-system,sans-serif;color:rgba(23,21,15,0.7);text-wrap:pretty">The obvious gaps, in the order I would close them: the markup tools as a real interaction rather than three buttons; two-shot comparison, which is the most-used review feature and the least designed here; review mode for App Review; the diagnostic bundle; and the sensor pairing flow once IMU lands. Placement and framing would both benefit from real illustration.</p>
+<p style="margin:0;font:400 15px/1.65 -apple-system,sans-serif;color:rgba(23,21,15,0.55);text-wrap:pretty">Easy things to ask for: a light-mode variant of the non-camera screens · onboarding condensed to four screens · a warmer, less clinical treatment of the telemetry · the whole onboarding flow as a tappable prototype.</p>
+</section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showRationale&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Review&quot;},&quot;hostName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Bay 3 — Mac Studio&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Review&quot;}}">
+class Component extends DCLogic {
+  state = { conn: 'connected' };
+  renderVals() {
+    const conn = this.state.conn;
+    const model = {
+      connected: {
+        title: 'Connected',
+        color: '#30D158',
+        sub: 'PinPoint Studio 0.9.4 · session started 18:20',
+        note: 'Every shot is reaching Studio as you hit it.',
+        action: 'Disconnect',
+        rows: [
+          { k: 'Clock offset', v: '−3.184 ms ± 0.21' },
+          { k: 'Drift', v: '18 ppm, filtered' },
+          { k: 'Checked on last impact', v: '0.4 ms' },
+          { k: 'Waiting to send', v: 'nothing' },
+          { k: 'Temperature', v: 'nominal' }
+        ]
+      },
+      weak: {
+        title: 'Connected, slowly',
+        color: '#FF9F0A',
+        sub: 'Guest Wi-Fi · 2.4 GHz · shared',
+        note: 'Shots are still being correlated the moment you hit them. The video is queueing behind the network.',
+        action: 'Send over a cable instead',
+        rows: [
+          { k: 'Clock offset', v: '−3.20 ms ± 1.9' },
+          { k: 'Checked on last impact', v: '1.9 ms' },
+          { k: 'Waiting to send', v: '3 shots · 71 MB' },
+          { k: 'Throughput', v: '4.1 Mbit/s' },
+          { k: 'Temperature', v: 'fair' }
+        ]
+      },
+      lost: {
+        title: 'Host is gone',
+        color: '#FF453A',
+        sub: 'Last seen 14:38:12 · 6 min ago',
+        note: 'Capture never stops for this. Keep hitting — the shots are safe here and will go across on their own when the host is back.',
+        action: 'Find the host again',
+        rows: [
+          { k: 'Capture', v: 'still armed' },
+          { k: 'Shots since the drop', v: '6' },
+          { k: 'Waiting to send', v: '6 shots · 118 MB' },
+          { k: 'Retrying', v: 'every 2 s' },
+          { k: 'Storage left', v: '38 sessions' }
+        ]
+      },
+      back: {
+        title: 'Catching up',
+        color: '#5AA9FF',
+        sub: 'Reconnected 14:44:03 · clocks re-matched',
+        note: 'Twenty fresh exchanges before anything is sent, so the shots captured during the gap land on the right timeline.',
+        action: 'Pause sending',
+        rows: [
+          { k: 'Clock offset', v: '−3.191 ms ± 0.24' },
+          { k: 'Sending', v: 'shot 3 of 6 · 61%' },
+          { k: 'Gap reported to host', v: '14:38:12 → 14:44:03' },
+          { k: 'Shots in the gap', v: '6, all retained' },
+          { k: 'Temperature', v: 'nominal' }
+        ]
+      }
+    };
+    const cur = model[conn];
+    const tabs = [
+      { id: 'connected', label: 'Connected' },
+      { id: 'weak', label: 'Weak' },
+      { id: 'lost', label: 'Lost' },
+      { id: 'back', label: 'Back' }
+    ].map(t => ({
+      label: t.label,
+      pick: () => this.setState({ conn: t.id }),
+      style: 'flex:1;text-align:center;padding:8px 4px;border-radius:8px;cursor:pointer;font:600 13.5px/1.2 -apple-system,sans-serif;color:' +
+        (conn === t.id ? '#fff' : 'rgba(235,235,245,0.6)') +
+        ';background:' + (conn === t.id ? 'rgba(120,120,128,0.5)' : 'transparent')
+    }));
+    return {
+      showRationale: this.props.showRationale ?? true,
+      hostName: this.props.hostName ?? 'Bay 3 — Mac Studio',
+      connTabs: tabs,
+      connTitle: cur.title,
+      connColor: cur.color,
+      connSub: cur.sub,
+      connNote: cur.note,
+      connRows: cur.rows,
+      connAction: cur.action
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "iPhone17,3": { "marketingName": "iPhone 16" },
+  "iPhone17,4": { "marketingName": "iPhone 16 Plus" },
+  "iPhone17,1": { "marketingName": "iPhone 16 Pro" },
+  "iPhone17,2": { "marketingName": "iPhone 16 Pro Max" },
+  "iPhone16,1": { "marketingName": "iPhone 15 Pro" },
+  "iPhone16,2": { "marketingName": "iPhone 15 Pro Max" },
+  "iPhone15,4": { "marketingName": "iPhone 15" },
+  "iPhone15,5": { "marketingName": "iPhone 15 Plus" },
+  "iPad16,3": { "marketingName": "iPad Pro 11-inch (M4)" },
+  "iPad16,5": { "marketingName": "iPad Pro 13-inch (M4)" },
+  "iPad14,8": { "marketingName": "iPad Air 11-inch (M2)" },
+  "arm64": { "marketingName": "Simulator" },
+  "x86_64": { "marketingName": "Simulator" }
+}
