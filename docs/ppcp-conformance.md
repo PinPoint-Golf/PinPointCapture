@@ -8,9 +8,9 @@
 | Role | `capture` |
 | Against | `PPCP-CORE` revision 9, `PPCP-MSG`, `PPCP-ENC`, `PPCP-CONF` 1.0; `PPCP-RV` revision 8 |
 | Companion | [`libppcp/docs/conformance/matrix.md`](https://github.com/PinPoint-Golf/libppcp) — the compliance record this file feeds |
-| Status | **In progress.** Session S2: **D1 reworked for erratum E1**, **D2 landed** (declaration from the real capture stack, and the peer engine over `ppcp_peer`), **D3 landed** (the session store writes a `PPCPBNDL` through `ppcp_bundle_writer`). Nothing is deferred on `libppcp` any longer — see §5. |
+| Status | **In progress.** Session S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
 | Depends on | `libppcp` — MIT, consumed as a SwiftPM package (plan A5), product `CPPCP`. Path `../../../libppcp` during co-development; `https://github.com/PinPoint-Golf/libppcp.git` once tagged. |
-| Date | 22 August 2026 (S2) |
+| Date | 22 August 2026 (S3, wave 1) |
 
 ---
 
@@ -59,12 +59,21 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | CT-I19 | injected | every Source declares timing, geometry and intrinsics | D2 | — | — | pass (own half) |
 | CT-I22 | static | offset present iff `nominal_frame_start`; a defaulted zero is not producible | D2 | — | — | pass |
 | CT-I28 | static | no self-test, no `measured`; an onboarding sample is `cold_sample` | D2 | — | — | pass |
-| CT-I31 | static | provenance on offset, readout **and `AchievedFrames.exposure_ns`** | D2, D4 | — | — | impl |
+| CT-I31 | static | provenance on offset, readout **and `AchievedFrames.exposure_ns`** | D2, D4 | — | — | pass |
 | CT-I34 | fixture | idempotent re-import; identity is `Capture.id` by session and peer | D3 | — | — | pass |
-| CT-S4 (1) | injected | the zero-host path end to end, including bundle write and read | D3, D4, D5 | — | — | impl (bundle half passes) |
+| CT-I2 | fixture | no sample's time is derived from its index | D4 | — | — | pass (own half) |
+| CT-I10 | paired | `absent` appears only where the owner asserted it | D4 | — | — | pass (owner half) |
+| CT-I11 | fixture | gaps explicit, never spanned, and only on `continuous` streams | D4 | — | — | pass |
+| CT-I17 | injected | see CT-S1 | D4, L13 | — | — | impl |
+| CT-I27 | static | exactly one anchor key; `{stream: true}` refused on `shot_windowed` | D4 | — | — | pass |
+| CT-I30 | paired | announce carries summary only; `payload_begin` carries the series; locked series are scalars | D4 | — | — | pass (own half) |
+| CT-I36 | fixture | announced segments and gaps account for the whole open interval | D4 | — | — | pass |
+| CT-I36a | paired | preview sheds as `absent`/`not_retained`, never `pending`, never bundled | D4 | — | — | pass (own half) |
+| CT-S1 (6) | injected | the scalar form and an equivalent constant array convert identically | D4 | — | — | pass |
+| CT-S4 (1) | injected | the zero-host path end to end, including bundle write and read | D3, D4, D5 | — | — | impl (bundle half passes, with a real Capture) |
 | CT-S7 (1) | injected | every emitted timing constant carries a provenance; unmeasured is `assumed` | D2 | — | — | pass |
 | CT-S7 (2) | injected | a device-profile entry with no rig measurement cannot emit `measured` | D2 | — | — | pass |
-| CT-S7 (3) | injected | `exposure_provenance` honest: `per_frame` only where the platform attaches it | D4 | — | — | — |
+| CT-S7 (3) | injected | `exposure_provenance` honest: `per_frame` only where the platform attaches it | D4 | — | — | pass |
 | CT-S7 (4) | injected | converted instants differ by exactly a synthetic peer's declared offset | D4 | — | — | blocked: `ppcp-sim` (L13) |
 
 ### What each state rests on
@@ -112,10 +121,66 @@ A profile with no self-test carries no `measured` block. Three refusals are asse
 
 ⚠ `MeasuredCapability` had no `method`, no `duration_ns` and no `observed_at` before S2. It carried a `Date`. Three mandatory protocol fields were absent from a type whose comment already said "a measurement taken from cold is not a measurement" — REQ-PORT-11's "views over the library's structs" made that visible, which is the point of the requirement.
 
-**CT-I31 — `impl`.** Reproduce with `make test-core`.
+**CT-I31 — `pass — make test-core` and `make test-app`.**
 
-- *Passing*: every `frame_start_to_exposure_offset_ns` and every `rolling_shutter.readout_ns` this implementation emits carries a provenance, and every one is `assumed` (plan A12 — no model has been through an LED timecode rig, REQ-TEST-1/2).
-- *Not yet*: CT-I31's third clause is `AchievedFrames.exposure_ns`, which does not exist until D4 puts a clip on the wire. The cell stays `impl` until it does.
+- Every `frame_start_to_exposure_offset_ns` and every `rolling_shutter.readout_ns` this implementation emits carries a provenance, and every one is `assumed` (plan A12 — no model has been through an LED timecode rig, REQ-TEST-1/2).
+- The third clause, `AchievedFrames.exposure_ns`, closed with D4. `ppcp_achieved_frames_set_exposure` takes the provenance as a **parameter**, so the pair cannot be split; and one layer up, `ExposureObservation` has one case per honest answer with the wire form built into the case, so `per_frame` with a scalar is not typeable. See CT-S7 (3).
+
+### D4 — the capture path
+
+Every row below reproduces with **`make test-core`** unless it says otherwise;
+the file is `Packages/Core/Tests/CaptureCoreTests/CapturePathTests.swift`, and the
+platform half is `Tests/CapturePathAppTests.swift` under `make test-app`.
+
+**CT-I2 — `pass` for this peer's own half — `make test-core`.**
+The ring's frame timeline is the timestamps the platform stamped, carried through extraction unchanged, and the realised rate is computed from the **span between first and last**, never from a count over an interval and never from an index (5.8e: "frames drop; indices lie"). The fixture puts frames on a 6,666,666 ns grid rather than on millisecond boundaries, because a fixture on round numbers hides exactly the arithmetic that a real 1/150 s interval exposes; it also puts every fragment's frames on **one** grid, since the sensor does not restart at a fragment boundary. ⚠ The cell is not a whole `pass`: `CONF` gives the method as *fixture* and the fixture a third party would replay is the interop row.
+
+**CT-I10 — `pass` for the owner half — `make test-core`.**
+`CORE` 8.4b: a request for an interval the ring no longer holds is answered with `completeness: absent` and `absent_reason: outside_buffer`. Asserted as a **result and not a failure** — `FragmentRing.extract` has no error case for a miss, which is `PPCP-MSG` 7.3b ("an absent capture is a result, not a failure") made structural. The half this column cannot hold is the receiver's: CT-I10's assertion is that a *receiver* does not infer `absent` from a withheld payload, and that is PinPointStudio's.
+
+**CT-I11 — `pass — make test-core`.**
+Both halves, and the negative one is against the library.
+
+- *Positive*: a 250 ms hole between two retained fragments — a recording interruption, not an eviction — is found by extraction and reported. On a `continuous` Stream it becomes a `gaps` entry; on `shot_windowed` it becomes the reason the Capture is `partial` and is reported no other way.
+- *Negative*: a Capture carrying gaps is handed to `ppcp_capture_validate_in_stream` against a real `shot_windowed` `ppcp_stream` and **refused**. The same Capture validates in isolation, which is the point: the rule needs the Stream, and asserting it without one would assert nothing.
+
+**CT-I27 — `pass — make test-core`.**
+Zero keys and two keys are not constructible: `libppcp` has three constructors and one tagged union, and `PpcpCaptureAnchor` is the same shape one layer up. The second assertion — `{stream: true}` refused on a `shot_windowed` Stream — is asserted against `ppcp_capture_validate_in_stream` with a real `ppcp_stream`, not against our own idea of it. ⚠ See F-D4-1: the *engine* does not apply that check at origination although it holds the stream table, so this row passes on a validator a peer must remember to call.
+
+**CT-I17 / CT-S1 (6) — assertion 6 `pass`, the row `impl`.**
+"The scalar form and an equivalent constant array produce identical canonical instants." Asserted through `ppcp_achieved_frames_canonical_at` for a `nominal_frame_start` profile with a 120,000 ns offset, over both forms, frame by frame. ⚠ **This is the path that ships**: the application locks exposure (REQ-OPT-3), so the scalar form is what a real clip carries, and `CONF` says in as many words that "a conversion test that exercises only the varying-exposure path does not test what ships". Assertions 1–5 need the synthetic peer of L13 and are CT-S7 (4)'s block, not this one's.
+
+**CT-I30 — `pass` for this peer's own half — `make test-core`.**
+Three assertions, and the encoded size is measured rather than asserted by inspection.
+
+- *The announce carries no per-frame series*: structural. `ppcp_capture` has **no `achieved_frames` member at all**, so there is nowhere to put one, and `PpcpCaptureRecord` has none either.
+- *Measured*: a 3 s clip at 150 fps carries 450 frame timestamps — over 3 KB of int64 before anything else — and its `capture_announce` frame is under 800 bytes. `payload_begin` carries the series, through `ppcp_peer_payload_begin`'s `frames` parameter, which is the only entry point in the library that takes one.
+- *Locked series are scalars, including `intrinsics`*: the encoded `AchievedFrames` with `.constant` exposure and `.constant` intrinsics is smaller than the equivalent constant arrays, and `ENC` 4.1d's first-element rule for `intrinsics` is the library's.
+
+⚠ The cell is not a whole `pass`: `CONF` gives the method as *paired*, and the third assertion — `capture_update` carries `achieved_frames` **only** for a Capture whose `transfer` is `failed` — needs a peer on the other end. It arrives with D6.
+
+**CT-I36 — `pass — make test-core`.** All four cases.
+
+- **(a) a removed middle segment is a defect** — ⛔ *not producible*. `StreamCoverage` never takes a segment's start; it is where the last one ended. So the hole the test creates by hand cannot be created by this implementation, and 5.14e's no-overlap rule comes free from the same fact. A segment ending before the last one is refused rather than silently overlapping.
+- **(b) an `absent` segment satisfies coverage** — a segment with an `interval` and `absent_reason: storage_full` between two present ones leaves nothing unaccounted. The interval is mandatory there (5.14d) and the library refuses a segment without one.
+- **(c) truncation in a `partial` Session is not a defect** and **(d) the same truncation in a `complete` one is** — the same recorder, the same unaccounted three seconds, and `close(completeness:)` writes the first and refuses the second. ⚠ This is the only place the two cases differ, which is why they are one test.
+
+**CT-I36a — `pass` for this peer's own half — `make test-core`.**
+5.11j's three assertions. Shed preview intervals are `absent` with `not_retained` and carry **no gaps** (5.11c3: "deliberate non-retention is never a gap"); a present preview segment with `transfer: pending` is refused by `StreamCoverage` *and* by `ppcp_capture_validate_in_stream` *and* by `ppcp_peer_capture_announce`, which takes an `is_preview` flag for that purpose; and `SessionBundleWriter.announce(_:isPreview:)` refuses one outright, so none can reach a bundle. ⚠ The cell is not a whole `pass`: `CONF` gives the method as *paired under induced contention*, and there is no counterpart yet.
+
+**CT-S7 (3) — `pass — make test-core` and `make test-app`.**
+"`per_frame` only where the platform attaches it" (5.8h). ⛔ Made unconstructible rather than checked: `ExposureObservation` has one case per honest provenance and **each case carries the wire form that goes with it**, so `per_frame` with a scalar — the way a peer over-claims — cannot be typed at all.
+
+⚠ **What was actually checked on the platform, and it is written down in `Sources/Platform/Capture/FrameTimeline.swift` so it is not re-decided optimistically.** The documented `kCMSampleBufferAttachmentKey_*` set carries no exposure duration and no ISO. `AVCaptureDevice.exposureDuration` and `.iso` are *device* properties read at the moment the frame arrives, which is `sampled` by 5.8's own definition. `AVCapturePhotoOutput` attaching exposure to photo metadata is not evidence about the video path. So this application emits `locked_constant` with the scalar form under the REQ-OPT-3 lock, `sampled` with an array without it, and **never** `per_frame`. Intrinsics get the opposite treatment because `kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix` really is a per-frame attachment — the difference is what the platform does, not a policy.
+
+**§5.15a — `pass — make test-core`.** Not a `CT-*` row, and asserted anyway because it is the clause easiest to breach by accident.
+
+> **(5.15a) MUST NOT** A device state-machine name (`cold`, `warm`, `armed` or any equivalent) cross the wire.
+
+A session is recorded with a `readiness` for every one of `CaptureState`'s three cases, and the **encoded bytes** are searched for each name. Asserting on the API would only say this application did not choose to send one today; searching the bundle says none is there. `ReadinessMeasurement.measuring(_:)` is one-way by design — a receiver that could recover `armed` from a `Readiness` would have the state name back — and `warm` and `armed` produce the *same* measurement, because the question 5.15 asks is about the next shot and not about this peer's bookkeeping.
+
+**§7.3d — `pass — make test-core` and `make test-app`.**
+The interruption reaches the bundle as a frame, with its gap as a half-open interval in the Stream's timebase. ⛔ Recording the gap is the half of 7.3d that gets dropped — recovering is visible in the UI and everybody implements it, while an interruption that re-armed cleanly and said nothing leaves a hole a consumer reads as a dropout (5.14b). The platform mapping from `AVCaptureSessionInterruptionReasonKey` onto §7.3d's three names is asserted under `make test-app`; ⛔ the platform's own reason code does not cross the wire, for the same reason 5.15a keeps a state name off it.
 
 **CT-S7 (1) and (2) — `pass — make test-core`.**
 Assertion 2 is tested the way `CONF` asks — "by supplying a device-profile entry with no rig measurement and asserting the emitted provenance is not `measured`" — and is **structural rather than promised**. `DeviceProfiles.json` expresses an unmeasured readout as a *rule* (a fraction of the profile's nominal frame interval), not as a number, and a rule can only produce `assumed`. A placeholder written as a number is indistinguishable from a rig number once it is in the file, and the next person to edit it cannot tell which they are looking at.
@@ -135,7 +200,9 @@ The zero-host path's *recording* is done and asserted: a hostless `session_open`
 
 Also asserted, each a writer refusal rather than a check of ours: `ENC` 7c (a `payload_*` frame before `session_manifest`), 7g (a `link_bind` frame in a bundle — exercised by making the peer really queue one), 7e (`finish` emits no bytes and refuses a further append), and 7d's three-way completeness answer, including the middle row — an unasserted, truncated bundle reads as `partial` and is never upgraded (I10).
 
-What is left for the row is the rest of the zero-host path: minting a Shot (`authority: device`, D5) and putting a real clip in a Capture (D4). Those are `libppcp` L10 and this repository's D4/D5, not a block.
+**Since D4 the bundle carries a real Capture.** The clip comes out of the REQ-BUF-1 ring rather than out of a fixture: a shot-anchored Capture with its realised `interval`, `completeness`, and an `achieved_summary` carrying frame count, drops, realised rate in millihertz, the exposure and ISO `{min,max,median}` and a thermal timeline — and a `payload_begin` carrying the `AchievedFrames` behind it. A `continuous` `metadata` Stream is open alongside it and accounts for its whole interval (I36), so the Session can honestly assert `complete`.
+
+What is left for the row is minting a Shot (`authority: device`) — `libppcp` L10 and this repository's **D5**. Not a block.
 
 ⚠ **A bug this round trip caught.** `SessionStore.readHeader` handed `ppcp_bundle_header_parse` the bytes *after* the eight magic bytes and demanded 24 in total. `PPCP_BUNDLE_HEADER_BYTES` is 16 and **includes** the magic, which the library's own parser starts by comparing — so the check refused every conformant bundle. It had passed review twice. Only writing one and reading it back found it, which is the argument for the round trip over a golden byte string.
 
@@ -213,6 +280,26 @@ The parameter is documented as the channel the stream arrived on "as far as the 
 
 ⚠ This application's listener therefore still assembles links in its own actor (`Sources/Platform/Network/PpcpTransport.swift`) rather than through `ppcp_link_binder`. The decode is now the library's — `ppcp_msg_decode` rather than a hand-written CBOR walk — but the link table is not. **Unfinished, and named as such**, not claimed.
 
+### Raised from D4
+
+**F-D4-1 — `ppcp_peer_capture_announce` does not apply `ppcp_capture_validate_in_stream`, although the engine holds the stream table.**
+`libppcp` has the rule and has the data, and does not join them. `ppcp_peer` keeps `p->streams` — it has to, because it originated every `stream_open` — and `ppcp_capture_validate_in_stream` is the function that enforces CT-I27's second assertion (`{stream: true}` refused on a `shot_windowed` Stream) and CT-I11's negative half (gaps only on `continuous`). `ppcp_peer_capture_announce` calls neither: it validates the Capture in isolation and queues the frame. So a conformant-looking peer can originate a stream-anchored Capture on a `shot_windowed` Stream it opened itself, or a Capture carrying gaps on one, and nothing stops it until a receiver checks.
+
+⚠ This matters more than a missing assertion, because the two rules are *stream-relative* and a producer is the only party that can be sure which Stream it meant. The library already refuses the analogous preview violation here (8.1i, through `ppcp_transfer_observe_announce`), which is the shape the fix should take. This repository's own suite asserts both rules by calling the validator directly — but calling it is a thing an implementer must remember, which is what CT-I27 and CT-I11 exist to remove. Reported for the orchestrator.
+
+**F-D4-2 — an `absent` shot-anchored Capture cannot say which interval it failed to cover.**
+`CORE` §5.14 makes `interval` "absent when `completeness: absent` — **except** on a stream-anchored Capture, where it is always mandatory", and 5.14d gives the reason for the exception in words that apply equally to the case it excludes: "an `absent` segment *with* an interval is how a peer states that a named span was not recorded".
+
+A device answering a `capture_request` with `outside_buffer` (8.4b) is in exactly that position and may not say it. Where the announce answers a request the host can recover the span from its own `pre_ns`/`post_ns`, so the loss is small. Where the announce is **unsolicited** — a hostless peer minting its own Shot and finding the clip already evicted, which is precisely v1's path — there is no request to recover it from, and the Capture states that *something* around a `t0` was not retained without saying what. The asymmetry looks like an oversight rather than a decision: the reasoning §5.14d gives for segments is the reasoning against the restriction everywhere.
+
+**F-D4-3 — `AchievedSummary` is defined in camera words but §5.11b requires it on every `continuous` Stream.**
+`frame_count`, `realised_rate_mhz`, `exposure_ns` and `iso` are the vocabulary of a camera Capture. §5.11b makes every `continuous` Stream — including `metadata`, `imu`, `event` and `wrist` — realise itself as stream-anchored Captures, and 5.11k assumes an `AchievedSummary` on each segment. For an attitude-and-gravity `metadata` Stream at 100 Hz there is no frame, and this implementation reports the **sample** count in `frame_count` and the realised sample rate in `realised_rate_mhz` because those are the only fields there are. That is a reasonable reading and it is a *reading*: two implementations could differ on whether a non-camera segment carries a summary at all. One sentence in §5.8 saying `frame_count` means "samples in the Capture, whatever a sample is for this Stream kind" would settle it.
+
+**F-D4-4 — two editorial inconsistencies in `CONF`, both harmless and both worth a line.**
+CT-S1 closes with "Assertion 2 is the whole test. The other four are why it is worth writing carefully" over **six** assertions — 5 and 6 were added without updating the sentence. And CT-S4 assertion 1 lists `arm` among the steps of the zero-host path end to end, which sits against `CORE` 7.3b's "records no `arm` or `disarm`"; the two are reconcilable (7.3b forbids recording the *message*, assertion 1 lists lifecycle steps) but a reader meeting them cold has to do that work. `CONF` §5b2's adjacent-MUST sweep is the right home for the second.
+
+⚠ **Not a finding, a naming note.** `I36a` is not an invariant. `CONF` §3 says so — "thirty-eight invariants, thirty-nine tests — I36 carries two, because the coverage rule and the preview-shedding rule fail in different ways" — so CT-I36 and CT-I36a both test **I36**. The D4 brief and this file's earlier drafts both wrote "I36a" as though it were one.
+
 ---
 
 ## 5. What is deferred, and on what
@@ -222,8 +309,11 @@ The parameter is documented as the channel the stream arrived on "as far as the 
 | Work | Waiting on | Where it sits |
 |---|---|---|
 | CT-S7 (4) — a converted instant against a peer that declares a **non-zero** measured offset | `ppcp-sim` (**L13**) | Nothing to write yet. `CONF` §2c: an unmeasured zero is correct relative to any other implementation that also declared zero. |
-| CT-I31's third clause — provenance on `AchievedFrames.exposure_ns` | this repository's **D4** | There is no clip on the wire yet. |
 | CT-I19's consumer half (CT-S3) | this repository's **D6** | The engine exists; meeting a *different* peer's declaration does not. |
+| CT-S1 assertions 1–5 — the conversion against a peer declaring a different convention | `ppcp-sim` (**L13**) | Assertion 6 (scalar and constant array agree) passes today; the rest need a counterpart. |
+| CT-I30's third assertion — `capture_update` carries `achieved_frames` only for `transfer: failed` | this repository's **D6** | Needs a peer on the other end. |
+| CT-I36a under **induced contention** | this repository's **D6** | The refusals are asserted; a live preview Stream degrading under load is not. |
+| `RingBufferRecorder`'s segment delivery | **a phone** | The simulator has no 150 fps camera. The ring's index and every protocol-constrained decision around it are covered; the `AVAssetWriter` segment path is wiring that has not run. |
 | Interop "device, no host → bundle" | **PinPointStudio** | This side writes and re-reads its own bundle; only the other application reading it closes the row. |
 
 ## 6. Reproducing
@@ -234,10 +324,11 @@ make test-app       # the TLS-PSK handshake and the ENC §2.1 bind, on a simulat
 make gen && make build
 ```
 
-⚠ **`make test-core` is green: 89 tests, 12 suites.** Every `pass` in §3 is one of
+⚠ **`make test-core` is green: 107 tests, 13 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
 
-⚠ **`make test-app` is green.** It hung for one session; see the finding below.
+⚠ **`make test-app` is green: 21 tests, 4 suites.** It hung for one session; see the
+finding below.
 
 ⚠ `-jobs 3` on every `xcodebuild`, and `-j 3` on every `swift build`/`swift test`.
 This is a 16 GB machine and an unbounded build has already taken it down once.

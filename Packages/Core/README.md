@@ -88,7 +88,7 @@ package (product `CPPCP`, plan A5). During co-development that is a sibling
 `../libppcp` checkout; the git URL is recorded in `Package.swift` for when it is
 tagged.
 
-⛔ `import CPPCP` lives in **four** files and nowhere else, and each is a place
+⛔ `import CPPCP` lives in **nine** files and nowhere else, and each is a place
 where the library owns a rule this application must not re-decide:
 
 | File | What is the library's |
@@ -96,8 +96,18 @@ where the library owns a rule this application must not re-decide:
 | `Rendezvous.swift` | `PPCP-RV` §5.1 key derivation, §5.3 PSK identities |
 | `Ppcp/LinkBind.swift` | `ENC` §2.1/§3/§5 — framing, the envelope, deterministic CBOR |
 | `Ppcp/Declaration.swift` | `CORE` §5.6–5.8 — Source, CaptureProfile, and the I22/I28/I31 constructors |
-| `Ppcp/DevicePeer.swift` | `CORE` §5.15 Readiness, the injectable clock of §5.1, and the whole sans-I/O engine of `MSG` §3–§8 |
+| `Ppcp/DevicePeer.swift` | `CORE` §5.14 Capture, §5.15 Readiness, the injectable clock of §5.1, and the whole sans-I/O engine of `MSG` §3–§8 |
+| `Ppcp/Achieved.swift` | `CORE` §5.8 — `AchievedSummary`, `AchievedFrames`, and `ENC` 4.1c–d's scalar-or-array forms |
+| `Capture/FragmentRing.swift` | the `absent_reason` spellings of §5.14 |
+| `Capture/StreamCoverage.swift` | the Stream `kind` spellings of §5.11 |
+| `Capture/ReadinessMeasurement.swift` | §5.15's two constructors, which are the whole Readiness API |
 | `Store/SessionStore.swift` | `ENC` §7 — the container, the writer's ordering refusals, and I34's capture index |
+
+⚠ Four of those nine import the library only for **spellings** — `PPCP_ABSENT_*`,
+`PPCP_STREAM_KIND_*`, `ppcp_readiness`. That is the point rather than a
+shortcut: a token this application typed out would be a token only this
+application understands, and an open registry is exactly where that goes wrong
+quietly.
 
 ⚠ **Both fences are gone, and they were rewritten rather than switched on.**
 `DevicePeer` and `SessionBundleWriter` were written against `planned.h` before L6

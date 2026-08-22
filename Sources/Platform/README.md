@@ -36,6 +36,19 @@ Camera, microphone, encoder, motion, storage and network primitives (REQ-PORT-1,
 | Permissions | `PermissionsService.swift` | `CaptureCore.Permissions` |
 | Device data | `DeviceProfiles.swift`, `DeviceProfiles.json` | REQ-PORT-10 |
 | **PPCP transport** | `Network/PpcpTransport.swift` | `CaptureCore.ByteChannel`, `PeerTransport`, `PeerTransportConnector`, `PeerTransportListener` |
+| **Capture path (D4)** | `Capture/RingBufferRecorder.swift`, `Capture/FrameTimeline.swift`, `Capture/MotionMetadataSource.swift`, `Capture/ThermalTimeline.swift`, `Capture/InterruptionMonitor.swift` | fills `CaptureCore.FragmentRing`, `PpcpAchievedSummary`, `StreamCoverage`, `InterruptionRecord` |
+
+⚠ **`Capture/FrameTimeline.swift` is where "what may this device honestly claim?"
+is answered, once.** `CORE` 5.8h forbids declaring `exposure_provenance:
+per_frame` unless the platform attaches the value to the sample, and the answer —
+it does not, for video; it *does* attach the intrinsic matrix — is written down
+there with what was checked, so the next person does not re-decide it
+optimistically. That file is also the only place the column-major-to-row-major
+transpose of the intrinsic matrix happens (`ENC` §4.1).
+
+⚠ `alwaysDiscardsLateVideoFrames` is **`false`** on the capture path and `true` in
+the self-test. The self-test wants drops visible (REQ-CAP-3); capture wants them
+not to happen, because §9.2 makes capture degrade last.
 
 ⛔ `Network/PpcpTransport.swift` is the **only** file in the app that may name
 `NWConnection`, `NWListener`, `NWParameters` or a `sec_protocol_*` symbol, and it
