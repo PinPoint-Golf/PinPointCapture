@@ -318,9 +318,172 @@ struct TransportLoopbackTests {
     }
 }
 
-// MARK: - Harness
+// MARK: - Binding streams to a link (ENC §2.1, erratum E1)
 
-/// One loopback link, both ends.
+/// ⚠ **These four tests are the reason E1 exists**, and three of them could not
+/// have been written against the arrival-order listener D1 shipped: concurrent
+/// dials, a third channel opened after the session is up, and a stream whose
+/// first frame is not a `link_bind`. The fourth — a stream whose `channel`
+/// disagrees with its header — had no way to be detected at all.
+@Suite("link_bind over a real link — ENC §2.1", .serialized)
+struct LinkBindLoopbackTests {
+
+    /// 2.1a/2.1b — the dialler sends `link_bind` first on every stream and the
+    /// listener takes each stream's channel from the header.
+    ///
+    /// ⛔ `PpcpConnector` now dials **concurrently** (2.1d: "bulk channels MAY be
+    /// opened before, after, or concurrently with channel 0"), so the order the
+    /// two handshakes complete in is genuinely unspecified. That the listener
+    /// still lands channel 0 on `control` and channel 1 on `bulk` is the whole
+    /// claim, and under the old rule it would have been a coin toss.
+    @Test("Concurrently dialled channels bind to the right stream")
+    func concurrentDialsBindByLinkId() async throws {
+        let harness = try await LoopbackHarness.up(channels: [.control, .bulk])
+        defer { harness.tearDown() }
+
+        #expect(harness.served.control.channel == .control)
+        #expect(harness.served.bulk.channel == .bulk)
+
+        // And they really are different streams: `CORE` T2's independent flow
+        // control is the reason there are two, so bytes must not cross over.
+        try await harness.dialled.control.send(Data("on-control".utf8))
+        try await harness.dialled.bulk.send(Data("on-bulk".utf8))
+        #expect(try await harness.served.control.receive() == Data("on-control".utf8))
+        #expect(try await harness.served.bulk.receive() == Data("on-bulk".utf8))
+    }
+
+    /// 2.1d — "a bulk channel MAY be opened at any later point in the session — a
+    /// `preview` channel after the session is established is the expected case —
+    /// by a further stream carrying `link_bind` with the same `link_id`."
+    ///
+    /// ⛔ This is the case arrival order could not serve at all: a third stream
+    /// arriving mid-session is indistinguishable from a *new peer's* first stream
+    /// unless it names the link it belongs to.
+    @Test("A preview channel opened after the session binds into the same link")
+    func aLaterPreviewChannelBinds() async throws {
+        let harness = try await LoopbackHarness.up(channels: [.control, .bulk])
+        defer { harness.tearDown() }
+
+        #expect(harness.dialled.preview == nil, "not asked for, not opened")
+        #expect(harness.served.preview == nil)
+
+        let dialling = try #require(harness.dialled as? DiallingPeerLink)
+        let listening = try #require(harness.served as? ListeningPeerLink)
+
+        let waiting = Task { try await listening.channelBound(.preview) }
+        let opened = try await withTimeout(seconds: 30) { try await dialling.openChannel(.preview) }
+        let bound = try await withTimeout(seconds: 30) { try await waiting.value }
+
+        #expect(opened.channel == .preview)
+        #expect(bound.channel == .preview)
+        // Bound into the link that already existed, not into a second one.
+        #expect(harness.served.preview != nil)
+        #expect(harness.dialled.preview != nil)
+
+        try await opened.send(Data("preview-frame".utf8))
+        #expect(try await bound.receive() == Data("preview-frame".utf8))
+    }
+
+    /// 2.1c, refusal one — "a listener closes a stream whose first frame is not
+    /// `link_bind`".
+    ///
+    /// ⚠ The TLS handshake **succeeds** here and the stream is closed anyway.
+    /// That is the point: `RV` §5 authenticates the peer and says nothing about
+    /// whether it speaks PPCP, and on the `direct` path of D9's harness there is
+    /// no PSK at all. The bind is the protocol's own gate.
+    @Test("A first frame that is not link_bind closes the stream and yields no link")
+    func aBadFirstFrameIsRefused() async throws {
+        let credentials = RvVectors.pinned(try RvVectors.keys())
+        let listener = PpcpListener(credentials: credentials,
+                                    channels: [.control, .bulk], port: 0,
+                                    bindTimeout: .seconds(2))
+        let port = try await listener.start()
+        defer { Task { await listener.stop() } }
+
+        let accepting = Task { try await listener.accept() }
+        let queue = DispatchQueue(label: "test.badfirstframe")
+
+        // A real TLS-PSK connection that then speaks nonsense.
+        let parameters = PpcpTlsProfile.parameters(tlsKey: credentials.tlsKey,
+                                                    identity: try credentials.nextPskIdentity(),
+                                                    isListener: false)
+        let connection = NWConnection(host: "127.0.0.1",
+                                      port: NWEndpoint.Port(rawValue: port)!,
+                                      using: parameters)
+        let (stream, _) = try await withTimeout(seconds: 30) {
+            try await PpcpByteChannel.open(connection, channel: .control, on: queue)
+        }
+        // A well-formed ENC §3 frame on channel 0 whose payload is not a
+        // `link_bind` envelope — so the refusal is the bind's and not the
+        // framing's.
+        var frame = Data([0, 0, 0, 4, 0, 0, 0, 0])
+        frame.append(contentsOf: [0xA1, 0x61, 0x61, 0x01])   // { "a": 1 }
+        try await stream.send(frame)
+
+        // The listener has nothing to hand back, and says so within its own
+        // timeout rather than waiting forever (2.1c).
+        await #expect(throws: (any Error).self) {
+            try await withTimeout(seconds: 20) { try await accepting.value }
+        }
+        await stream.close(.cancelled)
+    }
+
+    /// 2.1c, refusal three — "…or whose `link_id` names a link that already holds
+    /// that channel". ⚠ Two diallers, two `link_id`s, one listener: the *second*
+    /// link is a different link and both must assemble, which is the case
+    /// arrival order got wrong first and silently.
+    @Test("Two peers dialling at once assemble into two links, not one")
+    func twoPeersDoNotCrossOver() async throws {
+        let credentials = RvVectors.pinned(try RvVectors.keys())
+        let listener = PpcpListener(credentials: credentials,
+                                    channels: [.control, .bulk], port: 0)
+        let port = try await listener.start()
+        defer { Task { await listener.stop() } }
+
+        let endpoint = PeerEndpoint(host: "127.0.0.1", port: port)
+        let first = Task { try await listener.accept() }
+        let second = Task { try await listener.accept() }
+
+        // ⚠ `Task`, not `async let`. Both start the moment they are made, so the
+        // two dials really are concurrent — which is the whole point of the test
+        // — but a `Task` can be awaited from inside `withTimeout`'s closure and
+        // an `async let` binding cannot be captured by one at all.
+        let dialledA = Task {
+            try await PpcpConnector().connect(to: endpoint, credentials: credentials,
+                                              channels: [.control, .bulk])
+        }
+        let dialledB = Task {
+            try await PpcpConnector().connect(to: endpoint, credentials: credentials,
+                                              channels: [.control, .bulk])
+        }
+        let linkA = try await withTimeout(seconds: 40) { try await dialledA.value }
+        let linkB = try await withTimeout(seconds: 40) { try await dialledB.value }
+        let servedA = try await withTimeout(seconds: 40) { try await first.value }
+        let servedB = try await withTimeout(seconds: 40) { try await second.value }
+
+        // Four streams, two links, and every one on the channel it announced.
+        for link in [servedA, servedB] {
+            #expect(link.control.channel == .control)
+            #expect(link.bulk.channel == .bulk)
+        }
+
+        // ⛔ The assertion that matters: bytes written to one peer's control
+        // channel do not surface on the other's. Under arrival order, two
+        // concurrent dials could interleave and produce exactly that.
+        try await linkA.control.send(Data("A".utf8))
+        try await linkB.control.send(Data("B".utf8))
+        let a = try await servedA.control.receive()
+        let b = try await servedB.control.receive()
+        #expect(Set([a, b]) == Set([Data("A".utf8), Data("B".utf8)]))
+        #expect(a != b)
+
+        await linkA.close(.normal)
+        await linkB.close(.normal)
+        await servedA.close(.normal)
+        await servedB.close(.normal)
+    }
+}
+
 private struct LoopbackHarness {
     let listener: PpcpListener
     let served: any PeerTransport
@@ -331,8 +494,12 @@ private struct LoopbackHarness {
         let listener = PpcpListener(credentials: credentials, channels: channels, port: 0)
         let port = try await listener.start()
 
-        // ⚠ Accept first, then dial. The listener has to be waiting before the
-        // connector's first `SYN` or the assembler starts a channel behind.
+        // ⚠ Accept first, then dial — now only so the test does not race its own
+        // `accept()`. It used to be load-bearing: the listener assembled a link
+        // from arrival order and a late `accept()` started a channel behind.
+        // `ENC` 2.1 (erratum E1) removed that: streams are taken into the
+        // listener as they arrive, bound by `link_id`, and `accept()` collects a
+        // link that is already complete.
         let accepting = Task { try await listener.accept() }
         let dialled = try await withTimeout(seconds: 30) {
             try await PpcpConnector().connect(to: PeerEndpoint(host: "127.0.0.1", port: port),

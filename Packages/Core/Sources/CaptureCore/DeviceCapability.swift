@@ -58,6 +58,31 @@ public struct VideoMode: Sendable, Hashable, Identifiable {
     public var lens: Lens
     public var deliversIntrinsics: Bool
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  REQ-PORT-11, and the reason these three arrived with D2. A `VideoMode`
+    //  used to carry what the *capability card* needed; a PPCP `CaptureProfile`
+    //  (`CORE` 5.7) additionally carries `format.pixel_format` and the `optical`
+    //  block, and both come from the same `AVCaptureDevice.Format` the
+    //  enumeration already has in its hand. Rather than a second platform walk
+    //  producing a second vocabulary, the existing type grew the fields and
+    //  became the view over the library's struct that REQ-PORT-11 asks for.
+    //
+    //  ⚠ All three are optional and absence means **not known**, never a default
+    //  (`CORE` 5.1, last paragraph). `optical` and `format` are themselves
+    //  optional on the wire, so an unknown one is simply not declared.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// `CORE` 5.7 `format.pixel_format` — the delivered sample encoding, as the
+    /// platform names it (a FourCC on this one). ⛔ Not interpreted here: it is an
+    /// open-registry `Kind` and Core has no business parsing it.
+    public var pixelFormat: String?
+
+    /// `CORE` 5.7 `optical.exposure_min_ns` / `exposure_max_ns`.
+    public var exposureRangeNs: ClosedRange<Int64>?
+
+    /// `CORE` 5.7 `optical.iso_min` / `iso_max`.
+    public var isoRange: ClosedRange<Int64>?
+
     public var id: String { "\(width)x\(height)@\(fps)-\(lens.rawValue)" }
 
     /// "1080p · 150 fps"
@@ -81,13 +106,24 @@ public struct VideoMode: Sendable, Hashable, Identifiable {
             : String(format: "%.1f", value)
     }
 
-    public init(width: Int, height: Int, fps: Double, lens: Lens, deliversIntrinsics: Bool = false) {
+    public init(width: Int, height: Int, fps: Double, lens: Lens,
+                deliversIntrinsics: Bool = false,
+                pixelFormat: String? = nil,
+                exposureRangeNs: ClosedRange<Int64>? = nil,
+                isoRange: ClosedRange<Int64>? = nil) {
         self.width = width
         self.height = height
         self.fps = fps
         self.lens = lens
         self.deliversIntrinsics = deliversIntrinsics
+        self.pixelFormat = pixelFormat
+        self.exposureRangeNs = exposureRangeNs
+        self.isoRange = isoRange
     }
+
+    /// `CORE` 5.7 — "Millihertz, so 150 fps is `150000`. Avoids a float on the
+    /// wire for a value used in scheduling."
+    public var rateMillihertz: Int64 { Int64((fps * 1000).rounded()) }
 }
 
 /// REQ-RES-3. Thermal state is first-class so degradation is *reported* rather
@@ -98,6 +134,27 @@ public enum ThermalState: String, Sendable, Comparable, CaseIterable {
 
     public var displayName: String { rawValue }
 
+    /// `CORE` §5.8 `ThermalLevel` — "an **ordinal protocol vocabulary, not a
+    /// platform passthrough**: `nominal` < `elevated` < `serious` < `critical`.
+    /// A peer MUST map its platform's states onto it."
+    ///
+    /// ⛔ **`fair` is `elevated` on the wire, and the difference is not
+    /// cosmetic.** These four cases are named after iOS's
+    /// `ProcessInfo.ThermalState`, which is exactly the passthrough 5.8 forbids —
+    /// Android's `PowerManager` has `NONE`, `LIGHT`, `MODERATE`, `SEVERE`,
+    /// `CRITICAL`, `EMERGENCY` and `SHUTDOWN`, and two of those collapse onto
+    /// each end. Sending `fair` would oblige every consumer to know what iOS
+    /// calls things, which is the open-protocol commitment given away for a
+    /// spelling. The mapping is the specification's own table.
+    public var ppcpLevel: String {
+        switch self {
+        case .nominal: "nominal"
+        case .fair: "elevated"
+        case .serious: "serious"
+        case .critical: "critical"
+        }
+    }
+
     private var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
     public static func < (a: Self, b: Self) -> Bool { a.order < b.order }
 }
@@ -107,6 +164,38 @@ public enum ThermalState: String, Sendable, Comparable, CaseIterable {
 /// ⚠ REQ-ENC-4: a measurement taken from cold is not a measurement. Sustained
 /// rate must be verified under thermal load, not at start-up.
 public struct MeasuredCapability: Sendable, Hashable {
+
+    /// `CORE` 5.8a — **mandatory**, and 5.8b says why: "a short sample taken
+    /// during onboarding is `cold_sample`, and a consumer MUST NOT treat it as a
+    /// sustained figure."
+    ///
+    /// ⛔ **This field arrived with D2 and its absence was a defect.** REQ-ENC-4
+    /// already said "a measurement taken from cold is not a measurement", and the
+    /// comment below has always said it — but there was no field to *carry* the
+    /// distinction, so a cold onboarding sample and a thermally-loaded self-test
+    /// were the same value on the wire. 5.8a and 5.8b exist because, in the
+    /// specification's own words, "without `method` the cold number quietly
+    /// becomes the displayed one". That is I28's other half.
+    public enum Method: String, Sendable, Hashable, Codable {
+        /// Seconds, at onboarding, thermally cold.
+        case coldSample = "cold_sample"
+        /// Taken under sustained thermal load (5.8b).
+        case sustained
+    }
+
+    public var method: Method
+    /// `CORE` 5.8a — mandatory. How long the self-test ran.
+    public var durationSeconds: Double
+    /// `CORE` 5.8a `observed_at`, in the peer's own capture timebase.
+    ///
+    /// ⚠ Not `measuredAt`, which is a wall-clock `Date` for display. An `Instant`
+    /// needs a `tb` (I1) and `CORE` 5.3b forbids a `wall` timebase where an
+    /// interval will be computed, so the protocol value is a host-time reading
+    /// and the `Date` beside it is a label. `nil` where the caller had no
+    /// host-time reading to give, in which case no `measured` block is declared
+    /// at all — I28 refuses a synthesised one more readily than an incomplete one.
+    public var observedHostTimeNs: Int64?
+
     public var mode: VideoMode
     /// Derived from realised timestamp deltas — never from a frame count over a
     /// wall-clock interval, and never from the value the platform reports back
@@ -123,7 +212,12 @@ public struct MeasuredCapability: Sendable, Hashable {
 
     public init(mode: VideoMode, achievedFPS: Double, droppedFrames: Int,
                 thermalAtEnd: ThermalState, measuredAt: Date,
+                method: Method, durationSeconds: Double,
+                observedHostTimeNs: Int64? = nil,
                 exposureSeconds: Double? = nil, iso: Double? = nil) {
+        self.method = method
+        self.durationSeconds = durationSeconds
+        self.observedHostTimeNs = observedHostTimeNs
         self.mode = mode
         self.achievedFPS = achievedFPS
         self.droppedFrames = droppedFrames
@@ -137,6 +231,9 @@ public struct MeasuredCapability: Sendable, Hashable {
     public var displaySummary: String {
         "\(VideoMode.fpsText(achievedFPS)) fps · \(droppedFrames) drops"
     }
+
+    /// `CORE` 5.8 — the realised rate in millihertz, as the wire carries it.
+    public var sustainedRateMillihertz: Int64 { Int64((achievedFPS * 1000).rounded()) }
 }
 
 /// The claimed / measured / achieved triple. Drives A1, A7 and the C1 rail.

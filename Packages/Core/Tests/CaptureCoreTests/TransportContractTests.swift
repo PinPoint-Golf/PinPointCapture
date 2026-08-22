@@ -125,7 +125,7 @@ struct TransportContractTests {
         #expect(transport.control.channel == .control)
         #expect(transport.bulk.channel == .bulk)
         #expect(transport.preview?.channel == .preview)
-        #expect(transport.channel(.bulk)?.channel == .bulk)
+        #expect(transport.boundChannel(.bulk)?.channel == .bulk)
         #expect(transport.security.cipherSuite == 0x00A8)
 
         try await transport.control.send(Data([0x50, 0x50]))

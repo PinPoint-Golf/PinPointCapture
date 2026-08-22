@@ -35,13 +35,20 @@ public extension StatusTone {
     /// ⚠ `inStudio` is accent because the **host confirmed** it, never because it
     /// was merely uploaded (REQ-SESS-4).
     ///
-    /// Nothing here is ever `.error`: a shot still sitting on the device is a
-    /// normal state — the expected one, for UC-1 — and not a failure.
+    /// A shot still sitting on the device is a normal state — the expected one,
+    /// for UC-1 — and not a failure, so `onDevice` is neutral.
+    ///
+    /// ⚠ `delivered` (`CORE` 5.14 `present`) is **progress, not accent**. The
+    /// receiver has the bytes and has not committed them; showing it in the same
+    /// colour as a confirmed shot is exactly how an unconfirmed one gets treated
+    /// as safe (REQ-SESS-4, I38). `failed` is the one sync state that *is*
+    /// `.error`, because it is the only one that will not resolve on its own.
     init(_ syncState: ShotSyncState) {
         self = switch syncState {
         case .onDevice: .neutral
-        case .sending: .progress
+        case .sending, .delivered: .progress
         case .inStudio: .accent
+        case .failed: .error
         }
     }
 

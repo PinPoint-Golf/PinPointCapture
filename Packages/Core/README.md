@@ -84,11 +84,41 @@ Keeping this package platform-free is what makes that later change a substitutio
 rather than a rewrite. The layer purity test is what keeps it platform-free.
 
 **The substitution has started.** `Package.swift` depends on `libppcp` as a SwiftPM
-package (product `CPPCP`, plan A5) and `Rendezvous.swift` is the first wrapper over
-it: `PPCP-RV` §5.1 key derivation and §5.3 PSK identities are the library's, not
-ours. During co-development that is a sibling `../libppcp` checkout; the git URL is
-recorded in `Package.swift` for when it is tagged.
+package (product `CPPCP`, plan A5). During co-development that is a sibling
+`../libppcp` checkout; the git URL is recorded in `Package.swift` for when it is
+tagged.
 
-⛔ `import CPPCP` is confined to `Rendezvous.swift` and the layer-purity test names
-it explicitly. It is not a platform framework — it is a sans-I/O C library with no
-socket, thread, timer, clock or file in it — and the forbidden list is unchanged.
+⛔ `import CPPCP` lives in **four** files and nowhere else, and each is a place
+where the library owns a rule this application must not re-decide:
+
+| File | What is the library's |
+|---|---|
+| `Rendezvous.swift` | `PPCP-RV` §5.1 key derivation, §5.3 PSK identities |
+| `Ppcp/LinkBind.swift` | `ENC` §2.1/§3/§5 — framing, the envelope, deterministic CBOR |
+| `Ppcp/Declaration.swift` | `CORE` §5.6–5.8 — Source, CaptureProfile, and the I22/I28/I31 constructors |
+| `Ppcp/DevicePeer.swift` | `CORE` §5.15 Readiness, the injectable clock of §5.1, and the whole sans-I/O engine of `MSG` §3–§8 |
+| `Store/SessionStore.swift` | `ENC` §7 — the container, the writer's ordering refusals, and I34's capture index |
+
+⚠ **Both fences are gone, and they were rewritten rather than switched on.**
+`DevicePeer` and `SessionBundleWriter` were written against `planned.h` before L6
+and L8 landed, behind `PPCP_L6_PEER_ENGINE` and `PPCP_L8_BUNDLE_WRITER`. The real
+signatures differed in three places — `ppcp_peer_feed` gained an `out_consumed`,
+`ppcp_peer_config` gained `versions`, `min_version` and `listener`, and
+`ingest_policy` gained an `out_reason` — so a fence turned on unread would have
+compiled against none of them. Coding ahead of the library is worth doing; trusting
+what you wrote ahead of it is not.
+
+⚠ The pattern in every one of them is the same and it is the point of plan A5:
+**the invariant is held by the library's constructor, not by this application's
+care.** I22 is not "remember to set the offset with `nominal_frame_start`"; it is
+that `ppcp_timing_make` *refuses* that convention and the other constructor
+*requires* the offset and its provenance. A Swift re-implementation of any of these
+rules would agree with itself and meet nobody, which is what `PPCP-CONF` §2c calls
+the single-implementation trap.
+
+⛔ `CPPCP` is not a platform framework — it is a sans-I/O C library with no socket,
+thread, timer, clock or file in it — and the forbidden list is unchanged. The
+layer-purity test names it explicitly and **walks the tree recursively**, which it
+did not before `Sources/CaptureCore/Ppcp/` existed: a purity test that quietly
+checks less is worse than none, because the green tick is what stops anyone
+looking.

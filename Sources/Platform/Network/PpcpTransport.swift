@@ -224,6 +224,21 @@ final class PpcpByteChannel: ByteChannel, @unchecked Sendable {
         self.channel = channel
     }
 
+    /// Re-label an open stream once its first frame has said which channel it
+    /// carries.
+    ///
+    /// ⚠ `ENC` 2.1b is the reason this exists: a **listener** does not know a
+    /// stream's channel until the frame header of its `link_bind` tells it, and
+    /// is forbidden from inferring it from arrival order or transport address. So
+    /// the stream is opened under a placeholder and re-labelled here, with the
+    /// handshake state carried across — the TLS session is the connection's, not
+    /// this wrapper's, and the old wrapper is dropped on the spot.
+    func adopting(_ channel: PpcpChannel) -> PpcpByteChannel {
+        let relabelled = PpcpByteChannel(connection: connection, channel: channel)
+        if state.withLock({ $0.handshakeComplete }) { relabelled.markHandshakeComplete() }
+        return relabelled
+    }
+
     /// ⛔ `RV` 1.3c / 7.7a — nothing crosses before the handshake completes.
     /// `hello` is the first byte of application data on an established,
     /// authenticated connection, and this is the gate that makes that true even
@@ -359,29 +374,162 @@ final class PpcpByteChannel: ByteChannel, @unchecked Sendable {
     }
 }
 
+// MARK: - Minting a link_id
+
+/// `ENC` 2.1a — "16 bytes from a cryptographically secure random number
+/// generator, fresh per link", minted by the **dialler**.
+///
+/// ⚠ In the platform layer, and from `SecRandomCopyBytes`, for the same reason
+/// `RV` §5's `rn2` is: Core owns no entropy source, and the CSPRNG a security
+/// property rests on should be the platform's audited one rather than whatever a
+/// portable abstraction happens to wrap. ⛔ A failure is thrown, never
+/// substituted — there is no fallback path to a weaker source, which is the same
+/// shape as `RV` 5.2f's refusal to fall back to plaintext.
+enum PpcpLinkIdSource {
+    static func mint() throws -> PpcpLinkId {
+        var bytes = [UInt8](repeating: 0, count: PpcpLinkId.byteCount)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            throw TransportError.failedToMintLinkId(Int(status))
+        }
+        return try PpcpLinkId(bytes: Data(bytes))
+    }
+}
+
 // MARK: - A link
 
 /// Two channels, three where preview is carried, each a separate TLS session on
-/// the same `K_tls` (plan A6; `CORE` §3.1's acceptable table, first row).
-struct PpcpPeerLink: PeerTransport {
+/// the same `K_tls` (plan A6; `CORE` §3.1's acceptable table, first row) and
+/// each carrying `link_bind` as its first frame (`ENC` 2.1a).
+///
+/// ⚠ `preview` is mutable and the other two are not, which is `ENC` 2.1d in the
+/// type: "a bulk channel MAY be opened at any later point in the session — a
+/// `preview` channel after the session is established is the expected case."
+/// Channel 0 and channel 1 are what a link is; channel 2 is what it may grow.
+final class PpcpPeerLink: PeerTransport, @unchecked Sendable {
+
     let control: any ByteChannel
     let bulk: any ByteChannel
-    let preview: (any ByteChannel)?
     let security: NegotiatedSecurity
 
-    init(channels: [PpcpChannel: PpcpByteChannel], security: NegotiatedSecurity) throws {
-        guard let control = channels[.control] else { throw TransportError.incompleteLink(missing: .control) }
-        guard let bulk = channels[.bulk] else { throw TransportError.incompleteLink(missing: .bulk) }
+    /// The dialler's own `link_id`, kept so a later stream can name the same link
+    /// (2.1d). ⛔ 2.1f — never persisted and never reused across links; it dies
+    /// with this object.
+    private let linkId: PpcpLinkId
+    private let later = Mutex(LaterChannels())
+
+    /// How a further stream is obtained: by dialling one (the dialler) or by
+    /// waiting for the counterpart to bind one (the listener). Exactly one of
+    /// these is set, and which one is what makes this link a `DiallingPeerLink`
+    /// or a `ListeningPeerLink`.
+    private let dial: (@Sendable (PpcpChannel) async throws -> PpcpByteChannel)?
+
+    private struct LaterChannels {
+        var channels: [PpcpChannel: any ByteChannel] = [:]
+        var waiters: [PpcpChannel: [CheckedContinuation<any ByteChannel, any Error>]] = [:]
+        var closed: ChannelCloseReason?
+    }
+
+    init(linkId: PpcpLinkId,
+         control: any ByteChannel,
+         bulk: any ByteChannel,
+         security: NegotiatedSecurity,
+         dial: (@Sendable (PpcpChannel) async throws -> PpcpByteChannel)?) {
+        self.linkId = linkId
         self.control = control
         self.bulk = bulk
-        self.preview = channels[.preview]
         self.security = security
+        self.dial = dial
+    }
+
+    /// Assemble from a channel map, as both sides do once every required channel
+    /// has bound. `CORE` T2: a link with only channel 0 is not a PPCP transport.
+    static func assemble(linkId: PpcpLinkId,
+                         channels: [PpcpChannel: any ByteChannel],
+                         security: NegotiatedSecurity,
+                         dial: (@Sendable (PpcpChannel) async throws -> PpcpByteChannel)?)
+        throws -> PpcpPeerLink {
+        guard let control = channels[.control] else {
+            throw TransportError.incompleteLink(missing: .control)
+        }
+        guard let bulk = channels[.bulk] else {
+            throw TransportError.incompleteLink(missing: .bulk)
+        }
+        let link = PpcpPeerLink(linkId: linkId, control: control, bulk: bulk,
+                                security: security, dial: dial)
+        for (channel, stream) in channels where channel != .control && channel != .bulk {
+            link.attach(stream, as: channel)
+        }
+        return link
+    }
+
+    var preview: (any ByteChannel)? { later.withLock { $0.channels[.preview] } }
+
+    /// Called by the listener when a further stream binds into this link (2.1d),
+    /// and by `openChannel` when the dialler opens one.
+    func attach(_ stream: any ByteChannel, as channel: PpcpChannel) {
+        let waiting = later.withLock { state -> [CheckedContinuation<any ByteChannel, any Error>] in
+            state.channels[channel] = stream
+            return state.waiters.removeValue(forKey: channel) ?? []
+        }
+        for waiter in waiting { waiter.resume(returning: stream) }
     }
 
     func close(_ reason: ChannelCloseReason) async {
+        let (extra, waiting) = later.withLock { state -> ([any ByteChannel], [CheckedContinuation<any ByteChannel, any Error>]) in
+            state.closed = reason
+            let channels = Array(state.channels.values)
+            let waiters = state.waiters.values.flatMap { $0 }
+            state.channels.removeAll()
+            state.waiters.removeAll()
+            return (channels, waiters)
+        }
+        // ⚠ Waiters are failed rather than left suspended. A session that closes
+        // while a `preview` was being negotiated is the ordinary case, and a task
+        // parked forever on a dead link is the kind of leak that only shows up as
+        // a battery complaint.
+        for waiter in waiting { waiter.resume(throwing: TransportError.channelClosed(reason)) }
         await control.close(reason)
         await bulk.close(reason)
-        await preview?.close(reason)
+        for channel in extra { await channel.close(reason) }
+    }
+}
+
+extension PpcpPeerLink: DiallingPeerLink {
+    /// `ENC` 2.1d — a further stream carrying `link_bind` with the **same**
+    /// `link_id`. ⛔ Not a new one: a new `link_id` would be a new link, and the
+    /// listener would treat this stream as a stranger's first connection.
+    func openChannel(_ channel: PpcpChannel) async throws -> any ByteChannel {
+        if let existing = later.withLock({ $0.channels[channel] }) { return existing }
+        if channel == .control { return control }
+        if channel == .bulk { return bulk }
+        guard let dial else { throw TransportError.channelUnavailable(channel) }
+        if let reason = later.withLock({ $0.closed }) {
+            throw TransportError.channelClosed(reason)
+        }
+
+        let stream = try await dial(channel)
+        try await stream.send(PpcpLinkBind.frame(linkId: linkId, channel: channel))
+        attach(stream, as: channel)
+        return stream
+    }
+}
+
+extension PpcpPeerLink: ListeningPeerLink {
+    func channelBound(_ channel: PpcpChannel) async throws -> any ByteChannel {
+        if channel == .control { return control }
+        if channel == .bulk { return bulk }
+        return try await withCheckedThrowingContinuation { continuation in
+            let immediate = later.withLock { state -> Result<any ByteChannel, any Error>? in
+                if let existing = state.channels[channel] { return .success(existing) }
+                if let reason = state.closed {
+                    return .failure(TransportError.channelClosed(reason))
+                }
+                state.waiters[channel, default: []].append(continuation)
+                return nil
+            }
+            if let immediate { continuation.resume(with: immediate) }
+        }
     }
 }
 
@@ -400,30 +548,47 @@ struct PpcpConnector: PeerTransportConnector {
             throw TransportError.endpointUnreachable("port \(endpoint.port)")
         }
 
+        // `ENC` 2.1a — one `link_id` for the whole link, minted here because the
+        // dialler mints it, and used unchanged on every stream including the ones
+        // 2.1d lets us open later.
+        let linkId = try PpcpLinkIdSource.mint()
+        let dial = Self.dialler(host: endpoint.host, port: port,
+                                credentials: credentials, queue: queue)
+
+        // ⚠ **Concurrent, and E1 is what allowed it.** S1 dialled sequentially
+        // because the listener assembled a link from arrival order and a
+        // concurrent dial would have scrambled it. `link_bind` names the channel
+        // in the first frame, so the streams may race — 2.1d says so explicitly —
+        // and the user gets the link in one handshake's time instead of two or
+        // three, while standing at a tripod holding a phone up.
+        //
+        // ⚠ The cost 2.1's commentary does not mention: a wrong `K_tls` now costs
+        // every handshake rather than one. That is the right trade here, because
+        // a wrong key on the pairing-code path means a mistyped or stale code,
+        // which fails in well under a second either way.
         var opened: [PpcpChannel: PpcpByteChannel] = [:]
         var negotiated: NegotiatedSecurity?
-
         do {
-            // ⚠ Sequential, not concurrent, and that is a decision. Separate TCP
-            // connections carry no correlation, so until `ENC` §3 framing lands
-            // and 2c's channel number identifies each stream, arrival order is
-            // the only thing a listener can assemble a link from. It also means
-            // a wrong `K_tls` costs one handshake to discover rather than three.
-            for channel in channels {
-                // `RV` 5.3a — fresh per connection. Each of the two or three
-                // links gets its own `rn2`, so an observer watching the
-                // `ClientHello`s cannot even tell they belong together.
-                let identity = try credentials.nextPskIdentity()
-                let parameters = PpcpTlsProfile.parameters(tlsKey: credentials.tlsKey,
-                                                           identity: identity,
-                                                           isListener: false)
-                let connection = NWConnection(host: NWEndpoint.Host(endpoint.host),
-                                              port: port,
-                                              using: parameters)
-                let (wrapped, security) = try await PpcpByteChannel.open(connection,
-                                                                         channel: channel,
-                                                                         on: queue)
-                opened[channel] = wrapped
+            let results = try await withThrowingTaskGroup(
+                of: (PpcpChannel, PpcpByteChannel, NegotiatedSecurity).self
+            ) { group in
+                for channel in channels {
+                    group.addTask {
+                        let (stream, security) = try await dial(channel)
+                        // 2.1a — **the first frame on every stream**, before
+                        // `hello` on channel 0 (2.1d) and before any payload
+                        // frame on a bulk one.
+                        try await stream.send(PpcpLinkBind.frame(linkId: linkId,
+                                                                 channel: channel))
+                        return (channel, stream, security)
+                    }
+                }
+                var collected: [(PpcpChannel, PpcpByteChannel, NegotiatedSecurity)] = []
+                for try await result in group { collected.append(result) }
+                return collected
+            }
+            for (channel, stream, security) in results {
+                opened[channel] = stream
                 negotiated = negotiated ?? security
             }
         } catch {
@@ -432,7 +597,31 @@ struct PpcpConnector: PeerTransportConnector {
         }
 
         guard let negotiated else { throw TransportError.incompleteLink(missing: .control) }
-        return try PpcpPeerLink(channels: opened, security: negotiated)
+        return try PpcpPeerLink.assemble(linkId: linkId, channels: opened,
+                                         security: negotiated,
+                                         dial: { channel in try await dial(channel).0 })
+    }
+
+    /// One dial, reusable: the task group uses it, and so does `openChannel` for
+    /// a `preview` stream opened after the session is established (2.1d).
+    private static func dialler(host: String, port: NWEndpoint.Port,
+                                credentials: any PpcpCredentials,
+                                queue: DispatchQueue)
+        -> @Sendable (PpcpChannel) async throws -> (PpcpByteChannel, NegotiatedSecurity) {
+        { channel in
+            // `RV` 5.3a — fresh per connection. Each stream gets its own `rn2`,
+            // so an observer watching the `ClientHello`s cannot tell they belong
+            // together. ⚠ And `link_id` does not undo that: it travels **inside**
+            // TLS (2.1f), which is the whole reason it can be a stable name.
+            let identity = try credentials.nextPskIdentity()
+            let parameters = PpcpTlsProfile.parameters(tlsKey: credentials.tlsKey,
+                                                       identity: identity,
+                                                       isListener: false)
+            let connection = NWConnection(host: NWEndpoint.Host(host),
+                                          port: port,
+                                          using: parameters)
+            return try await PpcpByteChannel.open(connection, channel: channel, on: queue)
+        }
     }
 }
 
@@ -440,8 +629,16 @@ struct PpcpConnector: PeerTransportConnector {
 
 /// The listening half, for the discovery path — where the **advertiser** listens
 /// and the browser dials, the opposite way round to the pairing-code path
-/// (`RV` §2, 3.5b). `RV` §2 recommends the capture peer advertise, so on this
-/// platform the device owns both a connector and a listener.
+/// (`RV` §2, 3.5b).
+///
+/// ⚠ **Rewritten for erratum E1, and the rewrite deleted what S1 shipped.** This
+/// listener used to take channels in *arrival order*, on the reasoning that the
+/// connector dialled them one at a time. `ENC` §2.1's commentary names that as
+/// one of the two implicit rules the erratum withdraws, and it is right to: the
+/// rule holds only against a dialler that serialises, breaks the moment two peers
+/// connect at once, cannot accept the later `preview` stream of 2.1d, and has
+/// nothing to work with at all on the `direct` path where there is no TLS
+/// identity. It is now `link_bind`, and arrival order is not consulted anywhere.
 ///
 /// ⛔ **A measured finding, recorded where an implementer will hit it, and NOT
 /// worked around.** `RV` 5.3a makes the PSK identity fresh per connection and
@@ -487,21 +684,47 @@ actor PpcpListener: PeerTransportListener {
         let connection: NWConnection
     }
 
+    /// A link the listener is still assembling: some streams have bound, channel
+    /// 0 may or may not be among them, and 2.1c's timeout is counting.
+    private struct PendingLink {
+        var channels: [PpcpChannel: any ByteChannel] = [:]
+        var security: NegotiatedSecurity?
+        var deadline: Task<Void, Never>?
+    }
+
     private let credentials: any PpcpCredentials
-    private let channels: [PpcpChannel]
+    private let required: [PpcpChannel]
     private let requestedPort: UInt16
     private let queue = DispatchQueue(label: "org.pinpointstudio.capture.ppcp.listener")
 
+    /// `ENC` 2.1c — "a link that has not bound channel 0 within the listener's own
+    /// timeout is discarded with every stream it holds; **the timeout is the
+    /// embedding's policy**."
+    ///
+    /// ⚠ Five seconds, and it covers rather more than 2.1c asks. 2.1c names only
+    /// the channel-0 case; this listener applies the same deadline to *completing
+    /// the required channel set*, because a link holding channel 0 and no bulk is
+    /// equally unusable — `CORE` T2 makes two independently flow-controlled
+    /// channels the definition of a PPCP transport, not a preference. The same
+    /// deadline also bounds an accepted connection that completes TLS and then
+    /// says nothing, which is otherwise an unbounded resource a stranger controls.
+    let bindTimeout: Duration
+
     private var listener: NWListener?
-    private var pending: [ConnectionBox] = []
-    private var waiters: [CheckedContinuation<ConnectionBox?, Never>] = []
+    private var pending: [PpcpLinkId: PendingLink] = [:]
+    private var live: [PpcpLinkId: PpcpPeerLink] = [:]
+    private var completed: [PpcpPeerLink] = []
+    private var waiters: [CheckedContinuation<PpcpPeerLink?, Never>] = []
+    private var stopped = false
 
     init(credentials: any PpcpCredentials,
          channels: [PpcpChannel] = PpcpChannel.required,
-         port: UInt16 = 0) {
+         port: UInt16 = 0,
+         bindTimeout: Duration = .seconds(5)) {
         self.credentials = credentials
-        self.channels = channels
+        self.required = channels
         self.requestedPort = port
+        self.bindTimeout = bindTimeout
     }
 
     func start() async throws -> UInt16 {
@@ -524,10 +747,16 @@ actor PpcpListener: PeerTransportListener {
         }
         self.listener = listener
 
+        // ⚠ Each connection is taken into its own Task rather than pulled from a
+        // queue by `accept()`. That is E1's doing too: with `link_bind`, the
+        // streams of one link may arrive concurrently and interleaved with
+        // another peer's, so a serial intake would head-of-line block the whole
+        // listener behind one slow handshake — and a stranger who connects and
+        // then says nothing would block it indefinitely.
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { connection.cancel(); return }
             let box = ConnectionBox(connection: connection)
-            Task { await self.deliver(box) }
+            Task { await self.take(box) }
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -555,62 +784,175 @@ actor PpcpListener: PeerTransportListener {
         }
     }
 
+    /// Await one complete link: every required channel bound, `link_bind` seen
+    /// and accepted on each.
     func accept() async throws -> any PeerTransport {
-        var opened: [PpcpChannel: PpcpByteChannel] = [:]
-        var negotiated: NegotiatedSecurity?
-
-        do {
-            // ⚠ Arrival order, and it is provisional. `PpcpConnector` dials the
-            // channels one at a time and completes each handshake before the
-            // next, so the order is deterministic for a single link. It stops
-            // being sufficient the moment two peers dial at once, and the real
-            // answer is `ENC` 2c — the channel number in every frame header
-            // matches the stream it arrives on. When L1's framing lands, this
-            // assembles from the first frame header instead and the ordering
-            // assumption goes away.
-            for channel in channels {
-                guard let box = await nextConnection() else {
-                    throw TransportError.listenerFailed("stopped while awaiting channel \(channel.rawValue)")
-                }
-                let (wrapped, security) = try await PpcpByteChannel.open(box.connection,
-                                                                         channel: channel,
-                                                                         on: queue)
-                opened[channel] = wrapped
-                negotiated = negotiated ?? security
-            }
-        } catch {
-            for channel in opened.values { await channel.close(.cancelled) }
-            throw error
+        if completed.isEmpty == false { return completed.removeFirst() }
+        guard stopped == false else {
+            throw TransportError.listenerFailed("stopped while awaiting a link")
         }
-
-        guard let negotiated else { throw TransportError.incompleteLink(missing: .control) }
-        return try PpcpPeerLink(channels: opened, security: negotiated)
+        let link = await withCheckedContinuation { (continuation: CheckedContinuation<PpcpPeerLink?, Never>) in
+            waiters.append(continuation)
+        }
+        guard let link else {
+            throw TransportError.listenerFailed("stopped while awaiting a link")
+        }
+        return link
     }
 
     func stop() async {
+        stopped = true
         listener?.cancel()
         listener = nil
-        // ⚠ Wake anyone waiting rather than leaving an `accept()` suspended
-        // forever: a session that closes while a peer is half-connected is the
-        // ordinary case, not an error case.
+
         for waiter in waiters { waiter.resume(returning: nil) }
         waiters.removeAll()
-        for box in pending { box.connection.cancel() }
+        for (_, link) in pending {
+            link.deadline?.cancel()
+            for channel in link.channels.values { await channel.close(.cancelled) }
+        }
         pending.removeAll()
+        for link in completed { await link.close(.cancelled) }
+        completed.removeAll()
+        live.removeAll()
     }
 
-    private func deliver(_ box: ConnectionBox) {
-        if waiters.isEmpty {
-            pending.append(box)
-        } else {
-            waiters.removeFirst().resume(returning: box)
+    // MARK: One connection, from accept to bind
+
+    /// Complete TLS, read the stream's first frame, and bind it (2.1a–c).
+    ///
+    /// ⛔ Every refusal ends in `connection.cancel()`. 2.1c gives a listener one
+    /// action for a stream it will not bind — close it — and there is no response
+    /// to send: `MSG` 3.0c says `link_bind` "requires no response: a listener that
+    /// accepts the binding does nothing, and one that refuses it closes the
+    /// stream". A refused stream also has no session to carry an `error` on.
+    private func take(_ box: ConnectionBox) async {
+        guard stopped == false else { box.connection.cancel(); return }
+
+        do {
+            let (stream, security) = try await withDeadline(bindTimeout) {
+                let (stream, security) = try await PpcpByteChannel.open(
+                    box.connection, channel: .control, on: self.queue)
+                return (stream, security)
+            }
+
+            // ⚠ The channel this stream was opened with is a placeholder — the
+            // listener does not know it yet, and 2.1b forbids inferring it from
+            // arrival order or from the transport address. It comes from the
+            // frame header of the first frame, below.
+            let (binding, residue) = try await withDeadline(bindTimeout) {
+                try await PpcpLinkBind.awaitBinding(on: stream)
+            }
+
+            // Whatever TCP coalesced behind `link_bind` is application data and
+            // must survive the bind.
+            let bound = stream.adopting(binding.channel)
+            let carrying: any ByteChannel = residue.isEmpty
+                ? bound
+                : PrefixedByteChannel(bound, holding: residue)
+
+            try bind(carrying, binding: binding, security: security)
+        } catch {
+            box.connection.cancel()
         }
     }
 
-    private func nextConnection() async -> ConnectionBox? {
-        if pending.isEmpty == false { return pending.removeFirst() }
-        return await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+    /// 2.1b — "associates streams into a link by `link_id` and takes each
+    /// stream's channel from the header". 2.1c — the refusals.
+    private func bind(_ stream: any ByteChannel,
+                      binding: PpcpLinkBind.Binding,
+                      security: NegotiatedSecurity) throws {
+        // A `link_bind` naming a link that is already live is 2.1d's later bulk
+        // channel — the `preview` case — and attaches to the link in place.
+        if let existing = live[binding.linkId] {
+            guard existing.boundChannel(binding.channel) == nil else {
+                throw TransportError.bindRefused(.channelAlreadyBound)
+            }
+            existing.attach(stream, as: binding.channel)
+            return
+        }
+
+        var link = pending[binding.linkId] ?? PendingLink()
+        // 2.1c — "…or whose `link_id` names a link that already holds that
+        // channel". Two streams claiming channel 0 of one link is either a
+        // confused dialler or someone else's stream wearing its `link_id`.
+        guard link.channels[binding.channel] == nil else {
+            throw TransportError.bindRefused(.channelAlreadyBound)
+        }
+        link.channels[binding.channel] = stream
+        link.security = link.security ?? security
+
+        // 2.1c — "a link that has not bound channel 0 within the listener's own
+        // timeout is discarded with every stream it holds". The clock starts on
+        // the link's first stream, whichever channel that is; 2.1d permits a bulk
+        // channel to arrive first.
+        if link.deadline == nil {
+            let id = binding.linkId
+            let timeout = bindTimeout
+            link.deadline = Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                guard Task.isCancelled == false else { return }
+                await self?.discard(id)
+            }
+        }
+
+        guard required.allSatisfy({ link.channels[$0] != nil }) else {
+            pending[binding.linkId] = link
+            return
+        }
+
+        link.deadline?.cancel()
+        pending.removeValue(forKey: binding.linkId)
+        guard let negotiated = link.security else {
+            throw TransportError.incompleteLink(missing: .control)
+        }
+        // ⛔ `dial: nil` — this side listens. `ENC` 2.1a puts minting and opening
+        // in the dialler's hands, so a listening link can only *wait* for a
+        // further stream, never open one. The type says so: `openChannel` throws
+        // `channelUnavailable` here and `channelBound` is what a caller uses.
+        let assembled = try PpcpPeerLink.assemble(linkId: binding.linkId,
+                                                  channels: link.channels,
+                                                  security: negotiated,
+                                                  dial: nil)
+        live[binding.linkId] = assembled
+        deliver(assembled)
+    }
+
+    /// 2.1c — the timeout expired. "…is discarded with every stream it holds."
+    private func discard(_ linkId: PpcpLinkId) async {
+        guard let link = pending.removeValue(forKey: linkId) else { return }
+        link.deadline?.cancel()
+        for channel in link.channels.values {
+            await channel.close(.protocolViolation(TransportError.BindRefusal.timedOut.rawValue))
+        }
+    }
+
+    private func deliver(_ link: PpcpPeerLink) {
+        if waiters.isEmpty {
+            completed.append(link)
+        } else {
+            waiters.removeFirst().resume(returning: link)
+        }
+    }
+
+    /// ⚠ A deadline around an `await`, because `NWConnection` has no handshake
+    /// timeout of its own that fails closed the way this needs to: `.waiting` is
+    /// already turned into a failure in `PpcpByteChannel.open`, but a peer that
+    /// completes TLS and then sends nothing at all is invisible to it.
+    private func withDeadline<T: Sendable>(_ duration: Duration,
+                                           _ work: @escaping @Sendable () async throws -> T)
+        async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(for: duration)
+                throw TransportError.bindRefused(.timedOut)
+            }
+            guard let first = try await group.next() else {
+                throw TransportError.bindRefused(.timedOut)
+            }
+            group.cancelAll()
+            return first
         }
     }
 }

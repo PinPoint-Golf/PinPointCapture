@@ -136,7 +136,8 @@ struct CapabilityTests {
         let measured = MeasuredCapability(
             mode: VideoMode(width: 1920, height: 1080, fps: 150, lens: .wide),
             achievedFPS: 149.6, droppedFrames: 0,
-            thermalAtEnd: .nominal, measuredAt: Date()
+            thermalAtEnd: .nominal, measuredAt: Date(),
+            method: .coldSample, durationSeconds: 8
         )
         #expect(measured.displaySummary == "149.6 fps · 0 drops")
     }

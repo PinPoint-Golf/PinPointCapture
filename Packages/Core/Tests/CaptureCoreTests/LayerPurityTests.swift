@@ -44,16 +44,26 @@ struct LayerPurityTests {
             .appendingPathComponent("Sources/CaptureCore")
     }
 
+    /// ⛔ **Recursive, and it has to be.** This walked one directory until
+    /// `Sources/CaptureCore/Ppcp/` was added, at which point every file in it was
+    /// silently outside the seam — a purity test that quietly checks less is
+    /// worse than none, because the green tick is what stops anyone looking. The
+    /// enumerator, and the `files.isEmpty` guard below, are the two halves of
+    /// "this suite must not report success having checked nothing".
+    private static func swiftSources() throws -> [URL] {
+        guard let walk = FileManager.default.enumerator(
+            at: sourcesDirectory, includingPropertiesForKeys: nil) else { return [] }
+        return walk.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+    }
+
     @Test("Core imports no platform framework")
     func coreIsPlatformNeutral() throws {
-        let sources = Self.sourcesDirectory
-        let files = try FileManager.default
-            .contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
+        let files = try Self.swiftSources()
 
         // A suite that checked nothing must not report success — the same guard
         // libwrist's test harness makes when zero tests register.
-        #expect(files.isEmpty == false, "found no Core sources at \(sources.path)")
+        #expect(files.isEmpty == false,
+                "found no Core sources under \(Self.sourcesDirectory.path)")
 
         var violations: [String] = []
         for file in files {
@@ -85,9 +95,8 @@ struct LayerPurityTests {
     /// Foundation, Observation and the protocol library. Nothing else.
     @Test("Core needs nothing beyond Foundation, Observation and libppcp")
     func coreDependencyFootprintIsSmall() throws {
-        let files = try FileManager.default
-            .contentsOfDirectory(at: Self.sourcesDirectory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
+        let files = try Self.swiftSources()
+        #expect(files.isEmpty == false, "found no Core sources to check")
 
         var modules = Set<String>()
         for file in files {

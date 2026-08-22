@@ -77,8 +77,13 @@ public struct Session: Sendable, Identifiable {
         self.shots = shots
     }
 
+    /// ⚠ Counts everything the receiver has not **confirmed** — `delivered`
+    /// included. `CORE` 5.14f puts `confirmed` in the receiver's gift alone, so a
+    /// shot whose bytes arrived and were never committed is still outstanding,
+    /// and a count that treated it as done would tell a user it was safe to walk
+    /// away (REQ-SESS-4).
     public var shotsStillToSend: Int {
-        shots.filter { if case .inStudio = $0.syncState { false } else { true } }.count
+        shots.filter { $0.syncState.isConfirmedByReceiver == false }.count
     }
 
     /// "41 shots · 18:20 to 19:36 · 12 still to send"

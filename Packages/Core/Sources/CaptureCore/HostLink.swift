@@ -9,22 +9,50 @@ import Foundation
 
 /// REQ-SESS-3. Per-shot sync state. The device library is an independent store,
 /// not a cache of PinPoint.
+/// ⚠ **This is now the protocol's `Capture.transfer` axis (`CORE` 5.14), not a
+/// vocabulary of its own** (REQ-PORT-11, D3). It used to have three cases; the
+/// axis has five, and the two that were missing are the two that matter when
+/// something goes wrong: `present` — the receiver has the bytes but has not
+/// committed them — and `failed`.
+///
+/// ⛔ **`inStudio` is `confirmed`, and only a `capture_committed` from the
+/// receiver produces it.** `CORE` 5.14f and 8.4b: "`confirmed` is asserted by the
+/// receiver and by nobody else." The comment on the old case already said
+/// "confirmed by the host, never merely uploaded", and the library now enforces
+/// it — `ppcp_capture_set_transfer` cannot reach `confirmed` at all, and the only
+/// route is `ppcp_transfer_on_committed`, which needs the message in hand. That
+/// is what stops REQ-SESS-4 ("nothing unconfirmed is ever evicted") from resting
+/// on a sender's optimism, and it is I38's whole subject.
 public enum ShotSyncState: Sendable, Hashable {
-    /// Held here and nowhere else.
+    /// `pending` — held here and nowhere else.
     case onDevice
-    /// Bulk transfer in flight. `progress` is 0...1.
+    /// `in_flight` — bulk transfer under way. `progress` is 0...1.
     case sending(progress: Double)
-    /// ⚠ Means **confirmed by the host**, never merely uploaded. Nothing
-    /// unconfirmed is ever evicted (REQ-SESS-4).
+    /// `present` — the receiver has the bytes and has not committed them.
+    /// ⚠ **Not `inStudio`.** A shot that arrived but was not committed is not
+    /// safe to evict, and showing it as done is how it gets deleted.
+    case delivered
+    /// `confirmed` — ⛔ set **only** on `capture_committed` (5.14f, 8.4b).
     case inStudio
+    /// `failed` — the transfer will not complete without another attempt.
+    case failed
 
     /// Three words, not an icon — a golfer glancing from the mat needs a *state*.
     public var displayText: String {
         switch self {
         case .onDevice: "On device"
         case .sending(let p): "Sending \(Int((p * 100).rounded()))%"
+        case .delivered: "Sent, not confirmed"
         case .inStudio: "In Studio"
+        case .failed: "Send failed"
         }
+    }
+
+    /// ⛔ REQ-SESS-4 / `CORE` 5.14g1 — the eviction question, answered in one
+    /// place. Only `confirmed` is safe, and `delivered` deliberately is not: the
+    /// receiver has the bytes and has not said it kept them.
+    public var isConfirmedByReceiver: Bool {
+        if case .inStudio = self { true } else { false }
     }
 }
 

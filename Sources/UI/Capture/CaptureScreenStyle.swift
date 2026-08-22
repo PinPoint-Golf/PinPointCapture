@@ -33,7 +33,12 @@ enum CaptureScreenStyle {
         switch syncState {
         case .onDevice: "held on this device"
         case .sending(let progress): "sending \(Int((progress * 100).rounded()))%"
+        // ⚠ "sent" and "sent, confirmed" are different sentences on purpose:
+        // `CORE` 5.14f puts `confirmed` in the receiver's gift alone, and a
+        // golfer glancing from the mat is entitled to know which one this is.
+        case .delivered: "sent, not yet confirmed"
         case .inStudio: "sent, confirmed"
+        case .failed: "send failed"
         }
     }
 

@@ -82,6 +82,18 @@ public enum TransportError: Error, Sendable, Equatable {
     /// A peer link needs every channel it asked for; a link with only channel 0
     /// is not a PPCP transport (`CORE` T2).
     case incompleteLink(missing: PpcpChannel)
+    /// `ENC` 2.1a — a `link_id` is 16 bytes and nothing else.
+    case invalidLinkIdLength(Int)
+    /// `ENC` 2.1c — a stream refused at the bind. The four reasons are apart
+    /// because they are four different bugs at the far end.
+    case bindRefused(BindRefusal)
+    /// This link carries no such channel and cannot open one — the listening
+    /// side of `ENC` 2.1d, where only the dialler may open a stream.
+    case channelUnavailable(PpcpChannel)
+    /// The platform CSPRNG refused to produce a `link_id` (`ENC` 2.1a).
+    /// ⛔ There is no weaker source to fall back to, and the value carried is a
+    /// platform status code, never any part of the entropy.
+    case failedToMintLinkId(Int)
 }
 
 // MARK: - The channel
@@ -288,13 +300,86 @@ public protocol PeerTransport: Sendable {
 }
 
 public extension PeerTransport {
-    /// The channel a frame header names (`ENC` 2c).
-    func channel(_ number: PpcpChannel) -> (any ByteChannel)? {
+    /// The channel a frame header names (`ENC` 2c), if the link already carries
+    /// it. `nil` for a channel that has not been bound — which for `preview` is
+    /// the ordinary case, not an error.
+    func boundChannel(_ number: PpcpChannel) -> (any ByteChannel)? {
         switch number {
         case .control: control
         case .bulk: bulk
         case .preview: preview
         }
+    }
+}
+
+/// `ENC` 2.1d — "a bulk channel MAY be opened at any later point in the
+/// session; a `preview` channel after the session is established is the expected
+/// case."
+///
+/// ⚠ This is the half of E1 that arrival order could not have supported at all.
+/// A third stream arriving mid-session is indistinguishable from a *new peer's*
+/// first stream unless it names the link it belongs to, which is precisely what
+/// `link_bind` carries. Two protocols rather than one because the two sides do
+/// genuinely different things: the dialler *opens* a stream (2.1a mints nothing
+/// new — the same `link_id`), and the listener *waits* for one to be bound to
+/// the link it already holds.
+public protocol DiallingPeerLink: PeerTransport {
+    /// Dial a further stream into this link, sending `link_bind` with the link's
+    /// existing `link_id` (2.1d). Returns the already-bound channel if the link
+    /// carries it.
+    func openChannel(_ channel: PpcpChannel) async throws -> any ByteChannel
+}
+
+public protocol ListeningPeerLink: PeerTransport {
+    /// Suspend until the counterpart binds `channel` into this link, or the
+    /// link closes. Returns the already-bound channel if it carries it.
+    func channelBound(_ channel: PpcpChannel) async throws -> any ByteChannel
+}
+
+// MARK: - Bytes held in front of a channel
+
+/// A `ByteChannel` that yields a held prefix before delegating to the real one.
+///
+/// ⚠ It exists for one reason and it is a TCP fact rather than a protocol one:
+/// `link_bind` is a ~40-byte frame and the `hello` behind it is written by the
+/// dialler moments later, so a single `receive()` on the listener routinely
+/// returns **both**. The bind decoder reports how many bytes its frame occupied
+/// (`ENC` §3 is length-prefixed, so this is exact); whatever followed is
+/// application data that has already left the socket and would otherwise be
+/// silently dropped. Dropped bytes desynchronise a frame stream and the symptom
+/// appears frames later, which is the worst class of bug to debug.
+///
+/// Here in Core rather than in the platform layer because it is reassembly
+/// policy over the neutral `ByteChannel` contract, and every transport that ever
+/// carries `link_bind` needs exactly this.
+/// ⚠ An `actor` rather than a lock, so that Core needs no synchronisation
+/// primitive of its own: every member of `ByteChannel` except `channel` is
+/// already `async`, and `channel` is a pass-through with nothing to guard.
+public actor PrefixedByteChannel: ByteChannel {
+
+    private let underlying: any ByteChannel
+    private var residue: Data?
+
+    public nonisolated var channel: PpcpChannel { underlying.channel }
+
+    public init(_ underlying: any ByteChannel, holding prefix: Data) {
+        self.underlying = underlying
+        self.residue = prefix.isEmpty ? nil : prefix
+    }
+
+    public func send(_ bytes: Data) async throws { try await underlying.send(bytes) }
+
+    public func receive() async throws -> Data? {
+        if let held = residue {
+            residue = nil
+            return held
+        }
+        return try await underlying.receive()
+    }
+
+    public func close(_ reason: ChannelCloseReason) async {
+        residue = nil
+        await underlying.close(reason)
     }
 }
 
@@ -382,13 +467,15 @@ public struct PeerEndpoint: Sendable, Equatable, Hashable {
 /// client (`RV` 5.2g).
 public protocol PeerTransportConnector: Sendable {
     /// Dial every requested channel and return only when all of them have
-    /// completed the handshake.
+    /// completed the handshake **and sent `link_bind`**.
     ///
-    /// ⚠ Channels are dialled **in order**, each handshake completing before the
-    /// next is dialled. That is not politeness: separate TCP connections carry no
-    /// correlation, so until `ENC` §3 framing lands and 2c's channel number
-    /// identifies each stream, arrival order is what lets a listener assemble a
-    /// link. See the assembler note in the platform implementation.
+    /// ⚠ Channels are dialled **concurrently**, and E1 is what made that
+    /// possible. S1 dialled them one at a time because a listener could only
+    /// assemble a link from arrival order; `ENC` 2.1a replaced that with a
+    /// `link_id` in the first frame of every stream, and 2.1d says in as many
+    /// words that bulk channels may be opened "before, after, or concurrently
+    /// with channel 0". Concurrency halves the time from scan to first frame,
+    /// which is time the user spends holding a phone up at a tripod.
     func connect(to endpoint: PeerEndpoint,
                  credentials: any PpcpCredentials,
                  channels: [PpcpChannel]) async throws -> any PeerTransport

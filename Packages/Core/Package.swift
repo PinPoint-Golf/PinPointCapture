@@ -61,7 +61,16 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureCoreTests",
-            dependencies: ["CaptureCore"],
+            dependencies: [
+                "CaptureCore",
+                // ⚠ The tests bind to `CPPCP` directly as well, and that is the
+                // point rather than a leak. CT-I22's decisive assertion is that a
+                // defaulted zero is **not producible** — a claim about the
+                // library's constructor signatures, not about this application's
+                // values — and it can only be written by calling
+                // `ppcp_timing_make` and watching it refuse.
+                .product(name: "CPPCP", package: "libppcp")
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]

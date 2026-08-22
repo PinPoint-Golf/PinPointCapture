@@ -61,7 +61,24 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
                     // AVCaptureConnection, not of a format, so it cannot honestly
                     // be claimed at enumeration time. It is enabled and confirmed
                     // in warmUp(mode:) (REQ-OPT-7).
-                    deliversIntrinsics: false
+                    deliversIntrinsics: false,
+                    // ── The PPCP CaptureProfile fields (D2) ──────────────────
+                    //
+                    // ⚠ Taken from the SAME `AVCaptureDevice.Format` the rate and
+                    // dimensions come from, in the same pass. REQ-FPS-1: what the
+                    // hardware actually offers, never a spec sheet — and a second
+                    // walk to fill in `optical` later would be a second chance to
+                    // read a different format than the one that won.
+                    pixelFormat: Self.fourCC(format.formatDescription),
+                    exposureRangeNs: Self.nanoseconds(format.minExposureDuration)
+                        ... Self.nanoseconds(format.maxExposureDuration),
+                    // ⚠ ISO is a `Float` on this platform and an int64 on the
+                    // wire (`CORE` 5.7 `optical`). Rounded toward the interior of
+                    // the range — up at the bottom, down at the top — so the
+                    // declared range is never wider than the one the device
+                    // actually offers.
+                    isoRange: Int64(format.minISO.rounded(.up))
+                        ... Int64(format.maxISO.rounded(.down))
                 )
 
                 let key = "\(lens.rawValue)-\(dims.width)x\(dims.height)"
@@ -79,6 +96,25 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
             },
             measured: nil
         )
+    }
+
+    /// The format's media subtype as the four-character code the platform names
+    /// it by — `420v`, `420f`, `x422`.
+    ///
+    /// ⛔ `CORE` 5.7 `format.pixel_format` is an open-registry `Kind`, and this is
+    /// the platform's own spelling handed over unchanged. Nothing in Core parses
+    /// it (5.2c's principle applied one field down: a consumer that inferred
+    /// behaviour from it would be inferring what the protocol requires be
+    /// declared).
+    private static func fourCC(_ description: CMFormatDescription) -> String {
+        let code = CMFormatDescriptionGetMediaSubType(description)
+        let bytes = [UInt8((code >> 24) & 0xFF), UInt8((code >> 16) & 0xFF),
+                     UInt8((code >> 8) & 0xFF), UInt8(code & 0xFF)]
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func nanoseconds(_ time: CMTime) -> Int64 {
+        Int64((CMTimeGetSeconds(time) * 1_000_000_000).rounded())
     }
 
     private static func lens(for type: AVCaptureDevice.DeviceType) -> Lens {
@@ -223,6 +259,7 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
         output.setSampleBufferDelegate(probe, queue: sampleQueue)
         defer { output.setSampleBufferDelegate(nil, queue: nil) }
 
+        let thermalAtStart = thermalState
         try? await Task.sleep(for: .seconds(duration))
 
         let result = probe.result()
@@ -234,10 +271,114 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
             droppedFrames: result.dropped,
             thermalAtEnd: thermalState,
             measuredAt: Date(),
+            // ⛔ **`CORE` 5.8b, and the call is made HERE because here is where
+            // the evidence is.** "`method: sustained` is used only for a
+            // measurement taken under sustained thermal load. A short sample
+            // taken during onboarding is `cold_sample`." The evidence that the
+            // load was sustained is that the device got hotter — or was already
+            // hot — over a run long enough to matter. A caller cannot be trusted
+            // to pass this in: I28 exists because "without `method` the cold
+            // number quietly becomes the displayed one", and a parameter is
+            // exactly how that happens.
+            //
+            // ⚠ REQ-ENC-4 says the same thing in the product's words: "a
+            // measurement taken from cold is not a measurement".
+            method: Self.measurementMethod(duration: duration,
+                                           thermalAtStart: thermalAtStart,
+                                           thermalAtEnd: thermalState),
+            durationSeconds: duration,
+            // `CORE` 5.8a `observed_at` — an Instant, so in the capture timebase
+            // and not the wall clock (I1, 5.3b). `measuredAt` beside it is a
+            // label for a screen.
+            observedHostTimeNs: MachClock.hostTimeNs,
             exposureSeconds: device.map { CMTimeGetSeconds($0.exposureDuration) },
             iso: device.map { Double($0.iso) }
         )
     }
+
+    /// `CORE` 5.8b — was this run under sustained thermal load, or was it a cold
+    /// sample?
+    ///
+    /// ⚠ **Two conditions, and the second is what makes the first honest.** A run
+    /// has to be long enough for thermal behaviour to appear *and* has to have
+    /// actually met some: a ten-minute run on a cold device in a cold room that
+    /// never leaves `.nominal` has not demonstrated sustained anything, and
+    /// 5.8b's consumer would be entitled to read `sustained` as though it had.
+    /// Anything short of both is `cold_sample`, which is the safe direction —
+    /// a consumer "MUST NOT treat it as a sustained figure", so the worst
+    /// outcome of being conservative here is that a real measurement is
+    /// under-claimed, and the worst outcome of the other error is a host
+    /// accepting a device on a number that evaporates on the third swing.
+    ///
+    /// ⛔ The threshold is here, in the application, and not in the protocol
+    /// (I14, 5.7d): PPCP carries the fact and never the judgement.
+    private static let sustainedRunSeconds: TimeInterval = 600
+
+    private static func measurementMethod(duration: TimeInterval,
+                                          thermalAtStart: ThermalState,
+                                          thermalAtEnd: ThermalState) -> MeasuredCapability.Method {
+        guard duration >= sustainedRunSeconds else { return .coldSample }
+        guard thermalAtEnd > .nominal || thermalAtEnd > thermalAtStart else { return .coldSample }
+        return .sustained
+    }
+
+    // MARK: - The PPCP declaration (D2)
+
+    /// Everything `PpcpDeclaration` needs, assembled from the real capture stack
+    /// and the model's `DeviceProfiles.json` entry.
+    ///
+    /// ⚠ **This method is the whole of REQ-PORT-11's seam.** Above it: an
+    /// `AVCaptureDevice.DiscoverySession` and a JSON file. Below it: nothing but
+    /// Core types, which is why `CaptureCore` can build the declaration through
+    /// `libppcp`'s structs without importing a framework. An Android port
+    /// replaces this method and nothing else.
+    ///
+    /// ⛔ `product` carries the marketing name and nothing is ever inferred back
+    /// from it (5.2c, I19). It is here because `CORE` 5.2 has a slot for it and a
+    /// bug report is easier to read with it than without.
+    public func ppcpDeclarationInput(peerId: String,
+                                     viewpoint: PpcpViewpoint? = nil)
+        throws -> PpcpDeclarationInput {
+        let identifier = DeviceProfiles.currentIdentifier
+        guard let timing = DeviceProfiles.ppcp(for: identifier) else {
+            // ⛔ Not a fallback. A13/REQ-PORT-10 puts the timing in the data file
+            // and I31 forbids inventing it, so a data file that failed to load is
+            // a build problem that must surface as one — a declaration assembled
+            // around a guessed readout is the silent bias CT-S7 exists to catch.
+            throw CaptureDeviceError.configurationFailed(
+                "no PPCP timing profile for \(identifier) and no _default in DeviceProfiles.json")
+        }
+
+        return PpcpDeclarationInput(
+            peerId: peerId,
+            profiles: PpcpProfileSet.device,
+            timebases: PpcpTimebases.all,
+            captureTimebaseId: PpcpTimebases.captureId,
+            capability: try enumerateCapability(),
+            timing: timing,
+            clipCodec: Self.clipCodec,
+            // ⚠ Both declared, and both on `tb:hosttime` — see the I4 note in
+            // `PpcpDeclaration.plan`. The microphone is what D5's acoustic
+            // nomination reads; the IMU is what D4's `metadata` Stream carries.
+            declaresMicrophone: true,
+            declaresIMU: true,
+            // ⛔ 5.6e — absent unless something actually classified it. Nothing
+            // does yet, and a `declared` viewpoint nobody declared would be a
+            // self-report with no self behind it.
+            viewpoint: viewpoint,
+            product: ("Apple", DeviceProfiles.profile(for: identifier).marketingName,
+                      ProcessInfo.processInfo.operatingSystemVersionString))
+    }
+
+    /// `CORE` 5.7 `format.codec` — what a Capture from these profiles is encoded
+    /// as when it reaches the host.
+    ///
+    /// ⚠ A reported ambiguity: 5.7 does not say whether `codec` describes what
+    /// the Source *delivers* or what the payload is *encoded as*, and on this
+    /// platform they differ — the video data output hands over uncompressed
+    /// buffers in `format.pixel_format` and the clip is written as this. The
+    /// receiver cares about this one. See the note in `Declaration.swift`.
+    static let clipCodec = "hevc"
 
     // MARK: - Preview
 

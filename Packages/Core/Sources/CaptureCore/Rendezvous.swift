@@ -38,7 +38,10 @@ public struct PpcpLibraryError: Error, Sendable, Equatable, CustomStringConverti
     public var description: String { "libppcp: \(name)" }
 }
 
-private func check(_ result: ppcp_result) throws {
+/// ⚠ Package-wide rather than file-private: `Ppcp/LinkBind.swift` calls into the
+/// same library and must fail the same way. One translation from a
+/// `ppcp_result` to a Swift error, so a caller can never be handed a raw code.
+func check(_ result: ppcp_result) throws {
     guard result == PPCP_OK else { throw PpcpLibraryError(result) }
 }
 

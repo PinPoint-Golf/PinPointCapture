@@ -42,6 +42,13 @@ public enum PreviewFixtures {
             droppedFrames: 0,
             thermalAtEnd: .nominal,
             measuredAt: at(18, 19, 0),
+            // ⚠ `cold_sample`, not `sustained` (`CORE` 5.8b). The onboarding
+            // self-test of I28 runs for seconds from cold, and a fixture that
+            // said `sustained` would put the one claim 5.8b singles out —
+            // "a consumer MUST NOT treat a cold sample as a sustained figure" —
+            // onto every preview screen in the app.
+            method: .coldSample,
+            durationSeconds: 8,
             exposureSeconds: 1.0 / 1600.0,
             iso: 2200
         )

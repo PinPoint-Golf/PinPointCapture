@@ -1,15 +1,212 @@
 {
-  "iPhone17,3": { "marketingName": "iPhone 16" },
-  "iPhone17,4": { "marketingName": "iPhone 16 Plus" },
-  "iPhone17,1": { "marketingName": "iPhone 16 Pro" },
-  "iPhone17,2": { "marketingName": "iPhone 16 Pro Max" },
-  "iPhone16,1": { "marketingName": "iPhone 15 Pro" },
-  "iPhone16,2": { "marketingName": "iPhone 15 Pro Max" },
-  "iPhone15,4": { "marketingName": "iPhone 15" },
-  "iPhone15,5": { "marketingName": "iPhone 15 Plus" },
-  "iPad16,3": { "marketingName": "iPad Pro 11-inch (M4)" },
-  "iPad16,5": { "marketingName": "iPad Pro 13-inch (M4)" },
-  "iPad14,8": { "marketingName": "iPad Air 11-inch (M2)" },
-  "arm64": { "marketingName": "Simulator" },
-  "x86_64": { "marketingName": "Simulator" }
+  "_default": {
+    "marketingName": "Unprofiled device",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone17,3": {
+    "marketingName": "iPhone 16",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone17,4": {
+    "marketingName": "iPhone 16 Plus",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone17,1": {
+    "marketingName": "iPhone 16 Pro",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone17,2": {
+    "marketingName": "iPhone 16 Pro Max",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone16,1": {
+    "marketingName": "iPhone 15 Pro",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone16,2": {
+    "marketingName": "iPhone 15 Pro Max",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone15,4": {
+    "marketingName": "iPhone 15",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPhone15,5": {
+    "marketingName": "iPhone 15 Plus",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPad16,3": {
+    "marketingName": "iPad Pro 11-inch (M4)",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPad16,5": {
+    "marketingName": "iPad Pro 13-inch (M4)",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "iPad14,8": {
+    "marketingName": "iPad Air 11-inch (M2)",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "arm64": {
+    "marketingName": "Simulator",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  },
+  "x86_64": {
+    "marketingName": "Simulator",
+    "ppcp": {
+      "frameStartToExposureOffsetNs": 0,
+      "offsetProvenance": "assumed",
+      "geometry": [
+        {
+          "readout": {
+            "assumedFractionOfFrameInterval": 1.0
+          },
+          "direction": "top_to_bottom"
+        }
+      ]
+    }
+  }
 }
