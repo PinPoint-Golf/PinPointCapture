@@ -65,6 +65,29 @@ public protocol CaptureDevice: AnyObject, Sendable {
 
     /// Storage headroom, for A7 and for the arm-time floor (REQ-OFF-2).
     func storageHeadroom(forMode mode: VideoMode) -> StorageHeadroom
+
+    /// Everything the peer declaration needs, assembled from the real capture
+    /// stack and the model's device-profile entry (D2).
+    ///
+    /// ⚠ **Adding this here was a decision, and the reason is REQ-PORT-2.** The
+    /// declaration was reachable only on the concrete iOS class, so nothing above
+    /// the platform layer could build one — which meant D3's bundle writer could
+    /// be tested and could not be *used*. An Android port replaces this method
+    /// and nothing else; everything in and out is a Core type.
+    func ppcpDeclarationInput(peerId: String,
+                              viewpoint: PpcpViewpoint?) throws -> PpcpDeclarationInput
+
+    /// `CORE` 7.3d — platform interruptions, reported as **completed** gaps.
+    ///
+    /// ⛔ The handler is called when an interruption *ends*, because the gap is
+    /// the deliverable and a gap with no end is not one. Recovering is the half
+    /// everybody implements; recording the gap is the half that stops a consumer
+    /// interpolating across it (5.14b).
+    ///
+    /// ⚠ Here rather than on the concrete class so `AVCaptureSession` stays
+    /// behind the port: the session is what has to be observed, and it must not
+    /// become reachable from a view model (REQ-PORT-3).
+    func observeInterruptions(_ handler: @escaping @MainActor (InterruptionRecord) -> Void)
 }
 
 /// Builds the capture device for the running platform.

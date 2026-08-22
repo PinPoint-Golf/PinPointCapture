@@ -147,4 +147,68 @@ struct CapturePathAppTests {
         #expect(bytes == nil)
         #expect(coverage.unaccountedNs(asOf: 2_000_000_000) == nil)
     }
+
+    // MARK: The composition root
+
+    /// §5.11's continuity table is normative, and the Streams are derived from
+    /// what was **declared** rather than assembled by a caller: a Stream's
+    /// `source_id`, `profile_id` and `timebase_id` must name things the peer
+    /// actually declared (5.11a, I5).
+    @Test("5.11 — the Streams come out of the declaration, with the table's continuity")
+    func streamsAreDerivedFromTheDeclaration() throws {
+        let declaration = try PpcpDeclaration(PpcpDeclarationInput(
+            peerId: "peer:test",
+            profiles: PpcpProfileSet.device,
+            timebases: [PpcpTimebaseDeclaration(id: "tb:hosttime", kind: .monotonic,
+                                                epochStable: true, resolutionNs: 42)],
+            captureTimebaseId: "tb:hosttime",
+            capability: DeviceCapability(
+                modelIdentifier: "iPhone17,3", modelName: "iPhone 16",
+                claimed: [VideoMode(width: 1920, height: 1080, fps: 150, lens: .wide,
+                                    pixelFormat: "420v")],
+                measured: nil),
+            timing: PpcpDeviceTimingProfile(
+                frameStartToExposureOffsetNs: 0, offsetProvenance: .assumed,
+                geometry: [PpcpGeometryEntry(readout: .assumedFractionOfFrameInterval(1.0),
+                                             direction: .topToBottom)]),
+            clipCodec: "hevc",
+            declaresMicrophone: true,
+            declaresIMU: true))
+
+        let streams = HostlessRecordingSession.streams(
+            sessionId: "ses:1", declaration: declaration,
+            videoProfileId: nil, openedAtNs: 1_000_000_000)
+
+        let video = try #require(streams.first { $0.kind == PpcpStreamKind.video })
+        #expect(video.continuity == .shotWindowed, "§5.11 — video is always shot_windowed")
+        #expect(declaration.sources.contains { $0.id == video.sourceId })
+        #expect(declaration.sources.first { $0.id == video.sourceId }?
+            .profileIds.contains(video.profileId) == true)
+        #expect(video.timebaseId == "tb:hosttime")
+
+        let metadata = try #require(streams.first { $0.kind == PpcpStreamKind.metadata })
+        #expect(metadata.continuity == .continuous,
+                "§5.11 — metadata is always continuous, which is what obliges I36")
+        // I4 — two Sources on one clock reference the same id.
+        #expect(metadata.timebaseId == video.timebaseId)
+    }
+
+    /// ⛔ §9.2 — arming is not a claim. A device that could not warm up retains
+    /// nothing, so it must not open a Session and must not say it is armed.
+    @Test("Arming without a camera opens no Session and claims nothing")
+    @MainActor
+    func armingWithoutACameraOpensNoSession() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("d4-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let model = AppModel(store: SessionStore(root: root))
+        model.refreshCapability()
+        guard model.capabilityError != nil else { return }  // real hardware, skip
+
+        model.arm()
+        #expect(model.captureStatus.state != .armed)
+        #expect(model.recording == nil)
+        #expect(model.recordingError == nil, "nothing failed — nothing was attempted")
+    }
 }

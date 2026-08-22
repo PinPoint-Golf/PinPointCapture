@@ -23,6 +23,8 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     ]
 
     private let session = AVCaptureSession()
+    /// `CORE` 7.3d. Held here because the session it observes is held here.
+    private var interruptions: InterruptionMonitor?
     private let sampleQueue = DispatchQueue(label: "org.pinpointstudio.capture.samples",
                                             qos: .userInitiated)
     private var activeDevice: AVCaptureDevice?
@@ -379,6 +381,21 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     /// buffers in `format.pixel_format` and the clip is written as this. The
     /// receiver cares about this one. See the note in `Declaration.swift`.
     static let clipCodec = "hevc"
+
+    // MARK: - Interruptions (CORE 7.3d)
+
+    public func observeInterruptions(
+        _ handler: @escaping @MainActor (InterruptionRecord) -> Void) {
+        let monitor = InterruptionMonitor(onInterruption: handler)
+        interruptions = monitor
+        // ⚠ `isRetaining` is asked at the moment the interruption begins, not
+        // captured: "recovered" means the peer got back to where it was, and
+        // where it was retaining nothing there was nothing to get back to.
+        let session = session
+        Task { @MainActor in
+            monitor.start(observing: session) { session.isRunning }
+        }
+    }
 
     // MARK: - Preview
 

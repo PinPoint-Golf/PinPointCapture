@@ -202,6 +202,10 @@ Also asserted, each a writer refusal rather than a check of ours: `ENC` 7c (a `p
 
 **Since D4 the bundle carries a real Capture.** The clip comes out of the REQ-BUF-1 ring rather than out of a fixture: a shot-anchored Capture with its realised `interval`, `completeness`, and an `achieved_summary` carrying frame count, drops, realised rate in millihertz, the exposure and ISO `{min,max,median}` and a thermal timeline — and a `payload_begin` carrying the `AchievedFrames` behind it. A `continuous` `metadata` Stream is open alongside it and accounts for its whole interval (I36), so the Session can honestly assert `complete`.
 
+**And the application composes it.** Until D4 nothing in `Sources/` built a `DevicePeer` or a `SessionBundleWriter` — the bundle was a working library and not a working application. `Sources/Platform/Capture/HostlessRecordingSession.swift` now opens one against a real file when the device arms: a peer id minted once and persisted (5.2.1a) and never a platform identifier (5.2.1b), a declaration from the hardware, and Streams **derived from that declaration** rather than passed in, because a Stream's `source_id`/`profile_id`/`timebase_id` must name things the peer actually declared (5.11a, I5).
+
+⚠ **A dishonesty this found.** `AppModel.captureStatus` started at `PreviewFixtures.armed`, so a freshly launched app on a device with no usable camera reported itself armed and retaining nothing — and `arm()` set `.armed` whatever `warmUp` did. Both fixed: the model starts `cold` and arming is conditional on warming. §9.2 makes capture the thing that must not be quietly wrong, and this was quietly wrong in the UI for two sessions.
+
 What is left for the row is minting a Shot (`authority: device`) — `libppcp` L10 and this repository's **D5**. Not a block.
 
 ⚠ **A bug this round trip caught.** `SessionStore.readHeader` handed `ppcp_bundle_header_parse` the bytes *after* the eight magic bytes and demanded 24 in total. `PPCP_BUNDLE_HEADER_BYTES` is 16 and **includes** the magic, which the library's own parser starts by comparing — so the check refused every conformant bundle. It had passed review twice. Only writing one and reading it back found it, which is the argument for the round trip over a golden byte string.
@@ -327,7 +331,7 @@ make gen && make build
 ⚠ **`make test-core` is green: 107 tests, 13 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
 
-⚠ **`make test-app` is green: 21 tests, 4 suites.** It hung for one session; see the
+⚠ **`make test-app` is green: 23 tests, 4 suites.** It hung for one session; see the
 finding below.
 
 ⚠ `-jobs 3` on every `xcodebuild`, and `-j 3` on every `swift build`/`swift test`.
