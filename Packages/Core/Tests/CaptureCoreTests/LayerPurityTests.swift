@@ -13,6 +13,14 @@
 //
 //  Modelled on libwrist's `tests/purity.cmake`, which asserts the sans-I/O rule
 //  the same way: as something that fails the build, not as a convention.
+//
+//  ⚠ `CPPCP` — libppcp, the MIT C reference implementation — is ALLOWED here and
+//  is not a hole in the seam. It is the opposite of a platform framework: a
+//  platform-free C library with no socket, thread, timer, clock or file in it
+//  (implementation plan ground rule 7), which is exactly what makes one
+//  implementation serve both ends. Plan A5 says Core gains a dependency on it and
+//  wraps it in Swift, and the README has always said that most of what lives here
+//  will end up owned by it. The forbidden list below is unchanged.
 
 import Foundation
 import Testing
@@ -74,8 +82,8 @@ struct LayerPurityTests {
                 """)
     }
 
-    /// Foundation is fine and is the only thing Core should need.
-    @Test("Core needs nothing beyond Foundation and Observation")
+    /// Foundation, Observation and the protocol library. Nothing else.
+    @Test("Core needs nothing beyond Foundation, Observation and libppcp")
     func coreDependencyFootprintIsSmall() throws {
         let files = try FileManager.default
             .contentsOfDirectory(at: Self.sourcesDirectory, includingPropertiesForKeys: nil)
@@ -91,7 +99,10 @@ struct LayerPurityTests {
                     .trimmingCharacters(in: .whitespaces))
             }
         }
-        #expect(modules.subtracting(["Foundation", "Observation"]).isEmpty,
+        // ⚠ `CPPCP` joins the list, and nothing else does. Every addition here is
+        // a decision about what Core is allowed to depend on, which is why the
+        // set is written out rather than derived.
+        #expect(modules.subtracting(["Foundation", "Observation", "CPPCP"]).isEmpty,
                 "Core imports more than expected: \(modules.sorted())")
     }
 }

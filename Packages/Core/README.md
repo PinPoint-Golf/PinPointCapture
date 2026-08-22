@@ -82,3 +82,13 @@ settle as a side effect of app work.
 
 Keeping this package platform-free is what makes that later change a substitution
 rather than a rewrite. The layer purity test is what keeps it platform-free.
+
+**The substitution has started.** `Package.swift` depends on `libppcp` as a SwiftPM
+package (product `CPPCP`, plan A5) and `Rendezvous.swift` is the first wrapper over
+it: `PPCP-RV` §5.1 key derivation and §5.3 PSK identities are the library's, not
+ours. During co-development that is a sibling `../libppcp` checkout; the git URL is
+recorded in `Package.swift` for when it is tagged.
+
+⛔ `import CPPCP` is confined to `Rendezvous.swift` and the layer-purity test names
+it explicitly. It is not a platform framework — it is a sans-I/O C library with no
+socket, thread, timer, clock or file in it — and the forbidden list is unchanged.

@@ -8,10 +8,13 @@
 //  evidence that the profile of `RV` §5.2 is met is an observed handshake. RT-4's
 //  method is `injected` rather than `static` for exactly that reason.
 //
-//  ⛔ The `RV` §10 vectors below are here and ONLY here. They are test data, not
-//  a key store: the derivation that produces `K_tls` and the PSK identity from a
-//  scanned pairing code is `libppcp`'s (plan A7, work package L12), and this file
-//  is what lets D1 be finished and tested before that lands.
+//  ⚠ The keys below are **derived, not written down**. `libppcp`'s L12 landed, so
+//  `K_tls` and the 17-octet identity come out of `ppcp_rv_derive` and
+//  `ppcp_rv_psk_identity` through `CaptureCore.RendezvousKeys` — the same path a
+//  scanned pairing code will take. What remains as literal test data is only what
+//  `RV` §10 states as input: a `psk`, a `sid`, and one connection's `rn2`. The
+//  byte-for-byte assertions on the outputs live in `Packages/Core`, where they
+//  run without a simulator.
 
 import Foundation
 import Network
@@ -19,18 +22,34 @@ import Testing
 import CaptureCore
 @testable import PinPointCapture
 
-/// `PPCP-RV` §10.1 and §10.2, byte for byte.
+/// The inputs `PPCP-RV` §10 states. Everything else is derived from them.
 private enum RvVectors {
-    /// §10.1 — `K_tls = HKDF-Expand(PRK, "ppcp1 tls-psk", 32)`.
-    static let tlsKey = Data(hex: "2b0c55242ac1075eef80f548a7b39976b1cc2b88fbb6d609e5f3cd20f36d7fd4")
-    /// §10.2 — `0x01 || rn2 || tag`, 17 octets.
+    /// §10.1 `sid` — the HKDF salt, and `Session.id`
+    /// `3f2504e0-4f89-41d3-9a0c-0305e82c3301` in canonical text (4.3e).
+    static let sid = Data(hex: "3f2504e04f8941d39a0c0305e82c3301")
+    /// §10.1 `psk` — the secret a pairing code carries.
+    static let psk = Data(hex: "000102030405060708090a0b0c0d0e0f")
+    /// §10.2 `rn2` — the eight CSPRNG bytes of one connection's identity.
     ///
-    /// ⚠ Not valid UTF-8, on purpose. `RV` 5.3f says a peer MUST NOT transcode,
-    /// validate as text or truncate an identity, and 5.4b2 records this exact
-    /// value completing a handshake at TLS 1.2 on an iPhone 16.
-    static let pskIdentity = Data(hex: "010f1e2d3c4b5a6978b355ada60b4b5aa8")
-    /// A second, unrelated key — a device that scanned a different code.
-    static let wrongTlsKey = Data(hex: "fd2d8fcfb1be76f83ca1d551e8d5ab34a2fbe3a76f048acb09c64c1d20646117")
+    /// ⚠ With this `rn2` the identity is `010f1e2d3c4b5a6978b355ada60b4b5aa8`,
+    /// which is deliberately not valid UTF-8: `RV` 5.3f forbids transcoding,
+    /// text validation or truncation, and 5.4b2 records this exact value
+    /// completing a handshake at TLS 1.2 on an iPhone 16.
+    static let rn2 = Data(hex: "0f1e2d3c4b5a6978")
+    /// A device that scanned a different code entirely.
+    static let otherPsk = Data(hex: "0f0e0d0c0b0a09080706050403020100")
+
+    static func keys() throws -> RendezvousKeys {
+        try RendezvousKeys(psk: psk, sid: sid)
+    }
+
+    /// ⚠ A fixed `rn2` so both ends of a loopback mint the same identity. The
+    /// listener can only accept an identity it registered — see the finding in
+    /// `identityRotationAgainstAServerThatCannotResolve` — so a rotating source
+    /// on both ends would never connect to itself.
+    static func pinned(_ keys: RendezvousKeys) -> RendezvousCredentials {
+        RendezvousCredentials(keys: keys, randomBytes: { _ in rn2 })
+    }
 }
 
 @Suite("PPCP transport over TLS-PSK", .serialized)
@@ -81,12 +100,21 @@ struct TransportLoopbackTests {
 
     /// ⛔ `RV` 5.2f — a failed handshake is a failed connection. There is no
     /// result here that means "connected anyway".
-    @Test("A mismatched K_tls fails, and fails closed")
+    ///
+    /// ⚠ Worth knowing *where* it fails, because it is not where you would guess.
+    /// `K_tls` and `K_id` come from the same `PRK` (`RV` §5.1), so a peer holding
+    /// the wrong secret also computes the wrong identity tag and is refused at
+    /// identity resolution — alert 115 — long before anything reaches Finished.
+    /// A wrong key that *does* resolve cannot arise from a real pairing at all;
+    /// `wrongKeyWithAResolvableIdentityFailsLater` constructs one by hand to show
+    /// what it would look like.
+    @Test("A mismatched pairing fails, and fails closed")
     func mismatchedKeyIsRefused() async throws {
-        let listenerCredentials = try FixedPskCredentials(tlsKey: RvVectors.tlsKey,
-                                                          identity: RvVectors.pskIdentity)
-        let dialCredentials = try FixedPskCredentials(tlsKey: RvVectors.wrongTlsKey,
-                                                      identity: RvVectors.pskIdentity)
+        // ⚠ The same `sid`, a different `psk` — a photographed code from another
+        // session, which is the shape this actually takes in the field.
+        let listenerCredentials = RvVectors.pinned(try RvVectors.keys())
+        let dialCredentials = RvVectors.pinned(try RendezvousKeys(psk: RvVectors.otherPsk,
+                                                                  sid: RvVectors.sid))
         let listener = PpcpListener(credentials: listenerCredentials,
                                     channels: [.control],
                                     port: 0)
@@ -107,6 +135,53 @@ struct TransportLoopbackTests {
         await listener.stop()
 
         #expect(failed, "a wrong K_tls must not produce a usable link (RV 5.2f)")
+    }
+
+    /// ⛔ **The evidence behind the `RV` 5.3c finding**, and the reason that
+    /// finding is narrower than it first looked.
+    ///
+    /// 5.3c requires a server to fail identically for an unresolvable identity
+    /// and for a resolved identity with a wrong key. On this platform it does
+    /// not: this pairing — a valid, registered identity with a key that does not
+    /// match it — fails at Finished with `bad_record_mac`, alert 20, where an
+    /// unresolvable identity fails earlier with alert 115. Different content,
+    /// different timing, and no interface to change either.
+    ///
+    /// ⚠ But this combination has to be **built by hand**. `RV` §5.1 derives
+    /// `K_tls` and `K_id` from the same `PRK`, so no scanned code and no
+    /// persisted pairing can produce a counterpart that resolves and then fails
+    /// the key — a wrong secret is wrong in both derivations at once. The 5.3c
+    /// gap is therefore real in the API and not reachable through the protocol's
+    /// own key schedule.
+    @Test("A wrong key with a resolvable identity fails later than an unknown one")
+    func wrongKeyWithAResolvableIdentityFailsLater() async throws {
+        let keys = try RvVectors.keys()
+        let identity = try RvVectors.pinned(keys).nextPskIdentity()
+        let listenerCredentials = try FixedPskCredentials(tlsKey: keys.tlsKey, identity: identity)
+        // The identity the listener registered, over a key it was never derived
+        // from — which RV's key schedule cannot produce, and an attacker cannot
+        // reach without `PRK`.
+        let impossible = try FixedPskCredentials(tlsKey: keys.identityKey, identity: identity)
+
+        let listener = PpcpListener(credentials: listenerCredentials, channels: [.control], port: 0)
+        let port = try await listener.start()
+        let accepting = Task { try await listener.accept() }
+
+        var completed = false
+        do {
+            _ = try await withTimeout(seconds: 20) {
+                try await PpcpConnector().connect(to: PeerEndpoint(host: "127.0.0.1", port: port),
+                                                  credentials: impossible,
+                                                  channels: [.control])
+            }
+            completed = true
+        } catch {
+            completed = false
+        }
+        accepting.cancel()
+        await listener.stop()
+
+        #expect(completed == false, "5.2f — a wrong key must never produce a usable link")
     }
 
     // MARK: - Two channels, independently (CORE T2 / T5)
@@ -157,8 +232,9 @@ struct TransportLoopbackTests {
     func applicationDataBeforeTheHandshakeIsRefused() async throws {
         // Never started: `markHandshakeComplete()` is what `PpcpByteChannel.open`
         // calls, and only after `.ready` plus TLS metadata.
-        let parameters = PpcpTlsProfile.parameters(tlsKey: RvVectors.tlsKey,
-                                                   identity: RvVectors.pskIdentity,
+        let credentials = RvVectors.pinned(try RvVectors.keys())
+        let parameters = PpcpTlsProfile.parameters(tlsKey: credentials.tlsKey,
+                                                   identity: try credentials.nextPskIdentity(),
                                                    isListener: false)
         let connection = NWConnection(host: "127.0.0.1", port: 9, using: parameters)
         let channel = PpcpByteChannel(connection: connection, channel: .control)
@@ -203,13 +279,13 @@ struct TransportLoopbackTests {
     /// Reported with D1. Nothing here works around it.
     @Test("An iOS listener refuses a PSK identity it did not register (RV 5.3a/5.3b finding)")
     func identityRotationAgainstAServerThatCannotResolve() async throws {
-        let listenerCredentials = try FixedPskCredentials(tlsKey: RvVectors.tlsKey,
-                                                          identity: RvVectors.pskIdentity)
-        // A different `rn2`, the same `K_tls` — which is precisely what the next
-        // connection of a real pairing looks like.
-        var rotated = RvVectors.pskIdentity
-        rotated[1] ^= 0xFF
-        let dialCredentials = try FixedPskCredentials(tlsKey: RvVectors.tlsKey, identity: rotated)
+        let keys = try RvVectors.keys()
+        let listenerCredentials = RvVectors.pinned(keys)
+        // ⚠ The real thing: a conformant client, minting `rn2` from the platform
+        // CSPRNG per connection exactly as `RV` 5.3a requires. Same `K_tls`, same
+        // `K_id`, same pairing — only the identity is fresh, which is precisely
+        // what the second connection of any real pairing looks like.
+        let dialCredentials = RendezvousCredentials(keys: keys)
 
         let listener = PpcpListener(credentials: listenerCredentials, channels: [.control], port: 0)
         let port = try await listener.start()
@@ -251,8 +327,7 @@ private struct LoopbackHarness {
     let dialled: any PeerTransport
 
     static func up(channels: [PpcpChannel]) async throws -> LoopbackHarness {
-        let credentials = try FixedPskCredentials(tlsKey: RvVectors.tlsKey,
-                                                  identity: RvVectors.pskIdentity)
+        let credentials = RvVectors.pinned(try RvVectors.keys())
         let listener = PpcpListener(credentials: credentials, channels: channels, port: 0)
         let port = try await listener.start()
 

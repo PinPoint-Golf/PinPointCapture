@@ -469,6 +469,11 @@ struct PpcpConnector: PeerTransportConnector {
 ///    wrong key") is unachievable here: a wrong key fails at Finished with
 ///    `bad_record_mac`, alert 20, and an unresolvable identity fails earlier with
 ///    alert 115. Different content, different timing, no interface to change it.
+///    ⚠ Narrower than it looks, and the tests say why: `K_tls` and `K_id` come
+///    from the same `PRK` (`RV` §5.1), so no scanned code and no persisted
+///    pairing can produce a counterpart whose identity resolves and whose key
+///    then fails. The gap is real in the API and unreachable through the
+///    protocol's own key schedule.
 ///
 /// The connector is unaffected: as the TLS client it rotates `rn2` per connection
 /// exactly as 5.3a requires, and the pairing-code path — the one `RV` 2a makes
