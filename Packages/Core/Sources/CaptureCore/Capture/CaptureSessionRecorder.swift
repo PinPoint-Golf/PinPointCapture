@@ -122,6 +122,42 @@ public final class CaptureSessionRecorder: @unchecked Sendable {
     public func countShot() { shotCount += 1 }
     public func countCandidate() { candidateCount += 1 }
 
+    /// `MSG` 7.1 — record a Candidate and count it for the manifest.
+    ///
+    /// ⛔ **Every nomination**, winners and losers alike (5.12c, 7.1d, I8). The
+    /// count in `session_manifest` is therefore the candidate count and not the
+    /// shot count, which is exactly the arithmetic the requirements review found
+    /// wrong the other way round (REQ-PRIV-6).
+    public func record(candidate: PpcpCandidate) throws {
+        try ensureOpen()
+        try writer.record(candidate: candidate)
+        candidateCount += 1
+    }
+
+    /// `MSG` 7.2 — record a Shot and count it.
+    ///
+    /// ⚠ A bundle is written in the zero-host regime by construction, so every
+    /// Shot in one carries `authority: device` and exactly one Candidate at
+    /// issuance (8.3a, I23). 8.3h then permits it to *gain* Candidates later
+    /// through 8.2e/8.2k, and that is not a violation.
+    public func record(shot: PpcpShot) throws {
+        try ensureOpen()
+        try writer.record(shot: shot)
+        shotCount += 1
+    }
+
+    /// `MSG` 9.3 — a `shot_link`, for a Shot minted during a link outage (8.3f).
+    public func record(shotLink: PpcpShotLink) throws {
+        try ensureOpen()
+        try writer.record(shotLink: shotLink)
+    }
+
+    /// `MSG` 9.0 — an annotation, from either end (5.18d).
+    public func record(annotation: PpcpAnnotation) throws {
+        try ensureOpen()
+        try writer.record(annotation: annotation)
+    }
+
     /// `MSG` §9.2 then `ENC` §6 — the manifest, then every held payload, then the
     /// finish that emits no bytes (7e).
     ///

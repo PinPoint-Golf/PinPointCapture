@@ -93,15 +93,38 @@ public struct DeviceHealth: Sendable, Hashable {
     /// iOS and simply absent on a simulator. ⛔ Absence means "not known", never
     /// 100 (`CORE` 5.1: "absence never means zero").
     public var batteryPercent: Int?
+    /// `MSG` 5.4 — optional beside `battery_pct`, and `nil` for the same reason:
+    /// a simulator has no battery to be charging.
+    public var isCharging: Bool?
 
-    public init(thermal: ThermalState, storageFreeBytes: UInt64, batteryPercent: Int? = nil) {
+    public init(thermal: ThermalState, storageFreeBytes: UInt64,
+                batteryPercent: Int? = nil, isCharging: Bool? = nil) {
         self.thermal = thermal
         self.storageFreeBytes = storageFreeBytes
         self.batteryPercent = batteryPercent
+        self.isCharging = isCharging
     }
 
     /// `CORE` §5.8 — the ordinal protocol spelling, not the platform's.
     public var ppcpThermalLevel: String { thermal.ppcpLevel }
+}
+
+public extension ThermalState {
+
+    /// `CORE` §5.8 — "an ordinal protocol vocabulary, not a platform passthrough".
+    ///
+    /// ⚠ The mapping is **this application's**, and the one non-obvious row is
+    /// `fair → elevated`: `ProcessInfo.ThermalState` has four values and so does
+    /// the protocol, but they are not the same four words, and a peer that passed
+    /// `"fair"` through would be inventing a fifth level.
+    var ppcpThermalLevel: ppcp_thermal_level {
+        switch self {
+        case .nominal: PPCP_THERMAL_NOMINAL
+        case .fair: PPCP_THERMAL_ELEVATED
+        case .serious: PPCP_THERMAL_SERIOUS
+        case .critical: PPCP_THERMAL_CRITICAL
+        }
+    }
 }
 
 /// `CORE` §5.15 — "readiness as a measurement; no state name crosses the wire"
@@ -355,6 +378,9 @@ public final class DevicePeer: @unchecked Sendable {
     private let peerIdString: UnsafeMutablePointer<CChar>
     private let health: (@Sendable () -> DeviceHealth)?
     private let ingest: (@Sendable (String) -> String?)?
+    /// Kept alive because `ppcp_peer_config.sync_timebase` is a borrowed `char *`
+    /// the engine reads on every `sync_probe` that arrives, not only at `new`.
+    private let syncTimebaseString: UnsafeMutablePointer<CChar>?
 
     private var peer: OpaquePointer?
 
@@ -370,18 +396,26 @@ public final class DevicePeer: @unchecked Sendable {
     ///     application accepts every declaration, because a *capture* peer has no
     ///     ingest floor to apply — PinPointStudio's 120 fps floor is
     ///     PinPointStudio's (plan H2, CT-I14).
+    ///   - syncTimebase: `CORE` 6.1b — the timebase this peer stamps `t2`/`t3` on
+    ///     when it **answers** a `sync_probe`: whichever clock its network stack
+    ///     timestamps with. ⛔ `nil` means this peer does not answer probes, and
+    ///     one arriving is answered `error`/`profile_not_supported` rather than
+    ///     with a fabricated instant. On iOS the answer is always `tb:hosttime`,
+    ///     because that is the only clock `Network.framework` exposes.
     public init(peerId: String,
                 profiles: [String] = PpcpProfileSet.device,
                 role: Role = .capture,
                 listener: Bool = false,
                 clock: PpcpDeviceClock? = nil,
                 health: (@Sendable () -> DeviceHealth)? = nil,
+                syncTimebase: String? = nil,
                 ingestPolicy: (@Sendable (String) -> String?)? = nil) throws {
         storageBytes = ppcp_peer_sizeof()
         storage = .allocate(byteCount: storageBytes,
                             alignment: MemoryLayout<UInt64>.alignment)
         profileStrings = CStringArray(profiles)
         peerIdString = strdup(peerId)!
+        syncTimebaseString = syncTimebase.map { strdup($0)! }
         self.clock = clock
         self.health = health
         self.ingest = ingestPolicy
@@ -429,6 +463,34 @@ public final class DevicePeer: @unchecked Sendable {
             out.pointee = readiness
             return PPCP_OK
         }
+        // `MSG` 5.4 / `CORE` 7.4b — what `heartbeat_ack` carries. ⚠ A **second**
+        // callback beside `health`, and the split is the library's: `health`
+        // answers `arm` with a Readiness *measurement* (5.15a), and this answers
+        // a heartbeat with thermal, storage and battery. The two are different
+        // questions and D2 conflated them because there was only one field.
+        config.health_report = { ctx, out in
+            guard let ctx, let out else { return PPCP_ERR_INVALID }
+            let peer = Unmanaged<DevicePeer>.fromOpaque(ctx).takeUnretainedValue()
+            guard let report = peer.health else { return PPCP_ERR_NOT_FOUND }
+            let state = report()
+            var health = ppcp_health()
+            health.thermal = state.thermal.ppcpThermalLevel
+            health.storage_free_bytes = state.storageFreeBytes
+            // ⛔ `CORE` 5.1 — absence never means zero. A simulator reports no
+            // battery at all, and `has_battery_pct: false` is the honest answer;
+            // writing 100 would be a reading nobody took.
+            if let percent = state.batteryPercent {
+                health.has_battery_pct = true
+                health.battery_pct = UInt32(max(0, min(100, percent)))
+            }
+            if let charging = state.isCharging {
+                health.has_charging = true
+                health.charging = charging
+            }
+            out.pointee = health
+            return PPCP_OK
+        }
+        if let syncTimebaseString { config.sync_timebase = UnsafePointer(syncTimebaseString) }
 
         var handle: OpaquePointer?
         do {
@@ -436,6 +498,7 @@ public final class DevicePeer: @unchecked Sendable {
         } catch {
             storage.deallocate()
             free(peerIdString)
+            if let syncTimebaseString { free(syncTimebaseString) }
             throw error
         }
         peer = handle
@@ -445,6 +508,7 @@ public final class DevicePeer: @unchecked Sendable {
         if let peer { ppcp_peer_free(peer) }
         storage.deallocate()
         free(peerIdString)
+        if let syncTimebaseString { free(syncTimebaseString) }
     }
 
     /// `CORE` 5.2a — fixed for the Session's lifetime.
@@ -463,6 +527,12 @@ public final class DevicePeer: @unchecked Sendable {
         guard let peer else { throw PpcpLibraryError(PPCP_ERR_INVALID) }
         return peer
     }
+
+    /// ⚠ For `DevicePeerLive` and the other files in this module that extend the
+    /// peer. Deliberately not `public`: nothing outside `CaptureCore` gets a raw
+    /// pointer to the engine, which is what keeps every rule the engine holds
+    /// unreachable from the app layer.
+    var peerHandle: OpaquePointer? { peer }
 
     // MARK: State
 

@@ -14,6 +14,78 @@
 
 ---
 
+## 0. Work in progress — S3 wave 2 (D5, D6, D8)
+
+*Written mid-session so the next one resumes from here rather than from a guess.*
+
+**Done and building (`cd Packages/Core && swift build -j 3` is clean).**
+
+- **D5 — Detect and Mint.** `CaptureCore/Detect/`: `AcousticOnsetDetector` (emits
+  **every** onset, 5.12c/8.3b/I8, with the REQ-MIC-5 taxonomy as the `classifier`
+  map encoded through `libppcp`'s own CBOR writer); `Candidate.swift`
+  (`PpcpCandidate`, `AcousticTimeOfFlight`, `CandidateFactory` on
+  `ppcp_candidate_make_canonical` — tof applied then the canonical conversion, both
+  corrections visible); `Shot.swift` (`PpcpShot`, `PpcpShotLink`); `DeviceMint`
+  (`ppcp_mint_*`, promotion as a callback, I32's single policy);
+  `CandidateAudioRetention` (B7 — the bound expressed in **candidates**, the cap,
+  and the user-visible statement); `DetectAndMint` (the composition, and
+  `defaultPromotion`).
+- **D6 — Live link.** `CaptureCore/Live/`: `SessionOffer.swift`
+  (`session_offer`/`session_accept` + `BundleReplay` on `ppcp_bundle_replay_*`);
+  `TransferQueue.swift` (`PayloadTransferQueue` — announce/queue split, resume from
+  the library's acked index, `already_present`, preview never queued, eviction only
+  through `ppcp_transfer_is_evictable`; `StorageFloor` — refuse to arm, never shed);
+  `SessionResume.swift` (`MSG` 4.3, hand-built — see F-D6-1); `HostLinkDriver.swift`
+  (`HostLinkState` from `ppcp_peer_link_state`/`_zero_host`/the sync estimator, and
+  the 4.3b order: `session_resume`, burst, **then** queued payload).
+  `Ppcp/LinkBinder.swift` wraps `ppcp_link_binder_*` (**F-D3-3 closed** in Core; the
+  `Sources/Platform` listener still has to move onto it).
+  `Ppcp/DevicePeerLive.swift` is the L9–L11 surface on `DevicePeer` (nominate, shot,
+  shot_link, annotate, sync, liveness, transfers, I38 predicate, drain peek/commit,
+  offer/accept); `health_report` and `sync_timebase` are wired into
+  `ppcp_peer_config`.
+- **D8 — Markup.** `CaptureCore/Markup/`: `Annotation.swift` (`PpcpAnnotation`,
+  placement validated against a real Stream, supersession through
+  `ppcp_annotation_supersedes`); `AnnotationStore.swift` (the library's store, the
+  drag coalescer of 5.18i, and `navigationAnchor` — `device_advisory`, `nav_anchor`,
+  no `stream_id`, never phase data).
+- `SessionBundleWriter`/`CaptureSessionRecorder` now record `candidate`, `shot`,
+  `shot_link` and `annotation`, so a hostless bundle carries Shots **and** their
+  Captures.
+
+**Next.** Tests in `Packages/Core/Tests/CaptureCoreTests` for D5/D6/D8; move the
+`Sources/Platform` listener onto `PpcpLinkBinder`; a platform microphone source
+feeding `AudioWindow`; `DeviceHealthService` → `health_report`; wire `AppModel`;
+then the row table below and §4's findings.
+
+**New findings, stated here now in case this session ends.**
+
+- **F-D5-1 — `ppcp_mint_pump` mints and sends, but an embedding cannot learn *which*
+  Shots it minted.** The host side has `ppcp_arbiter_shot_at(a, group)`; Mint has only
+  `ppcp_mint_minted_count`. A device must extract a clip around each minted `t0`, so
+  D5's whole deliverable needs the Shot, not a count. Worked around in `DeviceMint`
+  by recording ids as the `ppcp_id_fn` is called and then decoding the queued frames
+  with `ppcp_msg_decode` through `ppcp_peer_drain_peek` — the library's own decoder
+  over the library's own bytes, but it is re-parsing our own output. Suggested:
+  `ppcp_mint_shot_at(const ppcp_mint *, size_t)`.
+- **F-D6-1 — there is no `ppcp_peer_session_resume()`.** `MSG` 4.3a is a MUST for any
+  peer that reconnects, and `peer.h` has originators for `session_open`, `_state`,
+  `_close`, `_context_change`, `_offer`, `_accept` and `_manifest` but not this one.
+  It is therefore the only message in this application assembled as a `ppcp_msg` by
+  hand, through `ppcp_peer_send` — and `ppcp_body_session_resume` is one of the large
+  arms (64 shot ids, 64 pending captures), which is exactly the Swift hazard
+  `message.h` warns about.
+- **F-D6-2 — the sync *responder* cannot stamp `t2`/`t3` near the socket.** 6.1c
+  says `t2` is taken as close to reception as the implementation allows. The prober
+  has `ppcp_peer_sync_observe` for exactly that; the responder has only
+  `ppcp_peer_config.sync_timebase`, and the library reads its clock when it handles
+  the decoded frame. On `Network.framework` the earliest reachable point is the
+  receive completion handler, which is well before decode. Suggested: a responder
+  counterpart, or a documented statement that the residence time is included (which
+  6.1c does permit, via `t3 == t2`, but only as a *declaration* the responder makes).
+
+---
+
 ## 1. Profile set
 
 `CORE` §2.2.3, "full mobile capture device".

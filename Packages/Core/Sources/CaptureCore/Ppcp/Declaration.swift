@@ -396,6 +396,33 @@ public final class PpcpDeclaration: @unchecked Sendable {
         try body(UnsafePointer(descStorage))
     }
 
+    /// One declared Source and, where the profile id is given, one of its
+    /// `CaptureProfile`s — which is exactly what `ppcp_candidate_make_canonical`
+    /// takes (`CORE` 5.12e, I33).
+    ///
+    /// ⚠ **`profile` is `nil` for a microphone and an IMU, and that is not an
+    /// omission.** `CORE` 6.1d fixes `convention: mid` where a profile has no
+    /// `format`, so the canonical instant *is* the raw instant and there is
+    /// nothing for the conversion to read. Passing a camera profile for an
+    /// acoustic candidate would apply a `d/2` the microphone never had.
+    ///
+    /// - Returns: `nil` where this peer declares no such Source — which is I26's
+    ///   refusal one step earlier than the library's, so a caller gets a name it
+    ///   can report instead of `PPCP_ERR_INVALID`.
+    public func withSource<T>(id sourceId: String, profileId: String? = nil,
+                              _ body: (UnsafePointer<ppcp_source>,
+                                       UnsafePointer<ppcp_capture_profile>?) throws -> T)
+        rethrows -> T? {
+        guard let index = sources.firstIndex(where: { $0.id == sourceId }) else { return nil }
+        let source = sourceStorage.baseAddress! + index
+        guard let profileId else { return try body(UnsafePointer(source), nil) }
+        guard let offset = sources[index].profiles.firstIndex(where: { $0.id == profileId })
+        else { return try body(UnsafePointer(source), nil) }
+        let profile = UnsafeRawPointer(source.pointee.profiles!)
+            .assumingMemoryBound(to: ppcp_capture_profile.self) + offset
+        return try body(UnsafePointer(source), profile)
+    }
+
     /// The declaration as `ENC` §4 CBOR — what `declare` puts on the wire
     /// (`MSG` §3), and what a bundle's own `declare` frame carries.
     public func encoded() throws -> Data {

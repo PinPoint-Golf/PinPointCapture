@@ -317,6 +317,41 @@ public final class SessionBundleWriter: @unchecked Sendable {
         try flush(.control)
     }
 
+    /// `MSG` 7.1 — every Candidate, into the bundle.
+    ///
+    /// ⛔ **Every one, including the losers** (5.12c, I8). A bundle that recorded
+    /// only promoted Candidates would have discarded the evidence explaining why
+    /// detection fired, which is the whole reason candidate-attached audio exists
+    /// (§5.12.1) — and the audio would then reference a Candidate the bundle does
+    /// not contain.
+    public func record(candidate: PpcpCandidate) throws {
+        try peer.nominate(candidate)
+        try flush(.control)
+    }
+
+    /// `MSG` 7.2 — a Shot this device minted. `authority: device` in a hostless
+    /// bundle by construction: 8.3a is the only regime a bundle is written in.
+    public func record(shot: PpcpShot) throws {
+        try peer.send(shot: shot)
+        try flush(.control)
+    }
+
+    /// `MSG` 9.3 — a `shot_link`. 8.3f: a Shot minted during a link outage is
+    /// reconciled this way on reconnect, and 9.3g makes the message **Core**, so a
+    /// bundle carries it whatever profiles the reader implements.
+    public func record(shotLink: PpcpShotLink) throws {
+        try peer.send(shotLink: shotLink)
+        try flush(.control)
+    }
+
+    /// `MSG` 9.0 — an annotation. ⚠ It travels in either direction (5.18d), so a
+    /// bundle carries the host's as well as this device's; both are stored
+    /// **opaque** and returned byte for byte (5.18a).
+    public func record(annotation: PpcpAnnotation) throws {
+        try peer.annotate(annotation)
+        try flush(.control)
+    }
+
     /// `MSG` §9.2 — the manifest, and `ENC` 7c makes it precede every payload
     /// frame so an interrupted read still yields an analysable session.
     ///
