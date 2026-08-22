@@ -62,7 +62,7 @@ targets:
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
         ENABLE_PREVIEWS: YES
         # The app tint. Without this every stock control ships system blue, against the
-        # design rule that green is the only brand tint (design/mockup v1 README).
+        # design rule that green is the only brand tint (docs/design/mockup v1 README).
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: Accent
         # No app icon yet. Set this to the icon set's name once one exists,
         # otherwise actool fails on a catalog that has no "AppIcon".

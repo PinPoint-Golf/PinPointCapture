@@ -23,6 +23,8 @@ Under the `PinPointGolf` GitHub organisation, alongside `PinPointStudio`, `libwr
 | `PinPointGolf/libppcp` | PPCP specification, reference library, conformance test suite, fixture format, device profiles | MIT |
 | `PinPointGolf/PinPointCapture` | iOS/iPadOS app (and later Android) | [OPEN-4](#open-decisions) |
 
+`libppcp` carries two specifications, versioned independently: **PPCP** (the capture protocol) and **PPCP-RV** (rendezvous — service discovery, QR payload format, PSK derivation and TLS-PSK identity, optional hotspot join). PPCP-RV is separate because it will version faster than the entity model, and because a peer connecting only over USB is fully PPCP-conformant without implementing it. It is also where the security model lives: PPCP itself has none, which is only defensible if the companion document exists.
+
 Spec and reference implementation share a repo so they cannot drift and so conformance tests can exercise both. The app is separate because its licence differs, its release cadence is gated by App Store review rather than library tags, and library consumers should not be gated on the app.
 
 A third repo may become necessary for recorded-session fixtures ([REQ-TEST-3](#132-harness)) once they outgrow git-lfs. Do not pre-empt it.
@@ -174,13 +176,14 @@ The single most important requirement in the document.
 
 **Why this is not over-engineering.** On iOS, `AVCaptureSession` video and audio sample buffers share `CMClockGetHostTimeClock()` — camera and mic are known-equal, and intra-device alignment is free. On Android, `SENSOR_INFO_TIMESTAMP_SOURCE` reports either `REALTIME` (`elapsedRealtimeNanos`, shared with sensors and audio — known-equal) or `UNKNOWN` (an arbitrary monotonic base comparable with nothing). An `UNKNOWN` device must be *expressible as degraded*, not silently wrong. Without this contract, porting to Android is a rewrite.
 
-- **REQ-TIME-4 (MUST)** Timestamps use `mach_continuous_time` semantics or equivalent — a base that does not halt across device sleep. Discontinuities are detected and reported.
+- **REQ-TIME-4 (MUST)** Timestamps use `mach_continuous_time` semantics or equivalent — a base that does not halt across device sleep. Discontinuities are detected and reported **as explicit observations** carrying magnitude, cause and the instant observed — not merely declared as a clock property. An observed step is a measurement, and it is the evidence that any interval computed across it would have been wrong.
 - **REQ-TIME-5 (MUST)** Time is never inferred from frame index. Frames drop; indices lie. Every frame carries its own timestamp.
 
 ### 5.2 Exposure convention
 
 - **REQ-EXP-1 (MUST)** The canonical instant for a frame is **mid-exposure**.
-- **REQ-EXP-2 (MUST)** Devices declare their native convention (start-of-exposure, nominal frame start, etc.) and the exposure duration per frame, so the host can convert.
+- **REQ-EXP-2 (MUST)** Devices declare their native convention (start-of-exposure, nominal frame start, etc.) as a property of the capture profile, and the exposure duration **per frame** as part of achieved capability. The conversion contract therefore spans two places and must be stated normatively — profile convention alone is not sufficient to convert, and neither is per-frame duration. Exposure is locked by REQ-OPT-3 precisely so this correction is stable, but the model must not assume the lock held.
+- **REQ-EXP-2a (MUST)** Declaration is **symmetric**. Host-side cameras declare convention, shutter geometry and intrinsics on the wire exactly as a phone does. If only the mobile side declares, a host must hardcode its own cameras' convention — workable for PinPointStudio, but it makes a third-party host with different cameras unable to participate, defeating the open-protocol commitment ([§14.2](#142-open-protocol-commitment)).
 - **REQ-EXP-3 (MUST)** Rolling-shutter devices declare readout time and readout direction. No public API exposes this; it is calibrated per model (see [§13.1](#131-led-timecode-rig)) and shipped as a device profile.
 
 **Rationale.** FLIR timestamps start-of-exposure; AVFoundation PTS is nominal frame start; IMU is a third convention. Without a canonical instant, the mismatch produces an exposure-dependent systematic offset indistinguishable from clock bias — which will corrupt the existing clock-bias estimator (PinPoint fusion P1).
@@ -188,6 +191,7 @@ The single most important requirement in the document.
 ### 5.3 Clock synchronisation
 
 - **REQ-SYNC-1 (MUST)** Two-way timestamp exchange with minimum-RTT filtering, estimating both **offset and rate**. Not a one-shot handshake.
+- **REQ-SYNC-1a (MUST)** A peer with multiple internal timebases runs the sync exchange **per timebase** and declares each relation directly, rather than composing relations. This binds hosts as much as devices — a host with several cameras on independent clocks is itself multi-clock.
 - **REQ-SYNC-2 (MUST)** Burst 10–20 exchanges on connect, after any network change, and after a thermal event; settle to heartbeat cadence for maintenance. The heartbeat rate must not set the sync rate.
 - **REQ-SYNC-3 (MUST)** The estimate is filtered, never stepped. A stepped offset mid-session produces a discontinuity in fused output that is very hard to diagnose later.
 - **REQ-SYNC-4 (MUST)** Per-shot residual against the acoustic fiducial is computed, reported and logged.
@@ -205,7 +209,7 @@ The single most important requirement in the document.
 Three distinct things, all on the wire, routinely different:
 
 - **REQ-CAP-1 (MUST)** **Claimed** — what the device advertises it can do.
-- **REQ-CAP-2 (MUST)** **Measured** — what it observed itself sustaining, from self-test. Re-measured after OS updates.
+- **REQ-CAP-2 (MUST)** **Measured** — what it observed itself sustaining, from self-test. Re-measured after OS updates. Measured results attach **per capture profile**, not per device or per source: 1080p240 and 1080p120 are separate self-tests with separate results.
 - **REQ-CAP-3 (MUST)** **Achieved** — what actually happened on this specific shot, including realised frame intervals, drops and thermal state.
 - **REQ-CAP-4 (MUST)** Capability includes optical quality, not only frame rate: achieved exposure, ISO, and a measured noise or contrast figure at requested settings. "120 fps capable" can hide frames the shaft detector cannot use.
 - **REQ-CAP-5 (MUST)** Frame-rate thresholds are **host ingest policy, not protocol constraints**. A device may honestly declare 60 fps; the host may reject it. PinPoint's current floor is 120 fps (consistent with the documented ≥100 fps requirement for full-swing shaft tracking), but the wire format must not encode it.
@@ -249,7 +253,9 @@ Three distinct things, all on the wire, routinely different:
 - **REQ-SHOT-1 (MUST)** **Any participant may nominate a shot candidate** — device mic, host mic, FLIR-side detection, launch monitor. The host arbitrates and issues a canonical shot ID and t₀.
 - **REQ-SHOT-2 (MUST)** The device accepts "send me the clip at t₀=X" for shots it never detected itself.
 - **REQ-SHOT-3 (MUST)** The device mints its own identity (UUID + device timebase + acoustic fiducial) when no host is present, for later reconciliation — including against independently recorded launch monitor records.
-- **REQ-SHOT-4 (MUST)** Candidates carry the nominating device's own timestamp and a confidence value.
+- **REQ-SHOT-4 (MUST)** Candidates carry the nominating source's own timestamp and a confidence value.
+- **REQ-SHOT-5 (MUST)** Candidates carry a **nomination basis** — acoustic, motion or external — because REQ-SHOT-1 admits FLIR-side motion detection and launch monitors, neither of which is acoustic. Any transient classifier is basis-specific, not universal.
+- **REQ-SHOT-6 (MUST)** Every nominator is modelled as a capture source with its own clock and calibration, including external devices such as launch monitors. A candidate without an identified source has no calibration to apply, and acoustic time-of-flight ([REQ-MIC-3](#64-acoustic-detection)) lives in that calibration.
 
 ### 6.4 Acoustic detection
 
@@ -342,7 +348,7 @@ Resolve by measurement rather than argument — see [REQ-TEST-7](#133-capture-pa
 ## 8. Session model
 
 - **REQ-SESS-1 (MUST)** Session is a first-class object: start, calibration state, device roster, context changes (club, shot type), end.
-- **REQ-SESS-2 (MUST)** Sessions exist without a host.
+- **REQ-SESS-2 (MUST)** Sessions exist without a host. A session has **at most one** host, not exactly one. With none, the capturing device's timebase is canonical, shot authority is the device's, and **no arbitration occurs** — every candidate becomes its own shot, and agreement is deferred to reconciliation at import. This is a different regime from single-nominator arbitration, not a special case of it.
 - **REQ-SESS-3 (MUST)** The device library is an **independent store with per-shot sync state** (local / sent / confirmed), not a cache of PinPoint.
 - **REQ-SESS-4 (MUST)** Nothing unconfirmed is evicted, regardless of retention policy.
 - **REQ-SESS-5 (MUST)** Decouple event from payload: a small event message (timestamps, confidence, thumbnail) goes immediately on a low-latency channel; video follows on a bulk channel permitted to lag, queue, resume, or never complete within the session.
@@ -366,6 +372,7 @@ Host-controlled, three capture states crossed with review state.
 
 - **REQ-STATE-1 (MUST)** Capture start/stop is host-controlled, not app-controlled.
 - **REQ-STATE-2 (MUST)** Warm exists so arming incurs no AE/AF settling penalty. Rebuilding a capture session costs roughly a second plus settling time — and the first shot after a cold re-arm is exactly the one not to lose.
+- **REQ-STATE-6 (MUST)** The cold/warm/armed vocabulary stays **device-internal**. What crosses the wire is arm/disarm intent plus a **readiness measurement** — a settled flag and an estimated time-to-ready — never the state name. The host's actual question is "if I arm now, will the first shot have settled exposure?", which is a measurement. Exporting the state names would export an iOS-shaped concept whose settling costs differ on Android ([§17](#17-platform-portability)).
 - **REQ-STATE-3 (MUST)** Keepalive lapse drops warm → cold. This is a battery mechanism as much as a thermal one.
 - **REQ-STATE-4 (MUST)** Armed + reviewing is the normal range state (UC-3), not an edge case.
 - **REQ-STATE-5 (MUST)** Handle and recover from platform interruptions (calls, audio session interruption, backgrounding) with automatic re-arm and explicit reporting of the gap.
@@ -430,7 +437,14 @@ Host-controlled, three capture states crossed with review state.
 ## 11. Security and privacy
 
 - **REQ-PRIV-1 (MUST)** No unpaired host receives video. TLS-PSK from QR ([REQ-AUTH-1](#62-pairing-and-authentication)).
-- **REQ-PRIV-2 (MUST)** Audio retention policy is explicit, user-visible and configurable, and honestly reflected in the platform purpose string and privacy label. See [OPEN-2](#open-decisions).
+- **REQ-PRIV-2 (MUST)** Audio retention policy is explicit, user-visible and configurable, and honestly reflected in the platform purpose string and privacy label.
+
+**Resolved (was OPEN-2).** The full audio track is **not** retained. Audio is kept in short windows attached to **detection candidates**, not to shots.
+
+- **REQ-PRIV-4 (MUST)** Audio windows attach to candidates, including candidates that lost or were rejected. The diagnostic value is explaining **why detection fired**, including when it fired wrongly — a noise in the bay, a shot in the next bay, a phone notification, music. A rejected candidate has no shot, so shot-attached audio cannot serve this.
+- **REQ-PRIV-5 (MUST)** Audio is a **separate stream from video with its own, shorter window** — roughly 1.5–2 s centred on the transient. Muxing audio into the video clip would retain ~4.5 s of room audio per shot for no diagnostic benefit, a privacy cost taken by accident.
+- **REQ-PRIV-6 (MUST)** Retention is therefore ~50 windows × ~2 s ≈ 100 s per session, non-contiguous, each centred on a transient. Speech capture is incidental rather than systematic, and the privacy label must state this accurately rather than claiming no audio is kept.
+- **REQ-PRIV-7 (SHOULD)** Store raw PCM at v1. A derived representation (band energy, spectrogram) has a better privacy posture but forecloses re-running an improved classifier on original audio — a real loss while the detector is immature. Revisit as a default once the classifier settles.
 - **REQ-PRIV-3 (MUST)** No telemetry. Field diagnosis is via user-initiated export ([§12](#12-observability)).
 
 The lesson use case (UC-5) means continuous audio may capture a coach and pupil in conversation. That has a materially different privacy posture from video of a swing.
@@ -444,6 +458,7 @@ FOSS project, no analytics, users reporting "it lost sync" on GitHub. The diagno
 - **REQ-OBS-1 (MUST)** Exportable diagnostic bundle as a first-class output, not a debug log: sync residual history, achieved frame intervals, drop counts, thermal timeline, detection events with confidences, transfer queue history, capability triple.
 - **REQ-OBS-2 (MUST)** User-initiated, attachable to an issue.
 - **REQ-OBS-3 (SHOULD)** The same bundle serves as the project's own validation record.
+- **REQ-OBS-4 (SHOULD)** Provide a **device diagnostic mode**, off by default, that lowers the candidate emission threshold and retains audio for sub-threshold candidates. This is the only way to diagnose false *negatives* — a shot the detector never fired on produces no candidate and no evidence, and field misses are drawn from a distribution V&V cannot enumerate. It belongs here, not in the protocol: emission thresholds are detector tuning policy, and the protocol encodes confidence thresholds no more than frame-rate floors ([REQ-CAP-5](#55-capability-declaration)). Default-off matters because sub-threshold retention keeps audio for events that were not shots.
 
 ---
 
@@ -556,6 +571,7 @@ Online, the host is the time authority. **Offline, the device is** — and it mu
 - **REQ-OFF-5 (MUST)** The bundle carries **both** the estimated mapping **and** the raw arrival evidence (packet arrival times, connection-interval jitter, round-trip characteristics). Estimates age; evidence does not.
 - **REQ-OFF-6 (MUST)** Every offline sample is expressed in the device's declared timebase with stated uncertainty ([REQ-TIME-2](#51-timebase-contract)).
 - **REQ-OFF-7 (MUST)** The device's clock estimate is a **prior**, not authoritative. The host may re-solve on import with better algorithms.
+- **REQ-OFF-7a (MUST)** A session's canonical timebase is **immutable once set**. The host's improved estimate is expressed as a *new relation from* that timebase, never as a rewrite of it — otherwise re-solving becomes exactly the destructive merge [REQ-OFF-12](#165-export-mechanics) forbids.
 
 **Why this is the section to get right.** The evidence needed to solve the sensor↔device mapping exists only at capture time. A device that records raw sensor timestamps and defers reconciliation to import has destroyed the information required to do it well, irrecoverably.
 
@@ -638,7 +654,7 @@ These are known now and cheap to accommodate; they are expensive to retrofit.
 | ID | Decision | Recommendation |
 |---|---|---|
 | ~~OPEN-1~~ | ~~Naming.~~ | **Resolved.** PinPointCapture (app), PPCP (protocol), libppcp (library). The vendor-name concern was overstated — licence and specification quality drive adoption, not the acronym. Trademark clearance tracked separately as [REQ-LIC-6](#141-name-clearance--pre-submission-gate). |
-| **OPEN-2** | Audio retention. Keep the full track, a window around impact, or none? | Retain a short window around impact only; discard the rest at the ring buffer; make it user-visible and configurable. **Blocks schema work** — decide first. |
+| ~~OPEN-2~~ | ~~Audio retention.~~ | **Resolved.** Candidate-attached windows of ~2 s, separate stream from video, raw PCM at v1. See [REQ-PRIV-4 to 7](#11-security-and-privacy). Sub-threshold retention for false-negative diagnosis is a device diagnostic mode ([REQ-OBS-4](#12-observability)), not a protocol feature. |
 | **OPEN-3** | Minimum device tier. Is 120 fps the floor, and at what resolution and light level? | 120 fps at 1080p as ingest policy; add a measured optical quality gate ([REQ-CAP-4](#55-capability-declaration)) rather than relying on frame rate alone. |
 | **OPEN-4** | App licence and distribution channel. | Non-GPL for the app if App Store distribution is wanted; the library stays MIT either way. |
 | **OPEN-5** | Version support window ([REQ-VER-3](#56-versioning)). | State a minimum of N releases back, with a written deprecation path. |
@@ -668,3 +684,75 @@ Stated in the same register as PinPoint's diagnostics specification principle, a
 - Apple: iPad Pro (M4) and iPad Air (M4) technical specifications; App Review Guidelines and Before You Submit.
 - Android: `CameraConstrainedHighSpeedCaptureSession`, `CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE`.
 - PinPoint Studio: shaft detection validation (face-on 0.49° RMSE; DTL 2.44° RTS RMSE, ≥100 fps requirement), IMU/vision fusion architecture (P1 clock bias estimation).
+
+---
+
+# Review comments — 22 August 2026
+
+*Added against this draft alongside `ppcp-protocol-overview.md` (model draft 4). Basis includes implementation experience: the companion app's capability, timebase, session and permission layers have been built and run on an iPhone 16, and several of the points below come from that rather than from reading. Ordered by severity.*
+
+## 1. REQ-PRIV-6's retention arithmetic is computed on shots, but retention attaches to candidates
+
+The three requirements are individually right and collectively inconsistent.
+
+- **REQ-PRIV-4** attaches audio windows to **candidates**, *"including candidates that lost or were rejected"* — and the stated reason is exactly that a rejected candidate has no shot.
+- **REQ-PRIV-5** sets the window at ~1.5–2 s.
+- **REQ-PRIV-6** then computes retention as *"~50 windows × ~2 s ≈ 100 s per session"*.
+
+Fifty is the shot count (§16.2). But the whole point of REQ-PRIV-4 is that candidates outnumber shots — and REQ-MIC-5 enumerates why: ball-into-screen, club-on-mat, dropped club, **adjacent player**, speech. In a busy range bay the candidate count could plausibly be two or three times the shot count, and it is not bounded by anything the user does.
+
+Two consequences, the second more serious than the first:
+
+1. The retention figure is understated by an unknown factor.
+2. **REQ-PRIV-2 requires the privacy label to reflect retention honestly**, and REQ-PRIV-6 requires it to state that speech capture is *"incidental rather than systematic"*. A label built on the shot count would be inaccurate in the direction that matters, and it would be inaccurate about the specific case — an adjacent player's conversation triggering a rejected candidate — that a user would most object to.
+
+Compounding: **REQ-OBS-4** adds a diagnostic mode that *lowers the emission threshold and retains audio for sub-threshold candidates*. Default-off is correctly specified, but while it is on, retention is deliberately larger and less predictable, and the label obligation still applies.
+
+Suggested: express REQ-PRIV-6 in terms of candidates with a stated expected ratio and an explicit cap, rather than in terms of shots; and state whether the cap is enforced by count, by total duration, or by eviction. A bound the app can actually honour is also what makes the privacy label defensible.
+
+## 2. REQ-SHOT-6 does not accommodate the launch monitor that actually exists
+
+REQ-SHOT-6 requires that *"every nominator is modelled as a capture source with its own clock and calibration, including external devices such as launch monitors"*, on the grounds that a candidate without an identified source has no calibration to apply.
+
+The reasoning is sound for a *connected* nominator. But the launch monitor this project actually integrates with is not connected: PinPointStudio ingests launch monitor data as a **filesystem-watched CSV** (`src/LaunchMonitor/`, `gcquad_csv_parser.cpp`), not over a socket. A file-imported record has no Peer, no Timebase, no clock relation and no live calibration — so it cannot be a Source in the sense REQ-SHOT-6 requires, and therefore cannot nominate a Candidate.
+
+This matters because launch monitor reconciliation is **designed for v1**: screen B5 in the design pack is a fully specified flow whose primary candidate is *"Studio holds 29 shots from a launch monitor"*, with evidence rows and explicit no-auto-merge.
+
+So there are two distinct things both currently called nomination:
+
+- a **live** nominator (host mic, FLIR motion detection) that is a Source with a clock, nominating into arbitration; and
+- an **offline record** reconciled after the fact via `ShotLink`, with no clock relation at all — which is what REQ-OFF-12 and B5 actually describe.
+
+Suggested: state explicitly that file-imported launch monitor records are reconciled through `ShotLink`, **not** through candidate nomination, and narrow REQ-SHOT-6 to live nominators. Otherwise an implementer reads REQ-SHOT-6 and REQ-OFF-12 as describing the same path and builds a clock relation for a CSV.
+
+## 3. The A1 capability verdict is host policy applied where no host exists
+
+REQ-CAP-5 is right that ingest thresholds are host policy and must not reach the protocol, and the protocol honours it (I14). But the consequence for this app is not stated anywhere in this document.
+
+A1 tells the user, on the first screen, whether their device is *"Good for capture"*. UC-1 — explicitly the **normal** case — has no host at all, so that verdict is necessarily PinPointStudio's ingest policy compiled into the companion app. In the current implementation it is `1080p at ≥120 fps`, sourced from OPEN-3.
+
+Three things follow that the requirements should say out loud:
+
+- **Whose policy it is.** The sentence is a claim about PinPointStudio's acceptance, not about the device, and a third-party host may accept less or demand more.
+- **That it is advisory.** REQ-CAP-4 requires an optical quality gate alongside frame rate, and no device has a measured noise figure yet — so the current verdict is a frame-rate check wearing a fuller claim's wording.
+- **What updates it.** §11 of the protocol gives the host a `rejected, reason` path on connect. Whether the app should adopt a connected host's policy for future standalone sessions is a real product decision and is currently unspecified.
+
+The cheapest honest fix is wording: A1 says whether the device clears *PinPoint Studio's* current bar, naming it, rather than making an unattributed judgement.
+
+## 4. Smaller points
+
+**REQ-EXP-2's conversion contract needs one more field than it implies.** The requirement now correctly splits declaration across profile convention and per-frame duration. But for `nominal_frame_start` — the convention every AVFoundation source reports, so the default path on iOS — the protocol's §4.5 requires a *third* value, the fixed offset between nominal frame start and actual exposure start, and there is currently no field for it. Raised in full in the protocol review; noted here because REQ-EXP-2 is the requirement that drives it.
+
+**REQ-OBS-4's default-off state needs a stated exit.** A diagnostic mode that retains audio for sub-threshold events is the right tool for diagnosing false negatives, and default-off is correct. But nothing says whether it self-disables — after a session, a time limit, or an app restart. A diagnostic mode left on by a user who was helping debug something in March is a retention posture nobody chose. Suggested: it expires with the session.
+
+**REQ-STATE-6 is well specified and worth protecting.** Keeping cold/warm/armed device-internal while exporting a readiness measurement is correct and ported cleanly in the implementation. Flagged only because it is the kind of decision that gets quietly reversed the first time someone wants to debug a state transition remotely; the diagnostic bundle (REQ-OBS-1) is where that belongs instead.
+
+---
+
+## Implementation notes that bear on these requirements
+
+From building the companion app against this document, three things proved true in practice and may be worth capturing:
+
+- **REQ-FPS-1 is load-bearing and easy to satisfy incorrectly.** Enumerating formats is straightforward; ranking them is not. An iPhone 16 reports a 4032×3024 stills format that beats 1080p240 on resolution, and a naive "best format" selection put it on the capability card next to a verdict computed from a different mode. Ranking must be frame-rate-first, and the requirement might usefully say so, since REQ-RES-1 already argues for it on separate grounds.
+- **The same device offers 1080p240 on both the wide and the ultra-wide lens.** REQ-OPT-6 treats ultra-wide as the fallback a cramped studio *forces*, but nothing in the requirements says wide is preferred when both are equally capable — so an arbitrary tie-break can select the distorting lens for a session whose calibration is then fixed against it (REQ-OPT-6 forbids changing it later). Worth one sentence.
+- **REQ-CAP-2's "measured" cannot be obtained honestly during onboarding.** REQ-ENC-4 requires sustained rate verified under thermal load after ~40 minutes; onboarding affords seconds. The implementation currently reports "not measured yet" rather than presenting a cold three-second sample as sustained, but the requirements should state which figure A7 is allowed to show and when the real one is obtained — otherwise the cold number will quietly become the displayed one.

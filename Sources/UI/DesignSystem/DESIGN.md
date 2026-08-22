@@ -6,7 +6,7 @@ about to add a component here, first check the "What not to build" section
 below — most of what looks like a component in the mockup is a stock SwiftUI
 control with the accent tint applied.
 
-Source of truth: `design/mockup v1/README.md`, sections *Design tokens* and the
+Source of truth: `docs/design/mockup v1/README.md`, sections *Design tokens* and the
 `In the HTML | Build it as` table. Where this file and that one disagree, that
 one wins.
 
@@ -47,12 +47,13 @@ row announces "Warning" and a lost host announces "Problem".
 Five assets, reachable as `Color.ppAccent`, `.ppWarning`, `.ppError`,
 `.ppProgress`, `.ppAccentWash`.
 
-`Accent` is also the **project accent colour asset**. The app target must set
-`ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = Accent` (project.yml is owned
-by another agent — this is the one thing this directory needs from it). Once
-that is set, `.borderedProminent` buttons, `Toggle`s, `Picker`s, selection
-highlights and `List` chevrons are already green: **do not write
-`.tint(.ppAccent)` on a stock control.**
+`Accent` is also the **project accent colour asset**: the app target sets
+`ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = Accent` in `project.yml`.
+⚠ Without that setting every stock control ships system blue, which is the one
+way to break the colour rule above without touching this directory. Because it
+is set, `.borderedProminent` buttons, `Toggle`s, `Picker`s, selection highlights
+and `List` chevrons are already green: **do not write `.tint(.ppAccent)` on a
+stock control.**
 
 ### Colours that are deliberately NOT tokens
 
