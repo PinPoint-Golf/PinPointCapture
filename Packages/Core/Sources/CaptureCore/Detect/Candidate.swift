@@ -244,15 +244,23 @@ public struct CandidateFactory: Sendable {
         try buffer.withUnsafeMutableBufferPointer { out in
             var writer = ppcp_cbor_writer()
             ppcp_cbor_writer_init(&writer, out.baseAddress, out.count)
+            // ⚠ **Written in `ENC` 4e's deterministic key order — shorter key
+            // first, then bytewise** — because the writer *enforces* it rather
+            // than sorting for us: `ppcp_cbor_writer_init` is
+            // `PPCP_CBOR_ORDER_DETERMINISTIC`, and a key out of order sets the
+            // sticky error. That is the right trade (a duplicate key becomes
+            // impossible to emit rather than merely forbidden), and it is worth
+            // saying here because writing them in the order a reader finds
+            // natural — `transient` first — is what fails.
             _ = ppcp_cbor_write_map(&writer, 4)
-            _ = ppcp_cbor_write_text_z(&writer, "transient")
-            _ = ppcp_cbor_write_text_z(&writer, classification.transient.rawValue)
-            _ = ppcp_cbor_write_text_z(&writer, "peak_dbfs")
-            _ = ppcp_cbor_write_double(&writer, classification.peakDbfs)
             _ = ppcp_cbor_write_text_z(&writer, "rise_ns")
             _ = ppcp_cbor_write_int(&writer, classification.riseNs)
             _ = ppcp_cbor_write_text_z(&writer, "decay_ns")
             _ = ppcp_cbor_write_int(&writer, classification.decayNs)
+            _ = ppcp_cbor_write_text_z(&writer, "peak_dbfs")
+            _ = ppcp_cbor_write_double(&writer, classification.peakDbfs)
+            _ = ppcp_cbor_write_text_z(&writer, "transient")
+            _ = ppcp_cbor_write_text_z(&writer, classification.transient.rawValue)
             try check(ppcp_cbor_writer_finish(&writer, &length))
         }
         return Array(buffer[0..<length])

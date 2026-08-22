@@ -74,12 +74,23 @@ struct SessionBundleTests {
     static func capture(_ id: String, bytes: UInt64, digest: Data) -> PpcpCaptureRecord {
         PpcpCaptureRecord(
             id: id,
-            // ⛔ `stream`-anchored, because there is no host to mint a Shot and
-            // no Candidate promoted without one. A hostless device records a
-            // segment of its own Stream (I27's third constructor).
-            anchor: .segment(startNs: 2_000_000_000, endNs: 2_500_000_000),
+            // ⛔ **Shot-anchored, and it changed in S3 wave 2.** It used to be a
+            // `segment` on this Stream, on the reasoning that a hostless device
+            // has no host to issue a Shot — which was wrong twice over. `CORE`
+            // 8.3a mints one *without* a host, `authority: device`, which D5 now
+            // does; and 5.14d makes `{stream: true}` legal **only on a
+            // `continuous` Stream**, which `video` never is (§5.11's table).
+            //
+            // The fixture passed anyway until `libppcp` L9 closed F-D4-1 and
+            // `ppcp_peer_capture_announce` began applying
+            // `ppcp_capture_validate_in_stream` at origination. It is exactly the
+            // failure that finding predicted: a rule the engine held the data for
+            // and did not enforce, so a wrong fixture read as a right one.
+            anchor: .shot("sht:fixture"),
             streamId: videoStream.id, timebaseId: timebase,
-            completeness: .complete, digest: digest, bytes: bytes)
+            completeness: .complete,
+            intervalNs: 2_000_000_000..<2_500_000_000,
+            digest: digest, bytes: bytes)
     }
 
     /// The whole hostless recording, in the order `CORE` §9 and `ENC` 7c fix.
