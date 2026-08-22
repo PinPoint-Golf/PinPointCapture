@@ -247,6 +247,32 @@ public enum PpcpCaptureAnchor: Sendable, Hashable {
     case segment(startNs: Int64, endNs: Int64)
 }
 
+/// `CORE` 5.14 `transfer` — the **owner's** view of where the payload is.
+///
+/// ⛔ **`confirmed` is deliberately not a case here.** 5.14f/8.4b: only the
+/// *receiver* can say it holds the payload durably, and it says so with a
+/// `capture_committed`. The library agrees structurally —
+/// `ppcp_capture_set_transfer` refuses `PPCP_TRANSFER_CONFIRMED` and the only
+/// route to it is `ppcp_transfer_on_committed`, which needs a message that
+/// arrived. An owner that could type `.confirmed` here would be marking its own
+/// homework.
+public enum PpcpTransferState: Sendable, Hashable {
+    /// Held locally, unsent.
+    case pending
+    case inFlight
+    case present
+    case failed
+
+    var cValue: ppcp_transfer_state {
+        switch self {
+        case .pending: PPCP_TRANSFER_PENDING
+        case .inFlight: PPCP_TRANSFER_IN_FLIGHT
+        case .present: PPCP_TRANSFER_PRESENT
+        case .failed: PPCP_TRANSFER_FAILED
+        }
+    }
+}
+
 public struct PpcpCaptureRecord: Sendable, Hashable {
 
     /// `CORE` 5.14 / I10 — asserted by the owner, never inferred.
@@ -259,16 +285,36 @@ public struct PpcpCaptureRecord: Sendable, Hashable {
     public var completeness: Completeness
     /// Present on a shot- or candidate-anchored Capture; mandatory on a segment,
     /// where it is carried by the anchor instead.
-    public var intervalNs: ClosedRange<Int64>?
+    ///
+    /// ⚠ **Half-open `[start, end)`** (`CORE` §5.1). It was a `ClosedRange` until
+    /// D4 and that was wrong in a way nothing had yet noticed: two abutting
+    /// segments would have shared their boundary instant, which 5.14e forbids
+    /// outright — "segments abut or leave a declared gap; they do not overlap".
+    public var intervalNs: Range<Int64>?
     /// ⛔ 5.14 — mandatory when `completeness == .absent`, and an open registry.
     public var absentReason: String?
+    /// `CORE` 5.14 `gaps` — data **lost** inside a segment that otherwise exists.
+    ///
+    /// ⛔ I11: meaningful only on a `continuous` Stream, and never the way to
+    /// record deliberate non-retention (5.11c3). The library refuses gaps on a
+    /// `shot_windowed` Stream, so a shot-anchored clip's holes make it `partial`
+    /// and are reported no other way.
+    public var gapsNs: [Range<Int64>]
+    /// `CORE` §5.8 — rides on `capture_announce`, on the control channel.
+    /// ⛔ The per-frame series does **not** (I30); it has nowhere to go on this
+    /// type, because `ppcp_capture` has no member for it.
+    public var achievedSummary: PpcpAchievedSummary?
+    public var transfer: PpcpTransferState
     public var digest: Data?
     public var bytes: UInt64?
 
     public init(id: String, anchor: PpcpCaptureAnchor, streamId: String,
                 timebaseId: String, completeness: Completeness,
-                intervalNs: ClosedRange<Int64>? = nil,
+                intervalNs: Range<Int64>? = nil,
                 absentReason: String? = nil,
+                gapsNs: [Range<Int64>] = [],
+                achievedSummary: PpcpAchievedSummary? = nil,
+                transfer: PpcpTransferState = .pending,
                 digest: Data? = nil, bytes: UInt64? = nil) {
         self.id = id
         self.anchor = anchor
@@ -277,6 +323,9 @@ public struct PpcpCaptureRecord: Sendable, Hashable {
         self.completeness = completeness
         self.intervalNs = intervalNs
         self.absentReason = absentReason
+        self.gapsNs = gapsNs
+        self.achievedSummary = achievedSummary
+        self.transfer = transfer
         self.digest = digest
         self.bytes = bytes
     }
@@ -497,9 +546,39 @@ public final class DevicePeer: @unchecked Sendable {
         }
     }
 
-    public func announce(_ record: PpcpCaptureRecord) throws {
-        var capture = try Self.capture(record)
-        try check(ppcp_peer_capture_announce(try handle(), &capture, false, nil, nil, 0))
+    /// `MSG` §8.1 — `capture_announce`, on the control channel.
+    ///
+    /// - Parameter isPreview: 5.11j / 8.1i. The engine refuses a preview Capture
+    ///   announced `transfer: pending` here rather than noticing it later, which
+    ///   is CT-I36a's second assertion held by the library.
+    ///
+    /// ⛔ There is no `achievedFrames` parameter and there cannot be one: I30
+    /// puts the per-frame series on the payload, and `ppcp_capture` has no member
+    /// to carry it. See `payloadBegin`.
+    public func announce(_ record: PpcpCaptureRecord, isPreview: Bool = false) throws {
+        let peer = try handle()
+        try Self.withCapture(record) { capture in
+            try check(ppcp_peer_capture_announce(peer, capture, isPreview, nil, nil, 0))
+        }
+    }
+
+    /// `CORE` 7.3d — "a capture peer reports and recovers from platform
+    /// interruptions … with the resulting gap recorded explicitly".
+    ///
+    /// ⚠ `kind` is an open registry: `call`, `background`, `audio_session`. The
+    /// interval is the gap itself, in the Stream's timebase, and `recovered` says
+    /// whether the peer got back to where it was.
+    public func interruption(kind: String, timebaseId: String, intervalNs: Range<Int64>,
+                             recovered: Bool, streamIds: [String] = []) throws {
+        var interval = ppcp_interval()
+        try check(ppcp_interval_make(&interval, timebaseId, timebaseId.utf8.count,
+                                     intervalNs.lowerBound, intervalNs.upperBound))
+        let ids = try Self.ids(streamIds)
+        let peer = try handle()
+        try ids.withUnsafeBufferPointer { buffer in
+            try check(ppcp_peer_interruption(peer, kind, &interval, recovered,
+                                             buffer.baseAddress, buffer.count))
+        }
     }
 
     /// `MSG` §10 — answer an `error`. A fatal code closes the engine after the
@@ -522,11 +601,26 @@ public final class DevicePeer: @unchecked Sendable {
     }
 
     /// `ENC` §6 — the payload family, on a bulk channel.
+    /// - Parameter achievedFrames: `CORE` 5.8 / 8.3g — a camera Capture carries
+    ///   it here and **only** here (I30). ⛔ 5.8d makes it a MUST on any camera
+    ///   Capture that has frames: without the per-frame exposure durations the
+    ///   canonical-instant conversion of §6.1 is impossible (I17), and a consumer
+    ///   that falls back to the profile's exposure *range* fails CT-S1
+    ///   assertion 3.
     public func payloadBegin(captureId: String, bytes: UInt64, digest: Data,
-                             chunkBytes: UInt32, channel: PpcpChannel = .bulk) throws {
+                             chunkBytes: UInt32, channel: PpcpChannel = .bulk,
+                             achievedFrames: PpcpAchievedFrames? = nil) throws {
         var value = try Self.digest(digest)
-        try check(ppcp_peer_payload_begin(try handle(), channel.rawValue, captureId,
-                                          bytes, &value, chunkBytes, nil))
+        let peer = try handle()
+        guard let achievedFrames else {
+            try check(ppcp_peer_payload_begin(peer, channel.rawValue, captureId,
+                                              bytes, &value, chunkBytes, nil))
+            return
+        }
+        try achievedFrames.withCValue { frames in
+            try check(ppcp_peer_payload_begin(peer, channel.rawValue, captureId,
+                                              bytes, &value, chunkBytes, frames))
+        }
     }
 
     public func payloadChunk(captureId: String, index: UInt32, chunkBytes: UInt32,
@@ -623,7 +717,15 @@ public final class DevicePeer: @unchecked Sendable {
         }
     }
 
-    static func capture(_ record: PpcpCaptureRecord) throws -> ppcp_capture {
+    /// Build the `ppcp_capture` for a record and hand it to `body`.
+    ///
+    /// ⚠ **Scoped, and it has to be since D4.** `achieved_summary.thermal` is a
+    /// borrowed pointer into caller storage, so a `ppcp_capture` returned by
+    /// value would carry a dangling one the instant the Swift array moved. The
+    /// old by-value form was safe only because there was no summary on it yet.
+    static func withCapture<R>(_ record: PpcpCaptureRecord,
+                               _ body: (UnsafeMutablePointer<ppcp_capture>) throws -> R)
+        throws -> R {
         var capture = ppcp_capture()
         let completeness: ppcp_completeness = switch record.completeness {
         case .complete: PPCP_COMPLETE
@@ -656,6 +758,15 @@ public final class DevicePeer: @unchecked Sendable {
         if let reason = record.absentReason {
             try check(ppcp_capture_set_absent_reason(&capture, reason))
         }
+        // I11 — each gap is validated by the library against the Capture's own
+        // interval, so a gap outside it is refused here rather than encoded.
+        for gap in record.gapsNs {
+            var interval = ppcp_interval()
+            try check(ppcp_interval_make(&interval, record.timebaseId,
+                                         record.timebaseId.utf8.count,
+                                         gap.lowerBound, gap.upperBound))
+            try check(ppcp_capture_add_gap(&capture, &interval))
+        }
         if let bytes = record.bytes, let digestBytes = record.digest {
             guard digestBytes.count == Int(PPCP_SHA256_BYTES) else {
                 throw PpcpLibraryError(PPCP_ERR_INVALID)
@@ -665,7 +776,18 @@ public final class DevicePeer: @unchecked Sendable {
             try check(ppcp_digest_set(&digest, &raw))
             try check(ppcp_capture_set_digest(&capture, &digest, bytes))
         }
-        try check(ppcp_capture_validate(&capture))
-        return capture
+        // ⛔ Not reachable for `.confirmed`: `PpcpTransferState` has no such case
+        // and `ppcp_capture_set_transfer` refuses it (5.14f, 8.4b).
+        try check(ppcp_capture_set_transfer(&capture, record.transfer.cValue))
+
+        guard let summary = record.achievedSummary else {
+            try check(ppcp_capture_validate(&capture))
+            return try body(&capture)
+        }
+        return try summary.withCValue { built in
+            try check(ppcp_capture_set_summary(&capture, built))
+            try check(ppcp_capture_validate(&capture))
+            return try body(&capture)
+        }
     }
 }

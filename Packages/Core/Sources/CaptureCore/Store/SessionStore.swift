@@ -164,6 +164,10 @@ public enum SessionStoreError: Error, Sendable, Equatable {
     /// `ENC` 7e — `finish()` was called and a further append is refused. The
     /// writer emits no bytes at finish, so this is the only thing that changes.
     case bundleFinished
+    /// ⛔ `CORE` 5.11j — a preview Capture is live-only and "MUST NOT … be
+    /// written to a bundle". CT-I36a's third assertion is that none reaches one,
+    /// and this is where that is true rather than remembered.
+    case previewIsNotRecordable
 }
 
 // MARK: - Writing the bundle
@@ -287,7 +291,28 @@ public final class SessionBundleWriter: @unchecked Sendable {
         try flush(.control)
     }
 
-    public func announce(_ capture: PpcpCaptureRecord) throws {
+    /// `CORE` 7.3d — the interruption and the gap it left, recorded explicitly.
+    ///
+    /// ⚠ Conferred by **Capture** like `readiness`, so a hostless bundle carries
+    /// it. What a bundle must not carry is `arm`/`disarm`, which are **Live**'s
+    /// (7.3b) — the difference is that an interruption is something that happened
+    /// to this peer, not a command somebody sent it.
+    public func record(_ interruption: InterruptionRecord) throws {
+        try peer.interruption(kind: interruption.kind.rawValue,
+                              timebaseId: interruption.timebaseId,
+                              intervalNs: interruption.intervalNs,
+                              recovered: interruption.recovered,
+                              streamIds: interruption.streamIds)
+        try flush(.control)
+    }
+
+    /// - Parameter isPreview: ⛔ **refused.** 5.11j makes a preview Capture
+    ///   live-only — "discard rather than queue; MUST NOT retain for later
+    ///   transfer or write to a bundle". The parameter exists so a caller
+    ///   forwarding announcements to both a live link and a bundle gets an error
+    ///   here instead of silently persisting one (CT-I36a assertion 3).
+    public func announce(_ capture: PpcpCaptureRecord, isPreview: Bool = false) throws {
+        guard isPreview == false else { throw SessionStoreError.previewIsNotRecordable }
         try peer.announce(capture)
         try flush(.control)
     }
@@ -392,11 +417,17 @@ public final class SessionBundleWriter: @unchecked Sendable {
     ///
     /// ⛔ `ENC` 7c — refused by the writer before `session_manifest`, which is
     /// why `recordManifest` is not optional and not last.
+    /// - Parameter achievedFrames: `CORE` 5.8d / I30 — the per-frame series
+    ///   travels here, with the payload it describes, and nowhere else. A bundle
+    ///   written without it is a bundle from which §6.1's conversion cannot be
+    ///   performed at all (I17).
     public func writePayload(captureId: String, clip: Data,
-                             chunkBytes: Int = 256 * 1024) throws {
+                             chunkBytes: Int = 256 * 1024,
+                             achievedFrames: PpcpAchievedFrames? = nil) throws {
         let digest = Self.digest(of: clip)
         try peer.payloadBegin(captureId: captureId, bytes: UInt64(clip.count),
-                              digest: digest, chunkBytes: UInt32(chunkBytes))
+                              digest: digest, chunkBytes: UInt32(chunkBytes),
+                              achievedFrames: achievedFrames)
         try flush(.bulk)
 
         var index: UInt32 = 0
@@ -470,12 +501,18 @@ public final class SessionBundleReader: @unchecked Sendable {
     private var reader: OpaquePointer?
     private let sink: DevicePeer?
     private var tail = Data()
+    /// I34's index, copied out of the reader at `finish()` so `hasSeen` still
+    /// answers once the handle is gone. ⛔ Heap, never a Swift value: see the
+    /// note in `finish()`.
+    private let seenIndex: UnsafeMutablePointer<ppcp_capture_index>
 
     /// - Parameter sink: the peer the frames are delivered to. `nil` parses and
     ///   accounts for them without delivering, which is what a fixture validator
     ///   wants.
     public init(sink: DevicePeer? = nil) throws {
         self.sink = sink
+        seenIndex = .allocate(capacity: 1)
+        ppcp_capture_index_init(seenIndex)
         let size = ppcp_bundle_reader_sizeof()
         storage = .allocate(byteCount: size, alignment: MemoryLayout<UInt64>.alignment)
         var handle: OpaquePointer?
@@ -483,12 +520,16 @@ public final class SessionBundleReader: @unchecked Sendable {
             try check(sink.withPeerHandle { ppcp_bundle_reader_new(storage, size, $0, &handle) })
         } catch {
             storage.deallocate()
+            seenIndex.deallocate()
             throw error
         }
         reader = handle
     }
 
-    deinit { storage.deallocate() }
+    deinit {
+        storage.deallocate()
+        seenIndex.deallocate()
+    }
 
     private func handle() throws -> OpaquePointer {
         guard let reader else { throw SessionStoreError.bundleFinished }
@@ -536,6 +577,20 @@ public final class SessionBundleReader: @unchecked Sendable {
                             truncated: ppcp_bundle_reader_truncated(reader),
                             captureCount: ppcp_bundle_reader_index(reader)
                                 .map { ppcp_capture_index_count($0) } ?? 0)
+        // ⚠ **The capture index is copied through raw memory, not assigned.**
+        // D4 found `hasSeen` answering `false` for every Capture once `finish()`
+        // had run — the exact "accessor that answered a default afterwards" the
+        // note above warns about, and in the direction that matters, since a
+        // caller acts on "not held" by importing the session again. The obvious
+        // fix, snapshotting the index by value, died with SIGBUS: it holds 512
+        // keys inline and is about 100 KB, so a Swift-level copy of it is a
+        // 100 KB stack temporary. Same hazard as the `ppcp_msg` note in
+        // `recordManifest`, same answer — keep it on the heap and `memcpy`.
+        if let live = ppcp_bundle_reader_index(reader) {
+            UnsafeMutableRawPointer(seenIndex).copyMemory(
+                from: UnsafeRawPointer(live),
+                byteCount: MemoryLayout<ppcp_capture_index>.size)
+        }
         self.reader = nil
         return switch completeness {
         case PPCP_COMPLETE: .complete
@@ -579,11 +634,12 @@ public final class SessionBundleReader: @unchecked Sendable {
     /// the same rule for both (ground rule 1). A second read of the same bundle
     /// through the same reader reports every Capture as already held.
     public func hasSeen(sessionId: String, peerId: String, captureId: String) throws -> Bool {
-        guard let reader, let index = ppcp_bundle_reader_index(reader) else { return false }
         var key = ppcp_capture_key()
         try check(ppcp_id_set_z(&key.session_id, sessionId))
         try check(ppcp_id_set_z(&key.peer_id, peerId))
         try check(ppcp_id_set_z(&key.capture_id, captureId))
+        // Live handle first, then the copy taken at `finish()`.
+        let index = reader.flatMap(ppcp_bundle_reader_index) ?? seenIndex
         return ppcp_capture_index_contains(index, &key)
     }
 
