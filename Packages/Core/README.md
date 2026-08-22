@@ -30,6 +30,19 @@ row).
   platform-specific concepts; an Android-captured session must be indistinguishable to
   the host (REQ-PORT-12).
 
+## The port surface so far
+
+| Protocol | Implemented by | For |
+|---|---|---|
+| `CaptureDevice` | `Platform/AVFoundationCaptureDevice.swift` | camera, microphone, locks |
+| `ByteChannel`, `PeerTransport` | `Platform/Network/PpcpTransport.swift` | PPCP's two channels (`CORE` T2) |
+| `PeerTransportConnector`, `PeerTransportListener` | same | dialling and listening (`RV` §2) |
+
+⚠ `Transport.swift` carries no `Network.framework` type and must not: the
+negotiated TLS mode arrives here as a `NegotiatedSecurity` value built from a
+version code and a ciphersuite number, which is all the protocol has ever meant
+by it (`RV` 5.4k).
+
 ## Non-goal
 
 Do not pre-generalise. The obligation is that the seams exist and stay clean, not that
