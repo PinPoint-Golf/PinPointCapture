@@ -372,7 +372,7 @@ struct LinkBindLoopbackTests {
 
         let waiting = Task { try await listening.channelBound(.preview) }
         let opened = try await withTimeout(seconds: 30) { try await dialling.openChannel(.preview) }
-        let bound = try await withTimeout(seconds: 30) { try await waiting.value }
+        let bound = try await waiting.value(within: 30)
 
         #expect(opened.channel == .preview)
         #expect(bound.channel == .preview)
@@ -420,10 +420,17 @@ struct LinkBindLoopbackTests {
         frame.append(contentsOf: [0xA1, 0x61, 0x61, 0x01])   // { "a": 1 }
         try await stream.send(frame)
 
-        // The listener has nothing to hand back, and says so within its own
-        // timeout rather than waiting forever (2.1c).
+        // ⚠ **The listener has nothing to hand back, and never will** — 2.1c's
+        // one action for a stream it refuses is to close it, and closing a stream
+        // resumes nobody. So this asserts that no link appears within a bound
+        // comfortably above the listener's own two-second bind timeout, and it is
+        // the cancellation that ends the wait. Before `accept()` honoured
+        // cancellation this line hung the whole suite: the timeout fired, the
+        // group could not collect its stuck child, and the `defer` that would
+        // have called `stop()` — the only thing that could have freed the waiter
+        // — never ran because the test never returned.
         await #expect(throws: (any Error).self) {
-            try await withTimeout(seconds: 20) { try await accepting.value }
+            try await accepting.value(within: 5)
         }
         await stream.close(.cancelled)
     }
@@ -456,10 +463,10 @@ struct LinkBindLoopbackTests {
             try await PpcpConnector().connect(to: endpoint, credentials: credentials,
                                               channels: [.control, .bulk])
         }
-        let linkA = try await withTimeout(seconds: 40) { try await dialledA.value }
-        let linkB = try await withTimeout(seconds: 40) { try await dialledB.value }
-        let servedA = try await withTimeout(seconds: 40) { try await first.value }
-        let servedB = try await withTimeout(seconds: 40) { try await second.value }
+        let linkA = try await dialledA.value(within: 40)
+        let linkB = try await dialledB.value(within: 40)
+        let servedA = try await first.value(within: 40)
+        let servedB = try await second.value(within: 40)
 
         // Four streams, two links, and every one on the channel it announced.
         for link in [servedA, servedB] {
@@ -506,7 +513,7 @@ private struct LoopbackHarness {
                                               credentials: credentials,
                                               channels: channels)
         }
-        let served = try await withTimeout(seconds: 30) { try await accepting.value }
+        let served = try await accepting.value(within: 30)
         return LoopbackHarness(listener: listener, served: served, dialled: dialled)
     }
 
@@ -525,6 +532,20 @@ private struct LoopbackHarness {
 /// ⚠ A handshake that never completes must fail the suite rather than hang it.
 /// Swift Testing's time-limit trait has a one-minute floor, which is long enough
 /// that a hung loopback looks like a hung machine.
+/// Race `work` against a sleeper.
+///
+/// ⛔ **This times out only work that is CANCELLABLE, and the reason is worth
+/// stating because it is not obvious.** `withThrowingTaskGroup` does not return
+/// until every child has finished, so `group.cancelAll()` is a *request*: a child
+/// parked on a continuation that ignores cancellation keeps the group — and
+/// therefore this function — suspended for ever. A timeout around uncancellable
+/// work is not a slow timeout, it is no timeout at all, and it converts a hang
+/// somewhere else into a hang here where it looks like the timeout's fault.
+///
+/// ⚠ Everything this suite passes in is now genuinely cancellable:
+/// `PpcpByteChannel` cancels its `NWConnection` on cancel, and `accept()` and
+/// `channelBound()` withdraw their waiters. For an unstructured `Task`, use
+/// `value(within:)` below — awaiting `task.value` is *not* cancellable.
 private func withTimeout<T: Sendable>(seconds: Double,
                                       _ work: @escaping @Sendable () async throws -> T) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
@@ -538,6 +559,22 @@ private func withTimeout<T: Sendable>(seconds: Double,
         }
         group.cancelAll()
         return first
+    }
+}
+
+private extension Task where Failure == any Error, Success: Sendable {
+    /// Await this task, giving up after `seconds`.
+    ///
+    /// ⛔ **`try await task.value` does not respond to cancellation**, so wrapping
+    /// it in `withTimeout` alone leaves the timeout unable to end the wait: the
+    /// group cancels its own child, the child goes on awaiting a task nobody
+    /// cancelled, and the group never returns. Every accept/dial in this suite is
+    /// started as a `Task` so it runs concurrently with the thing it is racing, so
+    /// every one of them needs this bridge.
+    func value(within seconds: Double) async throws -> Success {
+        try await withTimeout(seconds: seconds) {
+            try await withTaskCancellationHandler { try await self.value } onCancel: { self.cancel() }
+        }
     }
 }
 

@@ -237,20 +237,57 @@ make gen && make build
 ⚠ **`make test-core` is green: 89 tests, 12 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
 
-⛔ **`make test-app` does not complete, and that is an open defect rather than a
-result.** The app target builds and every non-loopback suite passes, as do the
-first five transport tests. The run then goes silent in or just before
-`LinkBindLoopbackTests` — the `.serialized` suite added for erratum E1 — and
-neither the suite's own `withTimeout` guards nor `xcodebuild`'s
-`-default-test-execution-time-allowance` recovers it; the test host exits and
-`xcodebuild` waits forever. **Which test hangs is not yet known**, and no `RT-*`
-row in §3 may be advanced on the strength of this suite until it is.
-
-⚠ The `impl` states on RT-4, RT-10 and RT-14 above rest on the transport tests
-that *did* pass in this run and in D1's, not on the E1 suite. Nothing in §3 was
-promoted from it.
+⚠ **`make test-app` is green.** It hung for one session; see the finding below.
 
 ⚠ `-jobs 3` on every `xcodebuild`, and `-j 3` on every `swift build`/`swift test`.
 This is a 16 GB machine and an unbounded build has already taken it down once.
+
+---
+
+## 7. A defect found by the suite hanging, and what it was
+
+**`make test-app` hung indefinitely in `LinkBindLoopbackTests`, and the cause was
+a transport defect rather than a test one.**
+
+`PpcpListener.accept()` parked on a `CheckedContinuation` that was resumed only
+when a link assembled or when `stop()` was called. `ENC` 2.1c gives a listener one
+action for a stream it refuses — close it — and closing a stream resumes nobody,
+which is correct. What was not correct is that the waiter then had **no way out**:
+`Task.cancel()` reached a continuation with no cancellation handler, so a caller
+that gave up could not leave. `PpcpPeerLink.channelBound()` had the same shape,
+and it is the more ordinary case — 2.1d makes a `preview` channel one the
+counterpart *may* open, so waiting for one that never comes is normal.
+
+Underneath both, every `NWConnection` await in `PpcpByteChannel` — `open`, `send`,
+`receive` — ignored cancellation too. Network.framework has no per-call cancel, so
+the only way to end one is to cancel the connection, and nothing did.
+
+⛔ **Why that became a hang rather than a slow test.** A `withThrowingTaskGroup`
+does not return until every child has finished, so `group.cancelAll()` is a
+request. A child parked on a continuation that ignores cancellation keeps the
+group suspended for ever — which means a structured timeout around uncancellable
+work is not a slow timeout, it is **no timeout at all**. Both the suite's
+`withTimeout` and the listener's own `withDeadline` are built that way, so the
+"20-second guard" in the test could never fire, and the test never returned, so
+its `defer { await listener.stop() }` — the one thing that would have freed the
+waiter — never ran. The listener's `withDeadline` had the same hole in production:
+a peer that completed TLS and then said nothing would have parked an intake task
+for ever, which is the exact case its comment claimed to bound.
+
+**Fixed at the cause**, in `Sources/Platform/Network/PpcpTransport.swift`:
+`PpcpByteChannel.open`/`send`/`receive` cancel the `NWConnection` on cancellation;
+`accept()` and `channelBound()` hold withdrawable waiters and resume them with
+`CancellationError`, with a flag closing the race where cancellation arrives
+before the continuation is installed. `withDeadline` now bounds what it says it
+bounds. No test is skipped and no timeout was lengthened to paper over it.
+
+⚠ A test-side bridge was needed as well: `try await task.value` is **not**
+cancellable, so a timeout wrapped around an unstructured `Task` cannot end it
+however cancellable the work inside is. `Task.value(within:)` in the suite cancels
+the task when the deadline fires.
+
+⚠ **No `RT-*` row moves on this.** The fix restores the suite to running; it does
+not add an assertion. `RT-4`, `RT-10` and `RT-14` keep the `impl` states they had,
+which rested on the transport tests that were already passing.
 
 `make test-core` needs a sibling `../libppcp` checkout until the package is tagged.

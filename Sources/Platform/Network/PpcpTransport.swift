@@ -262,14 +262,26 @@ final class PpcpByteChannel: ByteChannel, @unchecked Sendable {
         // `.contentProcessed` fires when the transport has taken the bytes, so a
         // bulk sender outrunning the link is throttled here rather than in an
         // unbounded queue of its own.
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            connection.send(content: bytes, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: TransportError.channelClosed(.failed(Self.describe(error))))
-                } else {
-                    continuation.resume()
-                }
-            })
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                connection.send(content: bytes, completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: TransportError.channelClosed(.failed(Self.describe(error))))
+                    } else {
+                        continuation.resume()
+                    }
+                })
+            }
+        } onCancel: {
+            // ⛔ **Cancelling the task cancels the connection, and there is no
+            // gentler option.** Network.framework has no per-call cancel: a
+            // `send` or `receive` in flight is abandoned only by tearing the
+            // connection down. Without this the continuation is never resumed,
+            // so the task ignores cancellation entirely — and a structured
+            // timeout around it cannot expire, because a task group waits for
+            // every child before it returns. That is not a slow timeout; it is
+            // no timeout at all.
+            connection.cancel()
         }
     }
 
@@ -277,14 +289,21 @@ final class PpcpByteChannel: ByteChannel, @unchecked Sendable {
         try requireReady()
         while true {
             typealias Arrival = CheckedContinuation<(Data?, Bool), any Error>
-            let arrival = try await withCheckedThrowingContinuation { (continuation: Arrival) in
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, isComplete, error in
-                    if let error {
-                        continuation.resume(throwing: TransportError.channelClosed(.failed(Self.describe(error))))
-                    } else {
-                        continuation.resume(returning: (data, isComplete))
+            let arrival = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: Arrival) in
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, isComplete, error in
+                        if let error {
+                            continuation.resume(throwing: TransportError.channelClosed(.failed(Self.describe(error))))
+                        } else {
+                            continuation.resume(returning: (data, isComplete))
+                        }
                     }
                 }
+            } onCancel: {
+                // See `send`. A parked `receive` is the common case — a listener
+                // waiting for a `link_bind` that never comes — and it is exactly
+                // what `withDeadline` below claims to bound.
+                connection.cancel()
             }
             if let data = arrival.0, data.isEmpty == false { return data }
             if arrival.1 {
@@ -328,37 +347,44 @@ final class PpcpByteChannel: ByteChannel, @unchecked Sendable {
                      channel: PpcpChannel,
                      on queue: DispatchQueue) async throws -> (PpcpByteChannel, NegotiatedSecurity) {
         let resumed = Mutex(false)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            connection.stateUpdateHandler = { state in
-                // ⚠ Decide the outcome first, claim the continuation second. A
-                // connection reports `.preparing` before `.ready` and may report
-                // more than one terminal state on the way down, so claiming on
-                // every callback and then undoing it is how a double resume —
-                // which traps — gets written by accident.
-                let outcome: Result<Void, any Error>?
-                switch state {
-                case .ready:
-                    outcome = .success(())
-                case .failed(let error):
-                    outcome = .failure(TransportError.handshakeFailed(describe(error)))
-                case .waiting(let error):
-                    // ⚠ Fail rather than let Network.framework retry. `RV` 4.3
-                    // has the scanner walk the endpoints of a pairing code **in
-                    // order**, so a refused or unreachable address must fail fast
-                    // enough for the next one to be tried while the user is still
-                    // holding the phone up.
-                    outcome = .failure(TransportError.endpointUnreachable(describe(error)))
-                case .cancelled:
-                    outcome = .failure(TransportError.channelClosed(.cancelled))
-                case .setup, .preparing:
-                    outcome = nil
-                @unknown default:
-                    outcome = nil
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                connection.stateUpdateHandler = { state in
+                    // ⚠ Decide the outcome first, claim the continuation second. A
+                    // connection reports `.preparing` before `.ready` and may report
+                    // more than one terminal state on the way down, so claiming on
+                    // every callback and then undoing it is how a double resume —
+                    // which traps — gets written by accident.
+                    let outcome: Result<Void, any Error>?
+                    switch state {
+                    case .ready:
+                        outcome = .success(())
+                    case .failed(let error):
+                        outcome = .failure(TransportError.handshakeFailed(describe(error)))
+                    case .waiting(let error):
+                        // ⚠ Fail rather than let Network.framework retry. `RV` 4.3
+                        // has the scanner walk the endpoints of a pairing code **in
+                        // order**, so a refused or unreachable address must fail fast
+                        // enough for the next one to be tried while the user is still
+                        // holding the phone up.
+                        outcome = .failure(TransportError.endpointUnreachable(describe(error)))
+                    case .cancelled:
+                        outcome = .failure(TransportError.channelClosed(.cancelled))
+                    case .setup, .preparing:
+                        outcome = nil
+                    @unknown default:
+                        outcome = nil
+                    }
+                    guard let outcome, resumed.claim() else { return }
+                    continuation.resume(with: outcome)
                 }
-                guard let outcome, resumed.claim() else { return }
-                continuation.resume(with: outcome)
+                connection.start(queue: queue)
             }
-            connection.start(queue: queue)
+        } onCancel: {
+            // `.cancelled` comes back through the state handler above and
+            // resumes the continuation, so cancelling the task really does end
+            // the wait rather than merely asking it to.
+            connection.cancel()
         }
 
         guard let security = PpcpTlsProfile.negotiated(from: connection) else {
@@ -424,9 +450,22 @@ final class PpcpPeerLink: PeerTransport, @unchecked Sendable {
     /// or a `ListeningPeerLink`.
     private let dial: (@Sendable (PpcpChannel) async throws -> PpcpByteChannel)?
 
+    /// One suspended `channelBound` call.
+    ///
+    /// ⚠ **A box rather than a bare continuation, so a cancelled waiter can be
+    /// taken back out.** A continuation is not `Equatable` and cannot be found in
+    /// an array; without an identity to remove, a caller that gives up waiting
+    /// for a `preview` leaves its continuation parked here for the life of the
+    /// link. ⛔ Every field is touched only inside `later.withLock`, which is what
+    /// `@unchecked Sendable` rests on.
+    private final class ChannelWaiter: @unchecked Sendable {
+        var continuation: CheckedContinuation<any ByteChannel, any Error>?
+        var cancelled = false
+    }
+
     private struct LaterChannels {
         var channels: [PpcpChannel: any ByteChannel] = [:]
-        var waiters: [PpcpChannel: [CheckedContinuation<any ByteChannel, any Error>]] = [:]
+        var waiters: [PpcpChannel: [ChannelWaiter]] = [:]
         var closed: ChannelCloseReason?
     }
 
@@ -468,15 +507,19 @@ final class PpcpPeerLink: PeerTransport, @unchecked Sendable {
     /// Called by the listener when a further stream binds into this link (2.1d),
     /// and by `openChannel` when the dialler opens one.
     func attach(_ stream: any ByteChannel, as channel: PpcpChannel) {
-        let waiting = later.withLock { state -> [CheckedContinuation<any ByteChannel, any Error>] in
+        let waiting = later.withLock { state -> [ChannelWaiter] in
             state.channels[channel] = stream
             return state.waiters.removeValue(forKey: channel) ?? []
         }
-        for waiter in waiting { waiter.resume(returning: stream) }
+        for waiter in waiting {
+            let continuation = waiter.continuation
+            waiter.continuation = nil
+            continuation?.resume(returning: stream)
+        }
     }
 
     func close(_ reason: ChannelCloseReason) async {
-        let (extra, waiting) = later.withLock { state -> ([any ByteChannel], [CheckedContinuation<any ByteChannel, any Error>]) in
+        let (extra, waiting) = later.withLock { state -> ([any ByteChannel], [ChannelWaiter]) in
             state.closed = reason
             let channels = Array(state.channels.values)
             let waiters = state.waiters.values.flatMap { $0 }
@@ -488,7 +531,11 @@ final class PpcpPeerLink: PeerTransport, @unchecked Sendable {
         // while a `preview` was being negotiated is the ordinary case, and a task
         // parked forever on a dead link is the kind of leak that only shows up as
         // a battery complaint.
-        for waiter in waiting { waiter.resume(throwing: TransportError.channelClosed(reason)) }
+        for waiter in waiting {
+            let continuation = waiter.continuation
+            waiter.continuation = nil
+            continuation?.resume(throwing: TransportError.channelClosed(reason))
+        }
         await control.close(reason)
         await bulk.close(reason)
         for channel in extra { await channel.close(reason) }
@@ -516,19 +563,42 @@ extension PpcpPeerLink: DiallingPeerLink {
 }
 
 extension PpcpPeerLink: ListeningPeerLink {
+    /// ⚠ **Cancellable, and it has to be.** 2.1d makes a `preview` channel
+    /// something the counterpart *may* open, so waiting for one that never comes
+    /// is the ordinary case, not the exception — a caller that gives up (the user
+    /// leaves the screen, an enclosing timeout expires) must actually leave. The
+    /// `cancelled` flag inside the lock closes the race where cancellation
+    /// arrives before the continuation has been installed.
     func channelBound(_ channel: PpcpChannel) async throws -> any ByteChannel {
         if channel == .control { return control }
         if channel == .bulk { return bulk }
-        return try await withCheckedThrowingContinuation { continuation in
-            let immediate = later.withLock { state -> Result<any ByteChannel, any Error>? in
-                if let existing = state.channels[channel] { return .success(existing) }
-                if let reason = state.closed {
-                    return .failure(TransportError.channelClosed(reason))
+        let waiter = ChannelWaiter()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let immediate = later.withLock { state -> Result<any ByteChannel, any Error>? in
+                    if let existing = state.channels[channel] { return .success(existing) }
+                    if let reason = state.closed {
+                        return .failure(TransportError.channelClosed(reason))
+                    }
+                    if waiter.cancelled { return .failure(CancellationError()) }
+                    waiter.continuation = continuation
+                    state.waiters[channel, default: []].append(waiter)
+                    return nil
                 }
-                state.waiters[channel, default: []].append(continuation)
-                return nil
+                if let immediate { continuation.resume(with: immediate) }
             }
-            if let immediate { continuation.resume(with: immediate) }
+        } onCancel: {
+            let continuation = later.withLock { state -> CheckedContinuation<any ByteChannel, any Error>? in
+                waiter.cancelled = true
+                guard var list = state.waiters[channel],
+                      let index = list.firstIndex(where: { $0 === waiter }) else { return nil }
+                list.remove(at: index)
+                state.waiters[channel] = list.isEmpty ? nil : list
+                let continuation = waiter.continuation
+                waiter.continuation = nil
+                return continuation
+            }
+            continuation?.resume(throwing: CancellationError())
         }
     }
 }
@@ -714,7 +784,17 @@ actor PpcpListener: PeerTransportListener {
     private var pending: [PpcpLinkId: PendingLink] = [:]
     private var live: [PpcpLinkId: PpcpPeerLink] = [:]
     private var completed: [PpcpPeerLink] = []
-    private var waiters: [CheckedContinuation<PpcpPeerLink?, Never>] = []
+    /// One suspended `accept()`.
+    ///
+    /// ⚠ Same reason as `PpcpPeerLink.ChannelWaiter`: a continuation has no
+    /// identity, so without a box a cancelled `accept()` cannot be taken out of
+    /// the queue. ⛔ Every field is touched only on this actor.
+    private final class AcceptWaiter: @unchecked Sendable {
+        var continuation: CheckedContinuation<PpcpPeerLink?, Never>?
+        var cancelled = false
+    }
+
+    private var waiters: [AcceptWaiter] = []
     private var stopped = false
 
     init(credentials: any PpcpCredentials,
@@ -786,18 +866,52 @@ actor PpcpListener: PeerTransportListener {
 
     /// Await one complete link: every required channel bound, `link_bind` seen
     /// and accepted on each.
+    /// ⛔ **Cancellable, and this was the defect that hung the test suite.**
+    /// `accept()` resumes when a link assembles or when `stop()` is called, and
+    /// 2.1c means a stream the listener *refuses* produces neither — which is
+    /// correct behaviour, and left the waiter parked forever. A caller that gave
+    /// up (an enclosing timeout, a user leaving the connect screen) could not
+    /// leave: `Task.cancel()` reached a continuation that ignored it, and a
+    /// structured timeout around it could never expire, because a task group does
+    /// not return until every child has finished.
+    ///
+    /// ⚠ The `cancelled` flag closes the race where cancellation arrives before
+    /// the continuation is installed — `withTaskCancellationHandler` runs
+    /// `onCancel` immediately for an already-cancelled task, which is *before*
+    /// the operation body has run.
     func accept() async throws -> any PeerTransport {
         if completed.isEmpty == false { return completed.removeFirst() }
         guard stopped == false else {
             throw TransportError.listenerFailed("stopped while awaiting a link")
         }
-        let link = await withCheckedContinuation { (continuation: CheckedContinuation<PpcpPeerLink?, Never>) in
-            waiters.append(continuation)
+        let waiter = AcceptWaiter()
+        let link = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<PpcpPeerLink?, Never>) in
+                if waiter.cancelled {
+                    continuation.resume(returning: nil)
+                } else {
+                    waiter.continuation = continuation
+                    waiters.append(waiter)
+                }
+            }
+        } onCancel: {
+            Task { await self.withdraw(waiter) }
         }
         guard let link else {
+            if waiter.cancelled { throw CancellationError() }
             throw TransportError.listenerFailed("stopped while awaiting a link")
         }
         return link
+    }
+
+    /// Take a cancelled `accept()` back out of the queue and let it go.
+    private func withdraw(_ waiter: AcceptWaiter) {
+        waiter.cancelled = true
+        guard let index = waiters.firstIndex(where: { $0 === waiter }) else { return }
+        waiters.remove(at: index)
+        let continuation = waiter.continuation
+        waiter.continuation = nil
+        continuation?.resume(returning: nil)
     }
 
     func stop() async {
@@ -805,7 +919,11 @@ actor PpcpListener: PeerTransportListener {
         listener?.cancel()
         listener = nil
 
-        for waiter in waiters { waiter.resume(returning: nil) }
+        for waiter in waiters {
+            let continuation = waiter.continuation
+            waiter.continuation = nil
+            continuation?.resume(returning: nil)
+        }
         waiters.removeAll()
         for (_, link) in pending {
             link.deadline?.cancel()
@@ -928,11 +1046,14 @@ actor PpcpListener: PeerTransportListener {
     }
 
     private func deliver(_ link: PpcpPeerLink) {
-        if waiters.isEmpty {
+        guard waiters.isEmpty == false else {
             completed.append(link)
-        } else {
-            waiters.removeFirst().resume(returning: link)
+            return
         }
+        let waiter = waiters.removeFirst()
+        let continuation = waiter.continuation
+        waiter.continuation = nil
+        continuation?.resume(returning: link)
     }
 
     /// ⚠ A deadline around an `await`, because `NWConnection` has no handshake
