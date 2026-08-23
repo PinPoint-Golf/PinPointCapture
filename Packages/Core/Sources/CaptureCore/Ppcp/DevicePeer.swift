@@ -388,6 +388,10 @@ public final class DevicePeer: @unchecked Sendable {
     /// nested lists are borrowed pointers into it (ground rule 7).
     private var declaration: PpcpDeclaration?
 
+    /// Events moved out of the engine's four-deep ring before it can overflow
+    /// (F-L13-1). See `feed(_:on:)`.
+    private var events: [HeldEvent] = []
+
     /// - Parameters:
     ///   - ingestPolicy: `MSG` 3.4 / I14 — the embedding's acceptance decision
     ///     for a counterpart's declaration. Given the counterpart's `Peer.id`,
@@ -737,18 +741,99 @@ public final class DevicePeer: @unchecked Sendable {
     /// caller's buffer, so a trailing partial frame is re-presented with more
     /// bytes after it. A caller that discarded the tail would desynchronise the
     /// stream and the symptom would appear frames later.
+    /// ⛔ **One frame per call into the engine, and the events harvested between
+    /// each — F-L13-1.** `ppcp_peer_feed` consumes as many whole frames as the
+    /// buffer holds, the engine's event ring is four deep, and an overflow drops
+    /// the **oldest** event silently. A socket read of 64 KiB is comfortably more
+    /// than four control frames, so handing the whole buffer over loses the first
+    /// events of a burst — the `declare`, the `session_open` — and keeps the last,
+    /// which is the worst possible half to keep.
+    ///
+    /// So this walks the buffer with the library's own framing
+    /// (`ppcp_frame_read`), feeds exactly one frame, and moves whatever the engine
+    /// raised into a Swift-side queue before the next frame goes in. `nextEvent`
+    /// reads that queue. The library fix is L15's; until it lands, a caller that
+    /// used `ppcp_peer_feed` directly would still lose events, which is why
+    /// nothing in this application does.
     @discardableResult
     public func feed(_ bytes: Data, on channel: PpcpChannel) throws -> Int {
         guard bytes.isEmpty == false else { return 0 }
-        var consumed = 0
         let peer = try handle()
-        let result: ppcp_result = bytes.withUnsafeBytes { raw in
-            ppcp_peer_feed(peer, channel.rawValue,
-                           raw.bindMemory(to: UInt8.self).baseAddress, raw.count,
-                           &consumed)
+        var offset = 0
+
+        while offset < bytes.count {
+            let frameLength: Int? = bytes.withUnsafeBytes { raw -> Int? in
+                guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+                var header = ppcp_frame_header()
+                var payload: UnsafePointer<UInt8>?
+                var consumed = 0
+                let result = ppcp_frame_read(base + offset, raw.count - offset,
+                                             &header, &payload, &consumed)
+                // ⚠ A malformed or oversized frame is NOT decided here: it is fed
+                // to the engine, which answers `error`/`malformed` (ENC 5d) or
+                // closes on ENC 8a. Deciding it in the embedding would be a second
+                // implementation of the framing rules.
+                return result == PPCP_ERR_TRUNCATED ? nil : consumed
+            }
+            // A trailing partial frame is left for the caller to re-present.
+            guard let frameLength, frameLength > 0 else { break }
+
+            var consumed = 0
+            let result: ppcp_result = bytes.withUnsafeBytes { raw in
+                ppcp_peer_feed(peer, channel.rawValue,
+                               raw.bindMemory(to: UInt8.self).baseAddress! + offset,
+                               min(frameLength, raw.count - offset), &consumed)
+            }
+            offset += consumed
+            harvestEvents()
+            try check(result)
+            guard consumed > 0 else { break }
         }
-        try check(result)
-        return consumed
+        return offset
+    }
+
+    /// Moves whatever the engine raised out of its four-deep ring and into a
+    /// Swift queue, before another frame can push it out.
+    ///
+    /// ⚠ **Each event's `ppcp_msg` is copied onto the heap**, because `peer.h`
+    /// gives the borrowed pointer four events' worth of life and this queue is
+    /// deliberately longer than that. ⛔ A `declare`'s nested Sources still point
+    /// into the engine's declaration arena and are valid only until the
+    /// counterpart declares again (3.3a) — copying the union does not deep-copy
+    /// them, and nothing here pretends it does.
+    private func harvestEvents() {
+        guard let peer else { return }
+        while true {
+            var event = ppcp_event()
+            guard ppcp_peer_next_event(peer, &event) == PPCP_OK else { return }
+            events.append(HeldEvent(event))
+        }
+    }
+
+    /// One event, with its message held on the heap for as long as this object is.
+    final class HeldEvent {
+        let kind: ppcp_event_kind
+        let channel: PpcpChannel?
+        let status: ppcp_result
+        private let raw: UnsafeMutableRawPointer?
+
+        var message: UnsafePointer<ppcp_msg>? {
+            raw.map { UnsafePointer($0.assumingMemoryBound(to: ppcp_msg.self)) }
+        }
+
+        init(_ event: ppcp_event) {
+            kind = event.kind
+            channel = PpcpChannel(rawValue: event.channel)
+            status = event.status
+            guard let source = event.msg else { raw = nil; return }
+            let bytes = MemoryLayout<ppcp_msg>.stride
+            let storage = UnsafeMutableRawPointer.allocate(
+                byteCount: bytes, alignment: MemoryLayout<ppcp_msg>.alignment)
+            storage.copyMemory(from: UnsafeRawPointer(source), byteCount: bytes)
+            raw = storage
+        }
+
+        deinit { raw?.deallocate() }
     }
 
     /// Whole frames out, per channel. Empty when nothing is queued.
@@ -768,17 +853,38 @@ public final class DevicePeer: @unchecked Sendable {
 
     // MARK: Events
 
-    /// What arrived, in the order it arrived. ⚠ The decoded message is borrowed
-    /// and valid only for the duration of `body` — `peer.h` gives it four events'
-    /// worth of life and this narrows that to "while you are looking at it",
-    /// which is the only rule a Swift caller can keep.
+    /// What arrived, in the order it arrived.
+    ///
+    /// ⚠ The decoded message is valid only for the duration of `body` — narrower
+    /// than the copy's actual lifetime on purpose, because a `declare`'s nested
+    /// Sources point into the engine's arena whatever this queue does.
     @discardableResult
     public func nextEvent<T>(_ body: (ppcp_event_kind, UnsafePointer<ppcp_msg>?) throws -> T)
         rethrows -> T? {
-        guard let peer else { return nil }
-        var event = ppcp_event()
-        guard ppcp_peer_next_event(peer, &event) == PPCP_OK else { return nil }
-        return try body(event.kind, event.msg)
+        // Anything the engine raised outside a `feed` — a liveness pump's
+        // `link_lost`, a sync burst — is picked up here.
+        harvestEvents()
+        guard events.isEmpty == false else { return nil }
+        let event = events.removeFirst()
+        return try body(event.kind, event.message)
+    }
+
+    /// The channel an event arrived on. ⚠ `CORE` 5.11h puts preview payload on a
+    /// bulk channel **distinct** from shot payload, and without this a receiver
+    /// cannot check that it did.
+    @discardableResult
+    public func nextEventWithChannel<T>(
+        _ body: (ppcp_event_kind, PpcpChannel?, UnsafePointer<ppcp_msg>?) throws -> T
+    ) rethrows -> T? {
+        harvestEvents()
+        guard events.isEmpty == false else { return nil }
+        let event = events.removeFirst()
+        return try body(event.kind, event.channel, event.message)
+    }
+
+    public var queuedEventCount: Int {
+        harvestEvents()
+        return events.count
     }
 
     // MARK: Building the C structs

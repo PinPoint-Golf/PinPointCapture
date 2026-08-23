@@ -26,7 +26,8 @@ public enum DeviceHealthService {
     public static func current() -> DeviceHealth {
         DeviceHealth(thermal: thermalState,
                      storageFreeBytes: freeBytes,
-                     batteryPercent: batteryPercent)
+                     batteryPercent: batteryPercent,
+                     isCharging: isCharging)
     }
 
     public static var thermalState: ThermalState {
@@ -65,5 +66,26 @@ public enum DeviceHealthService {
         let level = device.batteryLevel
         guard level >= 0 else { return nil }
         return Int((level * 100).rounded())
+    }
+
+    /// `MSG` 5.4 — optional beside `battery_pct`, and ⛔ `nil` for the same
+    /// reason: `.unknown` is what a simulator reports, and a host reading `false`
+    /// would conclude the device is running down when nobody has looked.
+    ///
+    /// ⚠ `.full` counts as charging. It means the cable is in, which is the
+    /// question a host is asking — "will this device survive the session" — and
+    /// not the narrower one about current flow.
+    public static var isCharging: Bool? {
+        let device = UIDevice.current
+        let wasMonitoring = device.isBatteryMonitoringEnabled
+        if wasMonitoring == false { device.isBatteryMonitoringEnabled = true }
+        defer { if wasMonitoring == false { device.isBatteryMonitoringEnabled = false } }
+
+        switch device.batteryState {
+        case .charging, .full: return true
+        case .unplugged: return false
+        case .unknown: return nil
+        @unknown default: return nil
+        }
     }
 }

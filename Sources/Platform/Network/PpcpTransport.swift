@@ -757,6 +757,7 @@ actor PpcpListener: PeerTransportListener {
     /// A link the listener is still assembling: some streams have bound, channel
     /// 0 may or may not be among them, and 2.1c's timeout is counting.
     private struct PendingLink {
+        var linkId: PpcpLinkId
         var channels: [PpcpChannel: any ByteChannel] = [:]
         var security: NegotiatedSecurity?
         var deadline: Task<Void, Never>?
@@ -781,8 +782,18 @@ actor PpcpListener: PeerTransportListener {
     let bindTimeout: Duration
 
     private var listener: NWListener?
-    private var pending: [PpcpLinkId: PendingLink] = [:]
-    private var live: [PpcpLinkId: PpcpPeerLink] = [:]
+    /// ⛔ **The link table is `libppcp`'s — F-D3-3 closed.** This listener used to
+    /// keep its own, because `ppcp_link_binder_offer` took a `stream_channel` a
+    /// stream-per-connection transport has no way to supply: a freshly accepted
+    /// `NWConnection` carries no channel of its own, and 2.1b forbids inferring one
+    /// from arrival order or from the transport address. L9 changed the signature
+    /// to take the channel **from the frame header** and report it, so the three
+    /// refusals of 2.1c now live in one place for both applications instead of two
+    /// places that had already chosen different implicit rules.
+    private let binder = PpcpLinkBinder()
+    /// Keyed on the **library's** link index, which is what `offer` reports.
+    private var pending: [Int: PendingLink] = [:]
+    private var live: [Int: PpcpPeerLink] = [:]
     private var completed: [PpcpPeerLink] = []
     /// One suspended `accept()`.
     ///
@@ -956,18 +967,29 @@ actor PpcpListener: PeerTransportListener {
 
             // ⚠ The channel this stream was opened with is a placeholder — the
             // listener does not know it yet, and 2.1b forbids inferring it from
-            // arrival order or from the transport address. It comes from the
-            // frame header of the first frame, below.
-            let (binding, residue) = try await withDeadline(bindTimeout) {
-                try await PpcpLinkBind.awaitBinding(on: stream)
+            // arrival order or from the transport address. It comes from the frame
+            // header of the first frame, and the **library** reads it there.
+            let (binding, residue) = try await withDeadline(bindTimeout) { [weak self] in
+                var buffer = Data()
+                while true {
+                    if let self, let bound = try await self.offer(buffer) {
+                        return (bound, buffer.dropFirst(bound.consumed))
+                    }
+                    guard let next = try await stream.receive() else {
+                        // The stream ended before it said what it was. 2.1c's
+                        // outcome either way is that the stream is discarded.
+                        throw TransportError.bindRefused(.notLinkBind)
+                    }
+                    buffer.append(next)
+                }
             }
 
             // Whatever TCP coalesced behind `link_bind` is application data and
             // must survive the bind.
-            let bound = stream.adopting(binding.channel)
+            let adopted = stream.adopting(binding.channel)
             let carrying: any ByteChannel = residue.isEmpty
-                ? bound
-                : PrefixedByteChannel(bound, holding: residue)
+                ? adopted
+                : PrefixedByteChannel(adopted, holding: residue)
 
             try bind(carrying, binding: binding, security: security)
         } catch {
@@ -975,71 +997,84 @@ actor PpcpListener: PeerTransportListener {
         }
     }
 
-    /// 2.1b — "associates streams into a link by `link_id` and takes each
-    /// stream's channel from the header". 2.1c — the refusals.
+    /// Offers a candidate first frame to the library's binder, on the actor.
+    ///
+    /// ⚠ `nil` means "not a whole frame yet, read more" — `ENC` 3c makes
+    /// truncation the reader's decision, and here it simply means the stream has
+    /// not finished speaking.
+    private func offer(_ bytes: Data) throws -> PpcpLinkBinder.Bound? {
+        try binder.offer(bytes)
+    }
+
+    /// 2.1b — "associates streams into a link by `link_id` and takes each stream's
+    /// channel from the header". 2.1c's three refusals are the **library's**, and
+    /// have already fired by the time this is reached.
     private func bind(_ stream: any ByteChannel,
-                      binding: PpcpLinkBind.Binding,
+                      binding: PpcpLinkBinder.Bound,
                       security: NegotiatedSecurity) throws {
         // A `link_bind` naming a link that is already live is 2.1d's later bulk
-        // channel — the `preview` case — and attaches to the link in place.
-        if let existing = live[binding.linkId] {
-            guard existing.boundChannel(binding.channel) == nil else {
-                throw TransportError.bindRefused(.channelAlreadyBound)
-            }
+        // channel — the `preview` case — and attaches to the link in place. ⚠ The
+        // duplicate-channel refusal is not repeated here: `ppcp_link_binder_offer`
+        // has already refused a second claim on a channel this link holds, which
+        // is exactly what F-D3-3 was about.
+        if let existing = live[binding.link] {
             existing.attach(stream, as: binding.channel)
             return
         }
 
-        var link = pending[binding.linkId] ?? PendingLink()
-        // 2.1c — "…or whose `link_id` names a link that already holds that
-        // channel". Two streams claiming channel 0 of one link is either a
-        // confused dialler or someone else's stream wearing its `link_id`.
-        guard link.channels[binding.channel] == nil else {
-            throw TransportError.bindRefused(.channelAlreadyBound)
-        }
+        var link = pending[binding.link] ?? PendingLink(linkId: binding.linkId)
         link.channels[binding.channel] = stream
         link.security = link.security ?? security
 
         // 2.1c — "a link that has not bound channel 0 within the listener's own
-        // timeout is discarded with every stream it holds". The clock starts on
-        // the link's first stream, whichever channel that is; 2.1d permits a bulk
-        // channel to arrive first.
+        // timeout is discarded with every stream it holds". ⛔ **The timeout is the
+        // embedding's policy** and is deliberately not in the library; the
+        // predicate and the discard are.
         if link.deadline == nil {
-            let id = binding.linkId
+            let index = binding.link
             let timeout = bindTimeout
             link.deadline = Task { [weak self] in
                 try? await Task.sleep(for: timeout)
                 guard Task.isCancelled == false else { return }
-                await self?.discard(id)
+                await self?.discard(index)
             }
         }
 
         guard required.allSatisfy({ link.channels[$0] != nil }) else {
-            pending[binding.linkId] = link
+            pending[binding.link] = link
             return
         }
 
         link.deadline?.cancel()
-        pending.removeValue(forKey: binding.linkId)
+        pending.removeValue(forKey: binding.link)
         guard let negotiated = link.security else {
             throw TransportError.incompleteLink(missing: .control)
         }
+        // ⚠ The library's own readiness predicate, not a count of our own: 2.1c
+        // makes channel 0 the thing a link must have bound, and a link holding a
+        // bulk channel and no control channel is not a link.
+        guard binder.isReady(link: binding.link) else {
+            throw TransportError.incompleteLink(missing: .control)
+        }
         // ⛔ `dial: nil` — this side listens. `ENC` 2.1a puts minting and opening
-        // in the dialler's hands, so a listening link can only *wait* for a
-        // further stream, never open one. The type says so: `openChannel` throws
-        // `channelUnavailable` here and `channelBound` is what a caller uses.
-        let assembled = try PpcpPeerLink.assemble(linkId: binding.linkId,
+        // in the dialler's hands, so a listening link can only *wait* for a further
+        // stream, never open one.
+        let assembled = try PpcpPeerLink.assemble(linkId: link.linkId,
                                                   channels: link.channels,
                                                   security: negotiated,
                                                   dial: nil)
-        live[binding.linkId] = assembled
+        live[binding.link] = assembled
         deliver(assembled)
     }
 
     /// 2.1c — the timeout expired. "…is discarded with every stream it holds."
-    private func discard(_ linkId: PpcpLinkId) async {
-        guard let link = pending.removeValue(forKey: linkId) else { return }
+    private func discard(_ index: Int) async {
+        guard let link = pending.removeValue(forKey: index) else { return }
         link.deadline?.cancel()
+        // The library forgets it too, so the slot is available again and a later
+        // `link_bind` with the same `link_id` opens a fresh link rather than
+        // colliding with a half-assembled one.
+        try? binder.discard(link: index)
         for channel in link.channels.values {
             await channel.close(.protocolViolation(TransportError.BindRefusal.timedOut.rawValue))
         }
