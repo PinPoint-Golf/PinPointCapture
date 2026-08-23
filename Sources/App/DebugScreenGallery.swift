@@ -174,6 +174,7 @@ struct DebugScreenGallery: View {
                                onReplayLastShot: {}, onDisarm: {})
                     .toolbar(.hidden, for: .navigationBar)
         case "C2": ReplayScreen(shot: PreviewFixtures.shots[0],
+                                hasVideo: true,
                                 capture: PreviewFixtures.armed,
                                 onDone: {}, onCompare: {}, onStepFrame: { _ in },
                                 onTogglePlayback: {}, onCycleSpeed: {},
@@ -181,8 +182,7 @@ struct DebugScreenGallery: View {
         case "C3": SessionLibraryScreen(session: PreviewFixtures.session,
                                         transferQueue: PreviewFixtures.transferQueue,
                                         hostName: PreviewFixtures.hostName,
-                                        onSelectShot: { _ in }, onPauseTransfer: {},
-                                        onExportSession: {})
+                                        onSelectShot: { _ in }, onPauseTransfer: {})
 
         // ⛔ Not a designed screen. D9's conformance harness, which runs this
         // device's peer over a plaintext loopback socket against `ppcp-sim`.

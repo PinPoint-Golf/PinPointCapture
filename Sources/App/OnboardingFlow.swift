@@ -11,6 +11,9 @@ struct OnboardingFlow: View {
     @Bindable var model: AppModel
     /// Presents B1 modally, per the handoff: B1 is modal from A7.
     let onConnectHost: () -> Void
+    /// A8. ⚠ Onboarding runs its own `NavigationStack` over `OnboardingStep`, so
+    /// it cannot push an `AppRoute` — the shell presents it instead.
+    let onOpenMicToBallDistance: () -> Void
     let onFinish: () -> Void
 
     @State private var path: [OnboardingStep] = []
@@ -84,13 +87,18 @@ struct OnboardingFlow: View {
             ReadyToCaptureScreen(
                 capability: model.capability,
                 storage: model.storage,
-                retainedSecondsPerShot: 3.0,
+                // ⛔ Was a hardcoded `3.0`. The clip window is the detector's,
+                // and it is 4.5 s — pre-roll plus post-roll.
+                retainedSecondsPerShot: DetectAndMint.Configuration
+                    .defaultClipWindowSeconds,
+                micToBall: model.micToBallDistance,
                 onStartSession: {
                     model.hasCompletedOnboarding = true
                     model.arm()
                     onFinish()
                 },
-                onConnectHost: onConnectHost
+                onConnectHost: onConnectHost,
+                onOpenMicToBallDistance: onOpenMicToBallDistance
             )
         }
     }
@@ -100,16 +108,19 @@ struct OnboardingFlow: View {
         path.append(next)
     }
 
-    /// A6's trade: drop the rate to buy a brighter frame. Re-enumerates and
-    /// re-runs the check rather than merely relabelling (REQ-FPS-1).
+    /// A6's trade: drop the rate to buy a brighter frame.
+    ///
+    /// ⛔ **It used to fabricate the answer.** The old body multiplied the
+    /// exposure by 1.25, kept the ISO, stamped `verdict: .good` and called it a
+    /// measurement — so the button always "worked", on every device, in every
+    /// room, including a dark one. A6's own doc comment says this path
+    /// "re-enumerates and re-runs the check rather than merely relabelling"; now
+    /// it does.
+    ///
+    /// ⚠ It re-measures on a real ≤120 fps mode and lets the result be whatever
+    /// it is. If the light is still marginal at 120, the screen says so.
     private func dropTo120() {
-        model.refreshCapability()
-        model.framing.light = LightAssessment(
-            verdict: .good,
-            exposureSeconds: model.framing.light.exposureSeconds * 1.25,
-            iso: model.framing.light.iso,
-            fps: 120
-        )
+        Task { await model.remeasure(atMost: 120) }
     }
 
     private func cycleAudioRetention() {

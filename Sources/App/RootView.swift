@@ -38,6 +38,8 @@ enum AppSheet: Identifiable {
     case localNetworkBlocked
     /// B5, before anything is merged.
     case reconcileSession
+    /// A8, presented from onboarding — which cannot push an `AppRoute`.
+    case micToBallDistance
 
     var id: String {
         switch self {
@@ -47,6 +49,7 @@ enum AppSheet: Identifiable {
         case .joinNetwork: "joinNetwork"
         case .localNetworkBlocked: "localNetworkBlocked"
         case .reconcileSession: "reconcileSession"
+        case .micToBallDistance: "micToBallDistance"
         }
     }
 }
@@ -84,6 +87,22 @@ struct RootView: View {
             #endif
         }
         .sheet(item: $sheet, content: sheetContent(for:))
+        // ⛔ **The injection, and it was missing.** `ArmedScreen` and
+        // `FramingCheckScreen` read `\.livePreview` from the environment; with
+        // nothing supplying one they silently fall back to `.placeholder` and
+        // render exactly what they rendered before the seam existed. The whole
+        // camera fix was a no-op on the device because of this line's absence —
+        // a default that makes a missing wire *look* deliberate is precisely the
+        // failure this pass was written to remove.
+        .environment(\.livePreview, LivePreviewProvider { caption in
+            // ⚠ A preview layer attached to a session that is not running is a
+            // black rectangle, and "black screen" and "camera not running" look
+            // identical on a tripod at two metres. Cold shows the caption.
+            model.captureStatus.state == .cold
+                ? AnyView(LiveCapturePreviewPlaceholder(caption: caption))
+                : AnyView(CameraPreview(device: model.captureDevice,
+                                        placeholderLabel: caption))
+        })
         .preferredColorScheme(.dark)
     }
 
@@ -91,6 +110,7 @@ struct RootView: View {
         OnboardingFlow(
             model: model,
             onConnectHost: { sheet = .connectHost },
+            onOpenMicToBallDistance: { sheet = .micToBallDistance },
             onFinish: {}
         )
     }
@@ -110,8 +130,17 @@ struct RootView: View {
                     guard let shot = model.session.shots.last else { return }
                     path.append(.replay(shot))
                 },
-                onDisarm: { model.disarm() }
+                onDisarm: { model.disarm() },
+                onArm: { model.arm() },
+                candidateCount: model.candidateCount,
+                recordingError: model.recordingError
             )
+            .task {
+                // ⚠ Warm before arming so C1 shows a live preview cold, and so
+                // arming costs no AE/AF settling (REQ-STATE-2).
+                model.warmUp()
+                model.refreshHealth()
+            }
             // C1 is full-bleed. The preview is the screen; a nav bar over it would
             // cost exactly the area the golfer needs to be judged in.
             .toolbar(.hidden, for: .navigationBar)
@@ -127,9 +156,10 @@ struct RootView: View {
                 session: model.session,
                 transferQueue: model.transferQueue,
                 hostName: model.hostLink.hostName,
+                recordedBundles: model.libraryRows(),
                 onSelectShot: { path.append(.replay($0)) },
-                onPauseTransfer: { model.transferQueue.isPaused.toggle() },
-                onExportSession: {}
+                onPauseTransfer: { model.transferQueue?.isPaused.toggle() },
+                onOpenMicToBallDistance: { path.append(.micToBallDistance) }
             )
 
         case .micToBallDistance:
@@ -145,6 +175,10 @@ struct RootView: View {
         case .replay(let shot):
             ReplayScreen(
                 shot: shot,
+                // ⛔ Stated by the caller, not defaulted. Nothing records video
+                // (E1.1), and a screen that discovers this for itself is a
+                // screen that will quietly start lying when one of them changes.
+                hasVideo: false,
                 // ⚠ REQ-STATE-4 / REQ-RES-1. Reviewing never disarms. The capture
                 // status handed to C2 is the live one, which is why its title bar
                 // can honestly say "still armed".
@@ -171,14 +205,20 @@ struct RootView: View {
                     capture: model.captureStatus,
                     queue: model.transferQueue,
                     storage: model.storage,
-                    sessionStart: model.session.start,
-                    // The reviewer switcher. Not present in a shipped build — it
-                    // exists so all four states can be walked without a host.
-                    onSelectReviewState: { model.hostLink = Self.link(for: $0) },
+                    // nil while nothing is open — `subLine` omits the clause.
+                    sessionStart: model.recording == nil ? nil : model.session.start,
+                    // The reviewer switcher. ⛔ `#if DEBUG` at the call site too,
+                    // so a release binary contains no path from the shell into
+                    // `PreviewFixtures`.
+                    onSelectReviewState: Self.reviewStateHandler(model),
+                    measuredMethod: model.capability.measured?.method,
                     onDone: { self.sheet = nil },
-                    onPrimaryAction: {},
-                    onOpenConnectionLog: {},
-                    onExportDiagnostics: {}
+                    // A real action in the `.none` state, and it did nothing.
+                    onPrimaryAction: { self.sheet = .connectHost },
+                    onOpenMicToBallDistance: {
+                        self.sheet = nil
+                        path.append(.micToBallDistance)
+                    }
                 )
             }
             .presentationDetents([.large])
@@ -187,14 +227,18 @@ struct RootView: View {
 
         case .connectHost:
             ConnectHostView(
-                discoveredHostName: PreviewFixtures.hostName,
-                discoveredHostDetail: "On this network · paired yesterday",
+                // ⛔ **No invented host.** These were `PreviewFixtures.hostName`
+                // and a hardcoded "paired yesterday", and tapping the row
+                // assigned `PreviewFixtures.connected` — an app reporting a
+                // paired Studio, a measured clock offset and a transfer queue
+                // with no socket open anywhere. Discovery is E16.1; until it
+                // exists there is no row.
+                discoveredHostName: nil,
+                discoveredHostDetail: nil,
                 onCancel: { self.sheet = nil },
-                onConnectToDiscoveredHost: {
-                    model.hostLink = PreviewFixtures.connected
-                    self.sheet = nil
-                },
+                onConnectToDiscoveredHost: {},
                 onEnterCode: { self.sheet = .scanPairingCode(failure: nil) },
+                onCode: { uri in Task { await scan(uri) } },
                 onUseCable: {},
                 onCaptureWithoutHost: { self.sheet = nil }
             )
@@ -235,6 +279,15 @@ struct RootView: View {
                     onCaptureAlone: { self.sheet = nil },
                     onTryAgain: { self.sheet = nil }
                 )
+            }
+
+        case .micToBallDistance:
+            NavigationStack {
+                MicToBallDistanceView(
+                    distance: $model.micToBallDistance,
+                    wasChosen: model.micToBallDistanceWasChosen,
+                    isSessionOpen: model.recording != nil,
+                    onDone: { self.sheet = nil })
             }
 
         case .reconcileSession:
@@ -282,6 +335,15 @@ struct RootView: View {
             sheet = blocked ? .localNetworkBlocked
                             : .scanPairingCode(failure: .noEndpointReachable(triedCount: tried))
         }
+    }
+
+    /// ⛔ `nil` in a release build: no switcher, and no reachable fixture.
+    private static func reviewStateHandler(_ model: AppModel) -> ((HostLinkState) -> Void)? {
+        #if DEBUG
+        { model.hostLink = link(for: $0) }
+        #else
+        nil
+        #endif
     }
 
     /// Fixture link state for the reviewer switcher, so each state shows the

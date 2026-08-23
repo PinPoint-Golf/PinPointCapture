@@ -34,9 +34,17 @@ row).
 
 | Protocol | Implemented by | For |
 |---|---|---|
-| `CaptureDevice` | `Platform/AVFoundationCaptureDevice.swift` | camera, microphone, locks |
+| `CaptureDevice` ⚠ | `Platform/AVFoundationCaptureDevice.swift` | camera, microphone, locks |
 | `ByteChannel`, `PeerTransport` | `Platform/Network/PpcpTransport.swift` | PPCP's two channels (`CORE` T2) |
 | `PeerTransportConnector`, `PeerTransportListener` | same | dialling and listening (`RV` §2) |
+
+⚠ **`CaptureDevice` is declared in `Sources/Platform/CaptureDevice.swift`, not
+here.** The table lists it because it *is* part of the port surface a second
+platform must satisfy — but this package does not declare it, and a reader
+looking in `Core/` for it will not find it. Every type in its signature is a Core
+type, which is the property that matters (REQ-PORT-3); where the protocol itself
+lives is a tidiness question for E14.3, when the port surface becomes the
+enumerated artefact REQ-PORT-2 asks for.
 
 ⚠ `Transport.swift` carries no `Network.framework` type and must not: the
 negotiated TLS mode arrives here as a `NegotiatedSecurity` value built from a

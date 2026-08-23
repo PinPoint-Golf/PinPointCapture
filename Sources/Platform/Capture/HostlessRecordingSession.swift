@@ -73,6 +73,24 @@ public final class HostlessRecordingSession {
     /// 8.1d — what every Candidate's raw instant is corrected by.
     public let micToBall: MicToBallDistance
 
+    /// A4's audio retention setting, as the policy the detector enforces.
+    ///
+    /// ⛔ **It was inert.** `AppModel.audioRetention` has existed since the first
+    /// build and never reached `DetectAndMint.Configuration.retention`, so the
+    /// user-visible control on the permissions screen changed a label and nothing
+    /// else — the exact shape of dishonesty REQ-PRIV-2 forbids, since the setting
+    /// is what the privacy label describes.
+    public let retention: CandidateAudioRetention
+
+    /// The one wall-clock↔monotonic correspondence this Session carries.
+    ///
+    /// ⚠ Built from the **same** two readings the `PpcpSessionRecord` epoch
+    /// already carries (I15), rather than taken again — two anchors a few
+    /// microseconds apart would let a shot be labelled differently depending on
+    /// which one a caller reached for.
+    public private(set) var anchor: WallClockAnchor = WallClockAnchor(hostTimeNs: 0,
+                                                                     wallClock: .distantPast)
+
     /// - Parameters:
     ///   - device: asked for its declaration. ⛔ Through the port, so the
     ///     declaration comes from the capability the hardware actually enumerated
@@ -88,8 +106,10 @@ public final class HostlessRecordingSession {
                 sessionId: String,
                 peerId: String = PeerIdentity.current,
                 videoProfileId: String? = nil,
-                micToBall: MicToBallDistance = MicToBallDistanceStore.load()) throws {
+                micToBall: MicToBallDistance = MicToBallDistanceStore.load(),
+                retention: CandidateAudioRetention = CandidateAudioRetention()) throws {
         self.micToBall = micToBall
+        self.retention = retention
         self.sessionId = sessionId
         self.peerId = peerId
         self.bundle = try store.makeBundle(sessionId: sessionId, mintingPeerId: peerId)
@@ -97,6 +117,11 @@ public final class HostlessRecordingSession {
         let file = bundle.bundleFile
         FileManager.default.createFile(atPath: file.path, contents: nil)
         handle = try FileHandle(forWritingTo: file)
+
+        // ⛔ Read adjacently and used twice. `epoch` is a LABEL (I15): the wall
+        // reading names the moment, the host-time reading measures from it.
+        let epochWall = Date()
+        let epochAtNs = MachClock.hostTimeNs
 
         let peer = try DevicePeer(peerId: peerId)
         // ⚠ `emit` is called with each run of bytes in order and never with a
@@ -118,9 +143,12 @@ public final class HostlessRecordingSession {
             session: PpcpSessionRecord(
                 id: sessionId,
                 timebaseRef: PpcpTimebases.captureId,
-                epochWallUtcNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000),
-                epochAtNs: MachClock.hostTimeNs,
+                epochWallUtcNs: Int64(epochWall.timeIntervalSince1970 * 1_000_000_000),
+                epochAtNs: epochAtNs,
                 epochTimebaseId: PpcpTimebases.captureId))
+        // REQ-OFF-8 — the label side of the same epoch, and the only route from a
+        // monotonic instant to a date this application shows anyone.
+        anchor = WallClockAnchor(hostTimeNs: epochAtNs, wallClock: epochWall)
 
         // ⛔ The Streams are derived from the declaration, not passed in. A
         // Stream's `source_id`, `profile_id` and `timebase_id` must name things
@@ -156,7 +184,8 @@ public final class HostlessRecordingSession {
                     // device's own capture timebase, so the conversion is the
                     // identity (I4) and **no relation is asserted for it**.
                     timebaseRefId: PpcpTimebases.captureId,
-                    audioStream: audio, videoStream: video),
+                    audioStream: audio, videoStream: video,
+                    retention: retention),
                 promotion: DetectAndMint.defaultPromotion(),
                 // ⛔ Through the port, so the answer is the capture stack's and
                 // not this file's. A ring that is not retaining answers

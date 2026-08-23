@@ -78,10 +78,22 @@ enum CaptureScreenStyle {
     // user could not have guessed.
 
     /// `149.6`
-    static func fpsText(_ fps: Double) -> String { String(format: "%.1f", fps) }
+    /// ⛔ `"—"` for an unmeasured rate, never `"0.0"`. Zero is a *measurement
+    /// claim*, and on the rail it sits beside three other measured values where
+    /// it reads as one. Nothing has measured a live rate (E1.1); the self-test's
+    /// figure appears only after it has run.
+    static func fpsText(_ fps: Double?) -> String {
+        guard let fps, fps > 0 else { return "—" }
+        return String(format: "%.1f", fps)
+    }
 
     /// `10.0 s`
-    static func bufferText(_ seconds: Double) -> String { String(format: "%.1f s", seconds) }
+    /// ⛔ Same rule. The ring is not connected, so this is `nil` on every device
+    /// and the rail says so rather than reporting an empty buffer.
+    static func bufferText(_ seconds: Double?) -> String {
+        guard let seconds else { return "—" }
+        return String(format: "%.1f s", seconds)
+    }
 
     /// `0.4 ms`, or `—` when there is no host to be in agreement with.
     static func residualText(_ milliseconds: Double?) -> String {

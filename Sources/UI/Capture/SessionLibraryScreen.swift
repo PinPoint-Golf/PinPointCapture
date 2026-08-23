@@ -25,26 +25,32 @@ import CaptureCore
 struct SessionLibraryScreen: View {
 
     private let session: Session
-    private let transferQueue: TransferQueue
+    /// ⛔ Optional. There is no transfer (E3.4), and an empty queue rendered as a
+    /// paused one is a progress bar for work nobody is doing.
+    private let transferQueue: TransferQueue?
     private let hostName: String?
+    /// The bundles actually on this phone.
+    private let recordedBundles: [RecordedBundle]
 
     private let onSelectShot: (Shot) -> Void
     /// User-level pause / resume of the bulk transfer.
     private let onPauseTransfer: () -> Void
-    private let onExportSession: () -> Void
+    private let onOpenMicToBallDistance: (() -> Void)?
 
     init(session: Session,
-         transferQueue: TransferQueue,
+         transferQueue: TransferQueue?,
          hostName: String?,
+         recordedBundles: [RecordedBundle] = [],
          onSelectShot: @escaping (Shot) -> Void,
          onPauseTransfer: @escaping () -> Void,
-         onExportSession: @escaping () -> Void) {
+         onOpenMicToBallDistance: (() -> Void)? = nil) {
         self.session = session
         self.transferQueue = transferQueue
         self.hostName = hostName
+        self.recordedBundles = recordedBundles
         self.onSelectShot = onSelectShot
         self.onPauseTransfer = onPauseTransfer
-        self.onExportSession = onExportSession
+        self.onOpenMicToBallDistance = onOpenMicToBallDistance
     }
 
     var body: some View {
@@ -56,25 +62,80 @@ struct SessionLibraryScreen: View {
                 }
             }
 
-            Section {
-                ForEach(session.shots) { shot in
-                    shotRow(shot)
+            Section("This session") {
+                if session.shots.isEmpty {
+                    InfoCard("No shots yet. Arm the device and hit one — every "
+                             + "impact this phone hears is timed and kept here.",
+                             systemImage: "waveform")
+                } else {
+                    ForEach(session.shots) { shot in
+                        shotRow(shot)
+                    }
+                }
+            }
+
+            // ⛔ The sessions that are genuinely on disk, which nothing listed
+            // before: `SessionStore.bundles()` had no caller outside its tests
+            // while this screen rendered 41 invented shots.
+            if recordedBundles.isEmpty == false {
+                Section {
+                    ForEach(recordedBundles) { bundle in
+                        recordedBundleRow(bundle)
+                    }
+                } header: {
+                    Text("Recorded on this phone")
+                } footer: {
+                    Text("These are the session files on this phone. Their shot "
+                         + "counts and times are inside the bundle and are not "
+                         + "read back yet, so only the file is described here.")
                 }
             }
 
             Section {
-                Button(action: onExportSession) {
-                    Text("Export the whole session")
-                        .font(.ppRowLabel.weight(.semibold))
-                        .frame(maxWidth: .infinity,
-                               minHeight: PPMetrics.Size.minimumTapTarget)
-                }
-                .accessibilityHint(Text("Writes the session in the same format it is sent in"))
+                Button("Export the whole session") {}
+                    .font(.ppRowLabel.weight(.semibold))
+                    .frame(maxWidth: .infinity,
+                           minHeight: PPMetrics.Size.minimumTapTarget)
+                    // ⛔ Disabled and *told*, rather than silently doing nothing.
+                    // A control that no-ops teaches a user the app is broken.
+                    .disabled(true)
+            } footer: {
+                Text("Sending and exporting are not connected yet. Nothing is "
+                     + "lost — the session is on this phone.")
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(session.name)
+        .navigationTitle(session.name.isEmpty ? "Session" : session.name)
         .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            if let onOpenMicToBallDistance {
+                // ⚠ A8's permanent route. C3 is the only pushed screen in the
+                // capture stack with a nav bar, so it is the app's de facto
+                // settings surface until the design pack grows one.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: onOpenMicToBallDistance) {
+                        Image(systemName: "ruler")
+                    }
+                    .accessibilityLabel(Text("Phone to ball distance"))
+                }
+            }
+        }
+    }
+
+    private func recordedBundleRow(_ bundle: RecordedBundle) -> some View {
+        HStack(spacing: PPMetrics.itemGap) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(bundle.displayTitle)
+                    .font(.ppRowLabel)
+                    .foregroundStyle(Color(.label))
+                Text(bundle.displayDetail)
+                    .ppMeasuredDetail()
+            }
+            Spacer(minLength: PPMetrics.itemGap)
+            StatusChip("On device", tone: .neutral)
+        }
+        .frame(minHeight: PPMetrics.Size.minimumTapTarget)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: Summary
@@ -83,7 +144,9 @@ struct SessionLibraryScreen: View {
     /// so the line is mono-adjacent in register but stays plain: it is a
     /// sentence about the session, sitting under its name.
     private var summaryLine: some View {
-        Text(session.displaySubtitle)
+        // ⚠ With no host there is nothing "still to send", and saying so implies
+        // a queue rather than an absence.
+        Text(session.displaySubtitle(hasHost: hostName != nil))
             .font(.ppSupporting)
             .foregroundStyle(Color(.secondaryLabel))
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -96,16 +159,25 @@ struct SessionLibraryScreen: View {
 
     // MARK: Transfer banner
 
-    private var showsTransferBanner: Bool { !transferQueue.pendingShotIDs.isEmpty }
+    private var showsTransferBanner: Bool {
+        transferQueue.map { $0.pendingShotIDs.isEmpty == false } ?? false
+    }
 
+    @ViewBuilder
     private var transferBanner: some View {
+        if let transferQueue {
+            transferBannerBody(transferQueue)
+        }
+    }
+
+    private func transferBannerBody(_ transferQueue: TransferQueue) -> some View {
         HStack(spacing: PPMetrics.itemGap) {
             Image(systemName: transferQueue.isPaused ? "pause.circle" : "arrow.down.circle")
                 .font(.title3)
                 .foregroundStyle(Color.ppAccent)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(bannerTitle)
+                Text(bannerTitle(transferQueue.isPaused))
                     .font(.ppSupporting.weight(.semibold))
                     .foregroundStyle(Color(.label))
                 Text(transferQueue.displayDetail)
@@ -128,11 +200,11 @@ struct SessionLibraryScreen: View {
         )
     }
 
-    private var bannerTitle: String {
+    private func bannerTitle(_ isPaused: Bool) -> String {
         guard let host = CaptureScreenStyle.shortHostName(hostName) else {
-            return transferQueue.isPaused ? "Sending paused" : "Sending"
+            return isPaused ? "Sending paused" : "Sending"
         }
-        return transferQueue.isPaused ? "Sending to \(host) is paused" : "Sending to \(host)"
+        return isPaused ? "Sending to \(host) is paused" : "Sending to \(host)"
     }
 
     // MARK: Shot rows
@@ -180,8 +252,7 @@ struct SessionLibraryScreen: View {
             transferQueue: PreviewFixtures.transferQueue,
             hostName: PreviewFixtures.hostName,
             onSelectShot: { _ in },
-            onPauseTransfer: {},
-            onExportSession: {}
+            onPauseTransfer: {}
         )
     }
     .preferredColorScheme(.dark)
@@ -201,8 +272,7 @@ struct SessionLibraryScreen: View {
             transferQueue: TransferQueue(),
             hostName: nil,
             onSelectShot: { _ in },
-            onPauseTransfer: {},
-            onExportSession: {}
+            onPauseTransfer: {}
         )
     }
     .preferredColorScheme(.dark)

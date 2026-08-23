@@ -14,8 +14,15 @@ Camera, microphone, encoder, motion, storage and network primitives (REQ-PORT-1,
 - **Abstract base and factory from the start.** Device- and product-specific capture
   code is reached through an abstraction with a factory, matching the standing rule
   applied throughout PinPointStudio (REQ-PORT-4). Not retrofitted later.
-- **Implements the port surface, does not define it.** The protocols come from `Core/`;
-  this layer supplies conforming implementations (REQ-PORT-2).
+- **Implements the port surface — and, for capture, *declares* it.** ⚠ This was
+  stated as "the protocols come from `Core/`", and for the transport half that is
+  true: `ByteChannel`, `PeerTransport` and the connector/listener pair are all
+  declared in `Packages/Core`. **`CaptureDevice` is not** — it is declared here,
+  in `CaptureDevice.swift`, because every type in its signature is already a Core
+  type and moving the protocol itself would buy nothing. The rule that actually
+  holds is the one REQ-PORT-3 states: no *platform* type crosses the boundary.
+  Recorded because the previous wording sent a reader looking in `Core/` for a
+  file that has never been there (REQ-PORT-2, E14.3).
 - **Encode to fragments, not raw frames.** The capture abstraction must survive a
   platform without clean per-frame access — Android's constrained high-speed session
   takes batched request lists over a limited surface set (REQ-PORT-9, REQ-BUF-1/4).

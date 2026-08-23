@@ -16,10 +16,14 @@
 //  Every path completes discovery, pairing and authentication in one action
 //  (REQ-AUTH-2).
 //
-//  ⛔ No AVFoundation here. The preview area is a labelled placeholder until the
-//  Platform layer exists (REQ-PORT-3).
+//  ⚠ `AVFoundation` appears here, and the reason is the same one that permits it
+//  in `ScanPairingCodeView`: this is a *view*, what leaves it is a `String`, and
+//  `AVCaptureSession` never becomes reachable from a view model (REQ-PORT-3).
+//  The capture stack is still untouched from here — a QR reader is not a capture
+//  device, and this screen must never open one.
 //
 
+import AVFoundation
 import SwiftUI
 import CaptureCore
 
@@ -35,6 +39,9 @@ public struct ConnectHostView: View {
     private let onCancel: () -> Void
     private let onConnectToDiscoveredHost: () -> Void
     private let onEnterCode: () -> Void
+    /// A code read by the reticle. ⚠ Same handler B1a uses — one rendezvous walk,
+    /// not two.
+    private let onCode: (String) -> Void
     private let onUseCable: () -> Void
     private let onCaptureWithoutHost: () -> Void
 
@@ -44,6 +51,7 @@ public struct ConnectHostView: View {
         onCancel: @escaping () -> Void,
         onConnectToDiscoveredHost: @escaping () -> Void = {},
         onEnterCode: @escaping () -> Void,
+        onCode: @escaping (String) -> Void = { _ in },
         onUseCable: @escaping () -> Void,
         onCaptureWithoutHost: @escaping () -> Void
     ) {
@@ -52,9 +60,15 @@ public struct ConnectHostView: View {
         self.onCancel = onCancel
         self.onConnectToDiscoveredHost = onConnectToDiscoveredHost
         self.onEnterCode = onEnterCode
+        self.onCode = onCode
         self.onUseCable = onUseCable
         self.onCaptureWithoutHost = onCaptureWithoutHost
     }
+
+    /// ⚠ Read once at init and refreshed by the `.task`. There is no API to be
+    /// told about a change, so the screen asks and then shows what it got.
+    @State private var cameraAuthorised = AVCaptureDevice
+        .authorizationStatus(for: .video) == .authorized
 
     public var body: some View {
         List {
@@ -114,23 +128,27 @@ public struct ConnectHostView: View {
 
     // MARK: - The scanner
 
-    /// ⛔ Placeholder. The Platform layer will put the live preview behind this
-    /// reticle; the UI layer never touches the capture frameworks (REQ-PORT-3).
+    /// ⛔ **The camera is live on entry, which is what REQ-DISC-2 actually asks
+    /// for.** This was a dashed box captioned "Camera preview" — so the screen
+    /// whose own header says "the QR reticle **is** the screen" showed no camera
+    /// at all, and read as a broken one. The scanner it now uses is the same
+    /// `PairingCodeScannerView` B1a has always used, ninety lines away in this
+    /// directory.
     private var scannerArea: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: PPMetrics.Radius.card, style: .continuous)
-                .fill(Color(.tertiarySystemFill))
-                .overlay {
-                    RoundedRectangle(cornerRadius: PPMetrics.Radius.card,
-                                     style: .continuous)
-                        .strokeBorder(Color(.separator),
-                                      style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
-                }
-                .overlay {
-                    Text("Camera preview")
-                        .font(.ppFootnote)
-                        .foregroundStyle(Color(.tertiaryLabel))
-                }
+            if cameraAuthorised {
+                PairingCodeScannerView(onCode: onCode)
+                    .clipShape(RoundedRectangle(cornerRadius: PPMetrics.Radius.card,
+                                                style: .continuous))
+            } else {
+                RoundedRectangle(cornerRadius: PPMetrics.Radius.card, style: .continuous)
+                    .fill(Color(.tertiarySystemFill))
+                    .overlay {
+                        Text("The camera is not available")
+                            .font(.ppFootnote)
+                            .foregroundStyle(Color(.tertiaryLabel))
+                    }
+            }
 
             // Four accent corner brackets — the reticle. Not a full rectangle:
             // the code has to be *seen*, so the frame stays out of the way.
@@ -145,6 +163,10 @@ public struct ConnectHostView: View {
         .accessibilityLabel(Text("Camera viewfinder"))
         .accessibilityValue(Text("Point the camera at the pairing code shown "
                                  + "in PinPoint Studio."))
+        .task {
+            guard cameraAuthorised == false else { return }
+            cameraAuthorised = await AVCaptureDevice.requestAccess(for: .video)
+        }
     }
 
     private var instruction: some View {

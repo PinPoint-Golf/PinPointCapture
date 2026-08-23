@@ -40,10 +40,26 @@ public final class AppModel {
     /// armed and retaining nothing — §9.2's one thing that must not be quietly
     /// wrong. Found by the D4 test that asserts arming is not a claim.
     public var captureStatus: CaptureStatus = CaptureStatus(state: .cold)
+
+    /// ⛔ **`none`, and it stays `none` until a host link exists.** It used to be
+    /// assigned `PreviewFixtures.connected` the moment anyone tapped the
+    /// discovered host on B1 — an app that reported a paired Studio, a measured
+    /// clock offset and a transfer queue, with no socket open anywhere. The live
+    /// link is E3; until it lands this value has exactly one honest setting.
     public var hostLink: HostLink = HostLink(state: .none)
-    public var session: Session = PreviewFixtures.session
-    public var transferQueue: TransferQueue = PreviewFixtures.transferQueue
-    public var framing: FramingStatus = PreviewFixtures.framingMarginalLight
+
+    /// The open session. ⚠ Empty until `arm()`, and its shots are minted, not
+    /// invented.
+    public private(set) var session: Session = Session(name: "", start: .distantPast,
+                                                       shots: [])
+
+    /// ⛔ Nil until transfer exists (E3.4). A queue with nothing behind it is a
+    /// progress bar for work nobody is doing.
+    public var transferQueue: TransferQueue?
+
+    /// ⚠ Starts claiming **nothing**. Three of its rows need pose detection that
+    /// does not exist (E8.2); `light` is filled by the self-test.
+    public var framing: FramingStatus = FramingStatus()
     public var audioRetention: AudioRetention = .aroundImpactOnly
     public var captureContext: CaptureContext = .standalone
 
@@ -66,7 +82,12 @@ public final class AppModel {
     /// default that reads as a measurement is A12's failure mode.
     public var micToBallDistanceWasChosen: Bool { MicToBallDistanceStore.hasBeenSet() }
 
-    public var hasCompletedOnboarding = false
+    /// ⛔ Persisted. It was a plain `false`, so every launch replayed all seven
+    /// onboarding screens — including the permission sequence, whose design rests
+    /// on being asked once and in order.
+    public var hasCompletedOnboarding: Bool = OnboardingStateStore.hasCompleted() {
+        didSet { OnboardingStateStore.setCompleted(hasCompletedOnboarding) }
+    }
 
     private let device: any CaptureDevice
     private let permissionsService = PermissionsService()
@@ -90,6 +111,8 @@ public final class AppModel {
     /// The mint pump. 8.2i's deadline is a *local* deadline, so something has to
     /// tick it even when nothing is heard.
     private var mintTicker: Task<Void, Never>?
+    /// Thermal, storage and battery, at `CORE` 7.4a's heartbeat cadence.
+    private var healthTicker: Task<Void, Never>?
 
     public init(device: any CaptureDevice = CaptureDeviceFactory.create(),
                 store: SessionStore = SessionStore(
@@ -131,17 +154,49 @@ public final class AppModel {
     /// works*, not the sustained test. The real figure needs ~40 minutes under
     /// thermal load; a cold three-second sample will read optimistically high and
     /// must never be presented as the sustained rate once capture is real.
-    public func runSelfTest(seconds: TimeInterval = 3) async {
-        guard permissions.canCapture, let mode = capability.bestMode else { return }
+    public func runSelfTest(seconds: TimeInterval = 3, mode requested: VideoMode? = nil) async {
+        guard permissions.canCapture, let mode = requested ?? activeMode else { return }
         do {
             let measured = try await device.measureSustainedRate(mode: mode, duration: seconds)
             capability.measured = measured
             captureStatus.achievedFPS = measured.achievedFPS
             captureStatus.thermal = measured.thermalAtEnd
+            // ⛔ **A6's light row, from the run that just happened.** It was a
+            // fixture: `1/1600 s · ISO 2200` was rendered on every device
+            // regardless of the room. REQ-LIGHT-1 calls achievable exposure "the
+            // binding constraint on how useful the video is", so an invented one
+            // is the worst single value this application could show.
+            //
+            // ⚠ `nil` where the run observed no exposure or ISO — the screen then
+            // says the light was not assessed, rather than showing a guess.
+            framing.light = LightAssessment.from(measured)
         } catch {
             capabilityError = String(describing: error)
         }
     }
+
+    /// A6's *Use 120 fps*, as a real measurement.
+    ///
+    /// Picks the best claimed mode at or below `fps` and re-runs the self-test on
+    /// it. ⛔ The verdict is whatever the room gives back — this method cannot
+    /// return "good", it can only measure.
+    public func remeasure(atMost fps: Double) async {
+        guard permissions.canCapture else { return }
+        let candidates = capability.claimed.filter { $0.fps <= fps }
+        // Best available at or below the cap: rate first, then resolution — the
+        // same ordering `bestMode` uses, for the same reasons (REQ-FPS-1).
+        guard let mode = candidates.max(by: { ($0.fps, $0.height) < ($1.fps, $1.height) })
+        else { return }
+        preferredMode = mode
+        await runSelfTest(mode: mode)
+    }
+
+    /// The mode the user chose, where they chose one. ⚠ `nil` means "whatever the
+    /// device ranks best", which is the normal case.
+    public private(set) var preferredMode: VideoMode?
+
+    /// What `arm()` and the preview should open.
+    public var activeMode: VideoMode? { preferredMode ?? capability.bestMode }
 
     // MARK: Permissions
 
@@ -176,7 +231,7 @@ public final class AppModel {
 
     /// REQ-STATE-2. Warm exists so arming costs no AE/AF settling.
     public func warmUp() {
-        guard permissions.canCapture, let mode = capability.bestMode else { return }
+        guard permissions.canCapture, let mode = activeMode else { return }
         do {
             try device.warmUp(mode: mode)
             captureStatus.state = .warm
@@ -194,17 +249,31 @@ public final class AppModel {
         warmUp()
         guard captureStatus.state == .warm else { return }
         startRecording()
-        guard recording != nil else { return }
+        guard let recording else { return }
         startDetecting()
         captureStatus.state = .armed
+        // A real Session, opened now, holding the shots this arm produces.
+        session = Session(name: Self.sessionName(for: recording.anchor.wallClock),
+                          start: recording.anchor.wallClock,
+                          shots: [])
+        startHealthPolling()
+    }
+
+    /// "Wednesday range" — the session title on C3.
+    nonisolated static func sessionName(for start: Date) -> String {
+        let day = DateFormatter()
+        day.dateFormat = "EEEE"
+        return "\(day.string(from: start)) session"
     }
 
     /// The local override of a host-controlled state (REQ-STATE-1).
     public func disarm() {
         stopDetecting()
+        stopHealthPolling()
         stopRecording()
         device.goCold()
         captureStatus.state = .cold
+        session.end = Date()
     }
 
     /// `CORE` 4.1b / 7.3b — a hostless `session_open`, its Streams, and a
@@ -216,8 +285,12 @@ public final class AppModel {
             let session = try HostlessRecordingSession(
                 store: store, device: device,
                 sessionId: "ses:\(UUID().uuidString.lowercased())",
-                videoProfileId: capability.bestMode?.id,
-                micToBall: micToBallDistance)
+                videoProfileId: activeMode?.id,
+                micToBall: micToBallDistance,
+                // ⛔ A4's setting, finally reaching the thing it names. It has
+                // been user-visible and inert since the first build, and
+                // REQ-PRIV-2 makes the privacy label a claim about *this* value.
+                retention: audioRetention.policy)
             recording = session
             recordingError = nil
 
@@ -235,6 +308,74 @@ public final class AppModel {
         } catch {
             recordingError = String(describing: error)
         }
+    }
+
+    // MARK: The session library (C3)
+
+    /// The sessions actually on this phone.
+    ///
+    /// ⛔ **`SessionStore.bundles()` had no caller outside tests.** The library
+    /// screen rendered `PreviewFixtures.session` — 41 invented shots dated 21
+    /// August — while real bundles accumulated in the container, unlisted.
+    ///
+    /// ⚠ Ids, dates and sizes only. What is *inside* a bundle needs the reader
+    /// and a projection over a peer (E4.1), and the screen states that rather
+    /// than implying the rows are complete.
+    public func libraryRows() -> [RecordedBundle] {
+        guard let bundles = try? store.bundles() else { return [] }
+        return bundles.map { bundle in
+            let values = try? bundle.directory.resourceValues(
+                forKeys: [.contentModificationDateKey])
+            return RecordedBundle(
+                sessionId: bundle.sessionId,
+                fileDate: values?.contentModificationDate ?? .distantPast,
+                byteCount: Self.directorySize(bundle.directory))
+        }
+    }
+
+    private nonisolated static func directorySize(_ directory: URL) -> Int64 {
+        guard let walker = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in walker {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            total += Int64(size)
+        }
+        return total
+    }
+
+    // MARK: Device health (CORE 7.4a/b)
+
+    /// ⛔ **`DeviceHealthService` had no caller outside the debug harness.** C1's
+    /// `heat` row and B3's temperature row rendered whatever the self-test last
+    /// saw, frozen — so a device throttling under a long session reported
+    /// `nominal` indefinitely. 7.4b exists so degradation is *reported* rather
+    /// than silently accepted, and a frozen reading is the silent case.
+    ///
+    /// ⚠ Deliberately not cached, per that file's own comment.
+    public func refreshHealth() {
+        let health = DeviceHealthService.current()
+        captureStatus.thermal = health.thermal
+        if let mode = activeMode {
+            storage = device.storageHeadroom(forMode: mode)
+        }
+    }
+
+    private func startHealthPolling() {
+        healthTicker?.cancel()
+        healthTicker = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                self?.refreshHealth()
+                // 7.4a's default heartbeat. Cheap enough for it, per
+                // `DeviceHealthService`'s own note.
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func stopHealthPolling() {
+        healthTicker?.cancel()
+        healthTicker = nil
     }
 
     // MARK: Detect (D5, composed here for the first time)
@@ -303,7 +444,21 @@ public final class AppModel {
         do {
             let minted = try recording.pumpMint(nowRefNs: MachClock.hostTimeNs)
             guard minted.isEmpty == false else { return }
-            shotCount += minted.count
+            // ⛔ **The shots the library shows, from the shots the Mint engine
+            // issued.** `minted` was counted and discarded, and C1 and C3
+            // rendered `PreviewFixtures.session` — 41 invented shots dated 21
+            // August, on every device, forever.
+            for shot in minted {
+                shotCount += 1
+                session.shots.append(Shot(
+                    minted: shot,
+                    ordinal: shotCount,
+                    anchor: recording.anchor,
+                    // ⛔ `nil`. Nothing records a clip (E1.1), and a duration
+                    // here would be a measurement claim about video that does
+                    // not exist.
+                    duration: nil))
+            }
         } catch {
             recordingError = String(describing: error)
         }

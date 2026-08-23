@@ -35,6 +35,19 @@ struct ArmedScreen: View {
     private let onReplayLastShot: () -> Void
     /// The local override of a host-controlled state (REQ-STATE-1).
     private let onDisarm: () -> Void
+    /// ⛔ **There was no way to arm from here.** Once onboarding was done a
+    /// disarm was one-way: the only `arm()` call in the app was A7's *Start a
+    /// session*, so a cold C1 stayed cold until the app was reinstalled.
+    private let onArm: () -> Void
+    /// How many transients have been heard but not promoted. ⚠ The difference
+    /// between "the microphone is working and nothing was a shot" and "the
+    /// microphone is dead" is the whole value of showing it.
+    private let candidateCount: Int
+    /// Surfaced rather than swallowed — a session that failed to open is the one
+    /// thing §9.2 says the UI must not be quiet about.
+    private let recordingError: String?
+
+    @Environment(\.livePreview) private var livePreview
 
     init(capture: CaptureStatus,
          hostLink: HostLink,
@@ -44,7 +57,13 @@ struct ArmedScreen: View {
          onOpenHost: @escaping () -> Void,
          onOpenSession: @escaping () -> Void,
          onReplayLastShot: @escaping () -> Void,
-         onDisarm: @escaping () -> Void) {
+         onDisarm: @escaping () -> Void,
+         onArm: @escaping () -> Void = {},
+         candidateCount: Int = 0,
+         recordingError: String? = nil) {
+        self.onArm = onArm
+        self.candidateCount = candidateCount
+        self.recordingError = recordingError
         self.capture = capture
         self.hostLink = hostLink
         self.session = session
@@ -58,8 +77,8 @@ struct ArmedScreen: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // ⚠ Substitution point — see CapturePlaceholders.swift.
-            LiveCapturePreviewPlaceholder(caption: previewCaption)
+            // The real camera, supplied by the composition root.
+            livePreview.makeView(previewCaption)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -199,8 +218,16 @@ struct ArmedScreen: View {
 
     private var bottomPanel: some View {
         VStack(spacing: 18) {
+            if let recordingError {
+                errorBanner(recordingError)
+            }
             if let lastShot {
                 lastShotRow(lastShot)
+            } else if capture.state == .armed {
+                // ⛔ Not simply omitted. A missing row looks the same whether the
+                // microphone is listening or dead, and those are the two things a
+                // golfer on a tripod most needs told apart.
+                noShotsYetRow
             }
             actionRow
         }
@@ -223,8 +250,9 @@ struct ArmedScreen: View {
     /// two metres.
     private func lastShotRow(_ shot: Shot) -> some View {
         HStack(spacing: 14) {
-            // ⚠ Substitution point — see CapturePlaceholders.swift.
-            ShotThumbnailPlaceholder(side: 74, caption: "LAST\nSHOT")
+            // ⚠ No caption. A tile labelled "LAST SHOT" implies an image that
+            // is coming; nothing generates thumbnails yet (E1.2).
+            ShotThumbnailPlaceholder(side: 74)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Shot \(shot.displayTitle)")
@@ -265,16 +293,70 @@ struct ArmedScreen: View {
             .tint(Color(.label))
             .accessibilityHint(Text("Opens the session library"))
 
-            // ⚠ Red because it is destructive, not because anything is wrong.
-            Button(role: .destructive, action: onDisarm) {
-                Text("Disarm")
-                    .font(.ppRowLabel.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
+            if capture.state == .armed {
+                // ⚠ Red because it is destructive, not because anything is wrong.
+                // Red only ever appears when there is something to stop.
+                Button(role: .destructive, action: onDisarm) {
+                    Text("Disarm")
+                        .font(.ppRowLabel.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
+                }
+                .accessibilityHint(Text("Stops retaining shots on this device"))
+            } else {
+                Button(action: onArm) {
+                    Text("Arm")
+                        .font(.ppRowLabel.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
+                }
+                .tint(Color.ppAccent)
+                .accessibilityHint(Text("Starts retaining shots on this device"))
             }
-            .accessibilityHint(Text("Stops retaining shots on this device"))
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.roundedRectangle(radius: PPMetrics.Radius.card))
+    }
+
+    /// Armed, listening, nothing promoted yet.
+    private var noShotsYetRow: some View {
+        HStack(spacing: 14) {
+            ShotThumbnailPlaceholder(side: 74)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("No shots yet")
+                    .font(.ppRowLabel.weight(.semibold))
+                    .foregroundStyle(Color(.label))
+                Text(candidateCount == 0
+                     ? "Listening for impacts"
+                     : "\(candidateCount) sound\(candidateCount == 1 ? "" : "s") heard, "
+                       + "none confirmed")
+                    .font(.ppSupporting)
+                    .foregroundStyle(Color(.secondaryLabel))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// ⛔ §9.2 — capture failing is the one thing that must not be quiet.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: PPMetrics.itemGap) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(StatusTone.error.foreground)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Nothing is being recorded")
+                    .font(.ppRowLabel.weight(.semibold))
+                    .foregroundStyle(Color(.label))
+                Text(message)
+                    .font(.ppSupporting)
+                    .foregroundStyle(Color(.secondaryLabel))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(PPMetrics.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StatusTone.error.background, in: .rect(cornerRadius: PPMetrics.Radius.card))
+        .accessibilityElement(children: .combine)
     }
 
     private var previewCaption: String {

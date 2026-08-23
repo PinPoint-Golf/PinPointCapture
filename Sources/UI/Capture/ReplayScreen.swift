@@ -139,7 +139,13 @@ struct ReplayScreen: View {
     private let onCycleSpeed: () -> Void
     private let onSelectTool: (MarkupTool) -> Void
 
+    /// ⛔ **Not defaulted.** A caller has to state whether this shot has frames.
+    /// A screen that worked it out for itself would quietly start lying the day
+    /// one of the two facts changed.
+    private let hasVideo: Bool
+
     init(shot: Shot,
+         hasVideo: Bool,
          capture: CaptureStatus,
          timeline: ReplayTimeline = ReplayTimeline(),
          speed: ReplaySpeed = .quarter,
@@ -152,6 +158,7 @@ struct ReplayScreen: View {
          onCycleSpeed: @escaping () -> Void,
          onSelectTool: @escaping (MarkupTool) -> Void) {
         self.shot = shot
+        self.hasVideo = hasVideo
         self.capture = capture
         self.timeline = timeline
         self.speed = speed
@@ -165,11 +172,37 @@ struct ReplayScreen: View {
         self.onSelectTool = onSelectTool
     }
 
+    /// ⛔ Specific about **which half** is missing. The shot's time is real and
+    /// measured; only its frames are absent. "No video" alone would read as a
+    /// failure, and this is not one — nothing records video yet (E1.1).
+    private var noVideoPanel: some View {
+        VStack(spacing: PPMetrics.itemGap) {
+            EyebrowLabel("No video")
+            Text("This shot was timed, not filmed.")
+                .font(.ppCardTitle)
+                .foregroundStyle(Color(.label))
+            Text("Video recording is not connected yet. The impact time below is "
+                 + "real — it came from the microphone.")
+                .font(.ppSupporting)
+                .foregroundStyle(Color(.secondaryLabel))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(PPMetrics.screenMargin)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.secondarySystemBackground))
+        .accessibilityElement(children: .combine)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // ⚠ Substitution point — see CapturePlaceholders.swift.
-            ReplayFramePlaceholder(caption: frameCaption)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if hasVideo {
+                // ⚠ Substitution point — see CapturePlaceholders.swift.
+                ReplayFramePlaceholder(caption: frameCaption)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                noVideoPanel
+            }
 
             controls
         }
@@ -396,6 +429,7 @@ private struct ImpactTimelineTrack: View {
     NavigationStack {
         ReplayScreen(
             shot: PreviewFixtures.shots[0],
+            hasVideo: true,
             capture: PreviewFixtures.armed,
             onDone: {},
             onCompare: {},
@@ -412,6 +446,7 @@ private struct ImpactTimelineTrack: View {
     NavigationStack {
         ReplayScreen(
             shot: PreviewFixtures.shots[2],
+            hasVideo: true,
             capture: PreviewFixtures.armed,
             timeline: ReplayTimeline(playhead: 0),
             speed: .half,

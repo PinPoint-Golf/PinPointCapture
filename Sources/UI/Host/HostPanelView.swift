@@ -42,6 +42,11 @@ public struct HostPanelView: View {
     private let videoTransportSummary: String
     /// Reconnection backoff, for the `lost` state's "Retrying" row.
     private let retryIntervalSeconds: Double
+    /// ⚠ Whether the measured figure came from a cold run. `nil` where nothing
+    /// has measured.
+    private let measuredMethod: MeasuredCapability.Method?
+    /// A8's permanent route. B3 is the app's settings sheet.
+    private let onOpenMicToBallDistance: (() -> Void)?
 
     // MARK: Reviewer controls
 
@@ -65,8 +70,8 @@ public struct HostPanelView: View {
     private let onDone: () -> Void
     /// The full-width action, whose title is ``HostLinkState/actionTitle``.
     private let onPrimaryAction: () -> Void
-    private let onOpenConnectionLog: () -> Void
-    private let onExportDiagnostics: () -> Void
+    private let onOpenConnectionLog: (() -> Void)?
+    private let onExportDiagnostics: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -81,11 +86,15 @@ public struct HostPanelView: View {
         retryIntervalSeconds: Double = 2,
         reviewerControlsEnabled: Bool = HostPanelView.reviewerControlsDefault,
         onSelectReviewState: ((HostLinkState) -> Void)? = nil,
+        measuredMethod: MeasuredCapability.Method? = nil,
         onDone: @escaping () -> Void,
         onPrimaryAction: @escaping () -> Void,
-        onOpenConnectionLog: @escaping () -> Void,
-        onExportDiagnostics: @escaping () -> Void
+        onOpenConnectionLog: (() -> Void)? = nil,
+        onExportDiagnostics: (() -> Void)? = nil,
+        onOpenMicToBallDistance: (() -> Void)? = nil
     ) {
+        self.measuredMethod = measuredMethod
+        self.onOpenMicToBallDistance = onOpenMicToBallDistance
         self.link = link
         self.capture = capture
         self.queue = queue
@@ -338,10 +347,24 @@ public struct HostPanelView: View {
                                                       : capture.state.displayName,
                               tone: .accent),
             HostTelemetryLine("Held here", HostFormat.queue(queue)),
-            HostTelemetryLine("Measured", HostFormat.fps(capture.achievedFPS)),
+            // ⛔ `HostFormat.fps` printed "0.0 fps" before anything measured — a
+            // measurement claim of zero, sitting in a column of real ones. And
+            // where there *is* a figure, say which kind it is: a three-second
+            // cold sample is not `CORE` 5.8b's sustained rate.
+            HostTelemetryLine("Measured", measuredText),
             HostTelemetryLine("Storage left", HostFormat.storage(storage)),
             HostTelemetryLine("Temperature", capture.thermal.displayName)
         ]
+    }
+
+    private var measuredText: String {
+        guard capture.achievedFPS > 0 else { return "not measured yet" }
+        let fps = HostFormat.fps(capture.achievedFPS)
+        switch measuredMethod {
+        case .sustained: return "\(fps) · sustained"
+        case .coldSample: return "\(fps) · cold sample"
+        case nil: return fps
+        }
     }
 
     // MARK: - Settings
@@ -357,9 +380,26 @@ public struct HostPanelView: View {
             .frame(minHeight: PPMetrics.Size.minimumTapTarget)
             .accessibilityElement(children: .combine)
 
-            HostDisclosureRow(title: "Connection log", action: onOpenConnectionLog)
+            // ⚠ A8, finally reachable. Built, persisted, feeding every
+            // Candidate's `tof_correction`, and with nothing in the app that
+            // navigated to it.
+            if let onOpenMicToBallDistance {
+                HostDisclosureRow(title: "Phone to ball", action: onOpenMicToBallDistance)
+            }
+
+            // ⛔ Disabled and *told*. These were live rows wired to `{}` — a
+            // control that silently no-ops teaches a user the app is broken,
+            // where one that says why teaches them it is unfinished.
+            HostDisclosureRow(title: "Connection log",
+                              action: onOpenConnectionLog ?? {})
+                .disabled(onOpenConnectionLog == nil)
             HostDisclosureRow(title: "Export a diagnostic bundle",
-                              action: onExportDiagnostics)
+                              action: onExportDiagnostics ?? {})
+                .disabled(onExportDiagnostics == nil)
+        } footer: {
+            if onOpenConnectionLog == nil && onExportDiagnostics == nil {
+                Text("The connection log and the diagnostic bundle are not built yet.")
+            }
         }
     }
 

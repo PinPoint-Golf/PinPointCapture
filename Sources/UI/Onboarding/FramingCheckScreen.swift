@@ -42,10 +42,14 @@ public struct FramingCheckScreen: View {
         self.onArm = onArm
     }
 
+    /// ⛔ The composition root supplies the real camera; a designer looking at a
+    /// `#Preview` gets the placeholder. This screen names no capture type.
+    @Environment(\.livePreview) private var livePreview
+
     public var body: some View {
         List {
             Section {
-                previewPlaceholder
+                livePreviewArea
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -64,24 +68,42 @@ public struct FramingCheckScreen: View {
             }
 
             Section {
-                CheckRow(
-                    title: "In frame at address",
-                    passes: framing.inFrameAtAddress
-                )
-                CheckRow(
-                    title: "Club still in frame at the top",
-                    passes: framing.inFrameAtTop
-                )
-                CheckRow(
-                    title: "Device is steady",
-                    passes: framing.isSteady
-                )
-                CheckRow(
-                    title: lightTitle,
-                    passes: framing.light.verdict == .good,
-                    measurement: framing.light.measurementText,
-                    consequence: framing.light.consequenceText
-                )
+                // ⛔ Three rows nobody can answer yet. They were rendering a
+                // fixture's `true` — a green tick for a check that had never run,
+                // on the screen whose entire purpose is preventing a wasted
+                // session. `.notChecked` is neutral, never orange: an absent
+                // check is not a degradation.
+                CheckRow(title: "In frame at address",
+                         state: framing.inFrameAtAddress,
+                         consequence: Self.poseNotConnected)
+                CheckRow(title: "Club still in frame at the top",
+                         state: framing.inFrameAtTop,
+                         consequence: Self.poseNotConnected)
+                CheckRow(title: "Device is steady",
+                         state: framing.isSteady,
+                         consequence: Self.steadyNotConnected)
+
+                if let light = framing.light {
+                    CheckRow(
+                        title: lightTitle,
+                        state: light.verdict == .good ? .pass : .fail,
+                        measurement: light.measurementText,
+                        // ⚠ Third line, not concatenated into the measurement:
+                        // the consequence sentences are verbatim design copy.
+                        provenance: light.provenanceText,
+                        consequence: light.consequenceText
+                    )
+                } else {
+                    CheckRow(title: "Light",
+                             state: .notChecked,
+                             consequence: "The self-test did not report an exposure "
+                                        + "on this device, so the light has not been assessed.")
+                }
+            } footer: {
+                if framing.hasAnyRealCheck == false {
+                    Text("Nothing has been checked yet.")
+                        .font(.ppSupporting)
+                }
             }
         }
         .listStyle(.insetGrouped)
@@ -107,37 +129,27 @@ public struct FramingCheckScreen: View {
         }
     }
 
-    // MARK: - Preview placeholder
+    // MARK: - The live preview
 
-    /// Stands in for the live preview and the pose box drawn over it. Flat fill,
-    /// accent-stroked detection box, and a label saying what it is.
-    private var previewPlaceholder: some View {
-        ZStack {
-            Rectangle()
-                .fill(Color(.secondarySystemBackground))
-
-            VStack(spacing: PPMetrics.itemGap) {
-                EyebrowLabel("Golfer · in frame", tone: .accent)
-
-                RoundedRectangle(cornerRadius: PPMetrics.Radius.small)
-                    .strokeBorder(Color.ppAccent, lineWidth: 1.5)
-                    .overlay {
-                        VStack(spacing: 4) {
-                            EyebrowLabel("Camera preview")
-                            Text("live, 1080p\(fpsText), locked")
-                                .ppMeasuredDetail()
-                        }
-                        .padding(PPMetrics.cardPadding)
-                    }
-                    .frame(maxWidth: 220)
-            }
-            .padding(PPMetrics.screenMargin)
-        }
-        .frame(height: 380)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("Camera preview"))
-        .accessibilityValue(Text("Placeholder. The golfer is detected and in frame."))
+    /// The real camera, from the composition root.
+    ///
+    /// ⛔ **No detection box.** The old placeholder drew an accent-stroked frame
+    /// labelled "Golfer · in frame" over a flat fill — a pose overlay for a pose
+    /// detector that does not exist (E8.2). Drawing one over a *live* image would
+    /// be worse than drawing it over a placeholder, because it would look real.
+    private var livePreviewArea: some View {
+        livePreview.makeView("CAMERA PREVIEW")
+            .frame(height: 380)
+            .clipped()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text("Camera preview"))
     }
+
+    /// Why three rows cannot answer. Stated once.
+    static let poseNotConnected =
+        "Pose detection is not connected yet, so this has not been checked."
+    static let steadyNotConnected =
+        "Motion sensing is not connected yet, so this has not been checked."
 
     private var headingRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: PPMetrics.itemGap) {
@@ -149,26 +161,33 @@ public struct FramingCheckScreen: View {
             Spacer(minLength: PPMetrics.itemGap)
 
             // REQ-SETUP-2: the device classifies its own viewpoint and reports
-            // it. It is never a control the user has to set.
-            EyebrowLabel(framing.viewpoint.displayText)
-                .accessibilityLabel(Text("Viewpoint"))
-                .accessibilityValue(Text(framing.viewpoint.displayText))
+            // it. ⛔ Hidden while nothing classifies it (E8.3) — an eyebrow
+            // reading "DTL · Right-handed" on every device, whichever way it is
+            // pointing, is a claim rather than a report.
+            if let viewpoint = framing.viewpoint {
+                EyebrowLabel(viewpoint.displayText)
+                    .accessibilityLabel(Text("Viewpoint"))
+                    .accessibilityValue(Text(viewpoint.displayText))
+            }
         }
     }
 
     // MARK: - Derived copy
 
     private var lightTitle: String {
-        switch framing.light.verdict {
+        switch framing.light?.verdict {
         case .good: "Light is good"
         case .marginal: "Light is marginal"
         case .insufficient: "Light is not enough"
+        case nil: "Light"
         }
     }
 
-    /// Dropping the frame rate only helps while light is the binding constraint.
+    /// Dropping the frame rate only helps while light is the binding constraint,
+    /// and only where there is a reading to say so.
     private var offersLowerFrameRate: Bool {
-        framing.light.verdict != .good && framing.light.fps > 120
+        guard let light = framing.light else { return false }
+        return light.verdict != .good && light.fps > 120
     }
 
     /// `Arm anyway` is the wording that goes with a warning. With nothing to
@@ -177,9 +196,6 @@ public struct FramingCheckScreen: View {
         framing.allChecksPass ? "Arm" : "Arm anyway"
     }
 
-    private var fpsText: String {
-        String(format: "%.0f", framing.light.fps)
-    }
 }
 
 // MARK: - Row
@@ -189,15 +205,36 @@ public struct FramingCheckScreen: View {
 private struct CheckRow: View {
 
     let title: String
-    let passes: Bool
+    /// ⛔ Three states. A `Bool` could not say "nobody looked", which is how this
+    /// screen came to show a green tick for a check that had never run.
+    let state: FramingStatus.Check
     var measurement: String?
+    /// What kind of reading this is — "measured cold, over a few seconds".
+    var provenance: String?
     var consequence: String?
 
-    private var tone: StatusTone { passes ? .accent : .warning }
+    /// ⚠ `notChecked` is **neutral**, never orange. Orange means "degraded but
+    /// still capturing" in this app's colour discipline; an absent check is not a
+    /// degradation and must not borrow that meaning.
+    private var tone: StatusTone {
+        switch state {
+        case .pass: .accent
+        case .fail: .warning
+        case .notChecked: .neutral
+        }
+    }
+
+    private var symbol: String {
+        switch state {
+        case .pass: "checkmark.circle.fill"
+        case .fail: "exclamationmark.circle.fill"
+        case .notChecked: "circle.dashed"
+        }
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: PPMetrics.itemGap) {
-            Image(systemName: passes ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            Image(systemName: symbol)
                 .font(.title3)
                 .foregroundStyle(tone.foreground)
                 .accessibilityHidden(true)
@@ -205,11 +242,18 @@ private struct CheckRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.ppRowLabel)
-                    .foregroundStyle(Color(.label))
+                    .foregroundStyle(state == .notChecked
+                                     ? Color(.secondaryLabel) : Color(.label))
 
                 if let measurement {
                     Text(measurement)
                         .ppMeasuredDetail()
+                }
+
+                if let provenance {
+                    Text(provenance)
+                        .font(.ppSupporting)
+                        .foregroundStyle(Color(.tertiaryLabel))
                 }
 
                 if let consequence {
@@ -230,7 +274,11 @@ private struct CheckRow: View {
 
     private var spokenValue: String {
         var parts: [String] = []
-        parts.append(passes ? "Passes" : (tone.accessibilityDescription ?? "Check"))
+        switch state {
+        case .pass: parts.append("Passes")
+        case .fail: parts.append(tone.accessibilityDescription ?? "Check")
+        case .notChecked: parts.append("Not checked")
+        }
         if let measurement { parts.append(measurement) }
         if let consequence { parts.append(consequence) }
         return parts.joined(separator: ". ")
@@ -252,9 +300,9 @@ private struct CheckRow: View {
     NavigationStack {
         FramingCheckScreen(
             framing: FramingStatus(
-                inFrameAtAddress: true,
-                inFrameAtTop: true,
-                isSteady: true,
+                inFrameAtAddress: .pass,
+                inFrameAtTop: .pass,
+                isSteady: .pass,
                 light: LightAssessment(
                     verdict: .good,
                     exposureSeconds: 1.0 / 2000.0,

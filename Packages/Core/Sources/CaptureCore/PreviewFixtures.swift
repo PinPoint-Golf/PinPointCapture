@@ -60,12 +60,19 @@ public enum PreviewFixtures {
     // MARK: - Framing (A6)
 
     public static let framingMarginalLight = FramingStatus(
-        inFrameAtAddress: true,
-        inFrameAtTop: true,
-        isSteady: true,
+        inFrameAtAddress: .pass,
+        inFrameAtTop: .pass,
+        isSteady: .pass,
         light: LightAssessment(verdict: .marginal, exposureSeconds: 1.0 / 1600.0,
                                iso: 2200, fps: 150),
         viewpoint: Viewpoint(angle: .downTheLine, handedness: .rightHanded)
+    )
+
+    /// ⚠ What A6 honestly looks like on a build with no pose detection: a real
+    /// light reading and three rows nobody has checked (E8.2).
+    public static let framingLightOnly = FramingStatus(
+        light: LightAssessment(verdict: .marginal, exposureSeconds: 1.0 / 1600.0,
+                               iso: 2200, fps: 150)
     )
 
     // MARK: - Host link (B2, B3 — all four states)

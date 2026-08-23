@@ -7,6 +7,7 @@
 //  platform framework, the bundle, or AppModel's wiring. Everything else belongs
 //  in the package, where it runs a thousand times faster.
 
+import Foundation
 import Testing
 import CaptureCore
 @testable import PinPointCapture
@@ -65,5 +66,124 @@ struct AppModelTests {
         guard model.capabilityError != nil else { return }  // real hardware, skip
         model.warmUp()
         #expect(model.captureStatus.state != .warm)
+    }
+}
+
+// MARK: - Initial UI integration
+
+/// The screens were fixture-fed for their whole life. These pin the removal.
+///
+/// ⚠ Every one of them is a *negative*: what the app must no longer claim. A
+/// fixture that comes back will come back silently — it compiles, it renders, and
+/// it looks better than the truth — so the guard has to be a test rather than a
+/// convention.
+@Suite("Composition root — no invented data")
+@MainActor
+struct FixtureRemovalTests {
+
+    @Test("A fresh model claims no session, no shots and no host")
+    func freshModelClaimsNothing() {
+        let model = AppModel()
+
+        // ⛔ This was `PreviewFixtures.session` — 41 invented shots dated 21
+        // August 2026, on every device, before anything had been captured.
+        #expect(model.session.shots.isEmpty)
+        #expect(model.shotCount == 0)
+        #expect(model.candidateCount == 0)
+        #expect(model.recording == nil)
+
+        // ⛔ And this was assigned `PreviewFixtures.connected` by a tap on B1:
+        // a paired Studio, a measured clock offset and a transfer queue, with no
+        // socket open anywhere.
+        #expect(model.hostLink.state == .none)
+        #expect(model.hostLink.hostName == nil)
+        #expect(model.transferQueue == nil)
+    }
+
+    @Test("A fresh model asserts no framing check it has not run")
+    func freshModelChecksNothing() {
+        let model = AppModel()
+
+        // ⛔ `PreviewFixtures.framingMarginalLight` claimed the golfer was in
+        // frame at address and at the top, and the device steady — three green
+        // ticks for checks that have never existed (E8.2).
+        #expect(model.framing.inFrameAtAddress == .notChecked)
+        #expect(model.framing.inFrameAtTop == .notChecked)
+        #expect(model.framing.isSteady == .notChecked)
+        #expect(model.framing.hasAnyRealCheck == false)
+        #expect(model.framing.allChecksPass == false)
+
+        // ⛔ And it rendered `1/1600 s · ISO 2200` on every device in every room,
+        // for what REQ-LIGHT-1 calls the binding constraint on how useful the
+        // video is.
+        #expect(model.framing.light == nil)
+        #expect(model.framing.viewpoint == nil)
+    }
+
+    @Test("The audio retention setting reaches the detector, rather than a label")
+    func audioRetentionIsApplied() throws {
+        // ⛔ `AppModel.audioRetention` was user-visible on A4 and inert: it never
+        // reached `DetectAndMint.Configuration.retention`, so the control changed
+        // a sentence and nothing else. REQ-PRIV-2 makes the privacy label a claim
+        // about this exact value.
+        for setting in AudioRetention.allCases {
+            let policy = setting.policy
+            switch setting {
+            case .aroundImpactOnly:
+                #expect(policy.windowNs > 0)
+                #expect(policy.maximumRetainedCandidates > 0)
+            case .none:
+                #expect(policy.maximumRetainedCandidates == 0 || policy.windowNs == 0)
+            case .fullTrack:
+                #expect(policy.windowNs > 0)
+            }
+        }
+    }
+
+    @Test("Onboarding completion survives a relaunch")
+    func onboardingPersists() throws {
+        let suite = "ppcp.tests.onboarding"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+
+        #expect(OnboardingStateStore.hasCompleted(in: defaults) == false)
+        OnboardingStateStore.setCompleted(true, in: defaults)
+        // ⛔ The whole point: a *second* read, as a fresh launch would do.
+        #expect(OnboardingStateStore.hasCompleted(in: defaults))
+        OnboardingStateStore.reset(in: defaults)
+        #expect(OnboardingStateStore.hasCompleted(in: defaults) == false)
+    }
+
+    @Test("A minted shot is labelled from the session anchor, not from the wall clock")
+    func shotsAreLabelledFromTheAnchor() throws {
+        // ⚠ The assertion is exact, deliberately. "Near `Date()`" would pass just
+        // as happily if the wall clock crept back into the calculation, which is
+        // the bug REQ-OFF-8 exists to prevent.
+        let anchor = WallClockAnchor(hostTimeNs: 5_000_000_000,
+                                     wallClock: Date(timeIntervalSince1970: 1_787_336_400))
+        let minted = try PpcpShot(id: "shot:1e2d3c4b-5a69-78b3-55ad-a60b4b5aa8f0",
+                                  sessionId: "ses:test",
+                                  timebaseRefId: PpcpTimebases.captureId,
+                                  t0Ns: 7_500_000_000,
+                                  authority: .device,
+                                  issuedBy: "peer:test",
+                                  firstCandidateId: "cand:test")
+        let shot = Shot(minted: minted, ordinal: 1, anchor: anchor)
+
+        #expect(abs(shot.impact.timeIntervalSince(anchor.wallClock) - 2.5) < 0.000_001)
+        #expect(shot.duration == nil)          // nothing filmed it
+        #expect(shot.syncState == .onDevice)   // and nothing sent it
+        #expect(shot.displayDetail.contains("timed, not filmed"))
+    }
+
+    @Test("The library lists what is on disk, not what a fixture describes")
+    func libraryListsRealBundles() throws {
+        let root = URL.temporaryDirectory
+            .appendingPathComponent("ppcp-library-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let model = AppModel(store: SessionStore(root: root))
+        // ⛔ Nothing written yet, so nothing listed. It used to list 41 shots.
+        #expect(model.libraryRows().isEmpty)
     }
 }

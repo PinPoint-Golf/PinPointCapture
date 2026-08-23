@@ -17,7 +17,10 @@ public struct Shot: Sendable, Identifiable, Hashable {
     /// Impact. ⚠ REQ-REPLAY-2: the replay timeline is addressed in *time*,
     /// zeroed on this instant, never in frame index.
     public var impact: Date
-    public var duration: TimeInterval
+    /// ⛔ `nil` until a clip exists. Nothing records video yet (E1.1), and a
+    /// shot rendered as "· 0.0 s" is a measurement claim of zero rather than an
+    /// absence.
+    public var duration: TimeInterval?
     public var club: String?
     public var syncState: ShotSyncState
     /// REQ-MIC-6. Confidence from the acoustic detector.
@@ -26,7 +29,7 @@ public struct Shot: Sendable, Identifiable, Hashable {
     /// worth the bandwidth (upload triage, v2).
     public var hasImpact: Bool
 
-    public init(id: UUID = UUID(), ordinal: Int, impact: Date, duration: TimeInterval,
+    public init(id: UUID = UUID(), ordinal: Int, impact: Date, duration: TimeInterval? = nil,
                 club: String? = nil, syncState: ShotSyncState = .onDevice,
                 detectionConfidence: Double? = nil, hasImpact: Bool = true) {
         self.id = id
@@ -44,12 +47,16 @@ public struct Shot: Sendable, Identifiable, Hashable {
         "\(ordinal) · \(club ?? (hasImpact ? "unknown club" : "practice swing"))"
     }
 
-    /// "19:36:02 · 3.0 s", or "19:33:58 · no impact" — mono.
+    /// "19:36:02 · 3.0 s", "19:36:02 · timed, not filmed", or "19:33:58 · no
+    /// impact" — mono.
+    ///
+    /// ⚠ The middle case is the honest one on this build: the impact instant is
+    /// real and measured, and no video was recorded against it.
     public var displayDetail: String {
         let time = Self.timeFormatter.string(from: impact)
-        return hasImpact
-            ? "\(time) · \(String(format: "%.1f", duration)) s"
-            : "\(time) · no impact"
+        guard hasImpact else { return "\(time) · no impact" }
+        guard let duration else { return "\(time) · timed, not filmed" }
+        return "\(time) · \(String(format: "%.1f", duration)) s"
     }
 
     static let timeFormatter: DateFormatter = {
@@ -87,11 +94,67 @@ public struct Session: Sendable, Identifiable {
     }
 
     /// "41 shots · 18:20 to 19:36 · 12 still to send"
+    /// ⚠ With no host there is nothing "still to send", and saying so implies a
+    /// transfer that is queued rather than one that does not exist.
+    public func displaySubtitle(hasHost: Bool) -> String {
+        guard hasHost else {
+            let span = Self.spanText(start: start, end: end)
+            return "\(shots.count) shot\(shots.count == 1 ? "" : "s")\(span) · kept on this device"
+        }
+        return displaySubtitle
+    }
+
     public var displaySubtitle: String {
+        let window = Self.spanText(start: start, end: end)
+        return "\(shots.count) shots\(window) · \(shotsStillToSend) still to send"
+    }
+
+    /// " · 18:20 to 19:36", or empty where no shot has been taken — a span
+    /// between an open time and now, with nothing in it, is noise.
+    static func spanText(start: Date, end: Date?) -> String {
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
-        let window = "\(f.string(from: start)) to \(f.string(from: end ?? Date()))"
-        return "\(shots.count) shots · \(window) · \(shotsStillToSend) still to send"
+        return " · \(f.string(from: start)) to \(f.string(from: end ?? Date()))"
+    }
+}
+
+/// One session bundle on disk, as C3 can honestly describe it.
+///
+/// ⛔ **Only what is knowable without opening the bundle.** `SessionStore.bundles()`
+/// reads directory names; the shot count and the time span are *inside* the
+/// container and reading them back means feeding frames to a peer, which is E4.1.
+/// So this carries the file's facts and the screen says they are the file's.
+///
+/// ⚠ Deliberately no `shotCount`. The obvious shortcut — count the files in
+/// `clips/` — returns zero on every device today, and a zero that looks measured
+/// is worse than an absence.
+public struct RecordedBundle: Sendable, Identifiable, Hashable {
+    public let sessionId: String
+    /// The bundle directory's modification date. ⚠ A *file* date, not the
+    /// session's own — and the screen says so.
+    public let fileDate: Date
+    public let byteCount: Int64
+
+    public var id: String { sessionId }
+
+    public init(sessionId: String, fileDate: Date, byteCount: Int64) {
+        self.sessionId = sessionId
+        self.fileDate = fileDate
+        self.byteCount = byteCount
+    }
+
+    /// "21 August, 18:20"
+    public var displayTitle: String {
+        let f = DateFormatter()
+        f.dateFormat = "d MMMM, HH:mm"
+        return f.string(from: fileDate)
+    }
+
+    /// "bundle · 4.2 MB"
+    public var displayDetail: String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return "bundle · \(formatter.string(fromByteCount: byteCount))"
     }
 }
 

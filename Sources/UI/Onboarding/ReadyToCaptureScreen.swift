@@ -36,18 +36,33 @@ public struct ReadyToCaptureScreen: View {
     ///   - retainedSecondsPerShot: seconds of video kept around each impact.
     ///   - onStartSession: goes straight to capture, standalone.
     ///   - onConnectHost: presents host connection (B1) modally.
+    private let micToBall: MicToBallDistance?
+    private let onOpenMicToBallDistance: (() -> Void)?
+
     public init(
         capability: DeviceCapability,
         storage: StorageHeadroom,
         retainedSecondsPerShot: Double,
+        micToBall: MicToBallDistance? = nil,
         onStartSession: @escaping () -> Void,
-        onConnectHost: @escaping () -> Void
+        onConnectHost: @escaping () -> Void,
+        onOpenMicToBallDistance: (() -> Void)? = nil
     ) {
         self.capability = capability
         self.storage = storage
         self.retainedSecondsPerShot = retainedSecondsPerShot
+        self.micToBall = micToBall
         self.onStartSession = onStartSession
         self.onConnectHost = onConnectHost
+        self.onOpenMicToBallDistance = onOpenMicToBallDistance
+    }
+
+    /// ⚠ "1.5 m (assumed)" is not "1.5 m". A12: a default that reads as a
+    /// measurement is the failure mode.
+    private var micToBallText: String {
+        guard let micToBall else { return "not set" }
+        let metres = String(format: "%.1f m", micToBall.metres)
+        return micToBall.provenance == .surveyed ? metres : "\(metres) (assumed)"
     }
 
     public var body: some View {
@@ -78,14 +93,24 @@ public struct ReadyToCaptureScreen: View {
                 // device *advertises*, which is the exact conflation REQ-CAP-1/2
                 // exists to prevent — and the user cannot notice an absent row.
                 if let measured = capability.measured {
+                    // ⛔ **The label follows the method.** This row said
+                    // "Measured, sustained" over a three-second cold sample —
+                    // `CORE` 5.8b's named failure, on the screen its own header
+                    // calls "the receipt for the self-test". REQ-ENC-4 puts a
+                    // sustained figure ~40 minutes under thermal load away.
                     TelemetryRow(
-                        "Measured, sustained",
+                        measured.method == .sustained ? "Measured, sustained"
+                                                      : "Measured, cold sample",
                         measured.displaySummary,
-                        spokenValue: "\(fpsText(measured.achievedFPS)) frames per second, \(measured.droppedFrames) dropped"
+                        spokenValue: "\(fpsText(measured.achievedFPS)) frames per second, "
+                                   + "\(measured.droppedFrames) dropped, "
+                                   + (measured.method == .sustained
+                                      ? "measured under sustained load"
+                                      : "measured cold")
                     )
                 } else {
                     TelemetryRow(
-                        "Measured, sustained",
+                        "Measured",
                         "not measured yet",
                         tone: .warning,
                         spokenValue: "not measured yet"
@@ -111,6 +136,29 @@ public struct ReadyToCaptureScreen: View {
                     storage.displayText,
                     spokenValue: storage.displayText
                 )
+
+                // ⚠ A8's entry point, and the right moment for it: the setting
+                // takes effect on the next arm, and this is the screen
+                // immediately before the first one. It was unreachable — built,
+                // persisted, feeding every Candidate's `tof_correction`, and
+                // with nothing in the app that navigated to it.
+                if let onOpenMicToBallDistance {
+                    Button(action: onOpenMicToBallDistance) {
+                        LabeledContent("Phone to ball") {
+                            HStack(spacing: 6) {
+                                Text(micToBallText)
+                                    .font(.ppRowLabel)
+                                    .foregroundStyle(Color(.secondaryLabel))
+                                Image(systemName: "chevron.right")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(Color(.tertiaryLabel))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .frame(minHeight: PPMetrics.Size.minimumTapTarget)
+                    .accessibilityHint(Text("Sets the microphone-to-ball distance"))
+                }
             }
 
             Section {

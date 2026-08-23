@@ -75,6 +75,24 @@ public final class DetectAndMint: @unchecked Sendable {
             self.clipPreNs = clipPreNs
             self.clipPostNs = clipPostNs
         }
+
+        /// The window a shot carries with the default pre/post roll.
+        ///
+        /// ⚠ A7 printed a hardcoded `3.0` for this. The real figure is 4.5 —
+        /// 1.5 s of pre-roll plus 3.0 s after — and a number a screen states
+        /// about retention should come from the thing that does the retaining.
+        public static let defaultClipWindowSeconds =
+            Double(1_500_000_000 + 3_000_000_000) / 1_000_000_000
+
+        /// How much video a shot would carry, in seconds.
+        ///
+        /// ⚠ A7 showed a hardcoded `3.0` for this. The real figure is the clip
+        /// window this configuration actually uses, and it is not 3.0 — it is the
+        /// pre-roll plus the post-roll. A number a screen states about retention
+        /// should come from the thing that does the retaining.
+        public var clipWindowSeconds: Double {
+            Double(clipPreNs + clipPostNs) / 1_000_000_000
+        }
     }
 
     /// What one audio window produced.

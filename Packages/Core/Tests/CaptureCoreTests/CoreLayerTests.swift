@@ -273,7 +273,11 @@ struct FramingTests {
         status.light = LightAssessment(verdict: .good, exposureSeconds: 1.0 / 500.0,
                                        iso: 200, fps: 150)
         #expect(status.allChecksPass == true)
-        status.isSteady = false
+        status.isSteady = .fail
+        #expect(status.allChecksPass == false)
+        // ⚠ And a check nobody ran is not a pass either — the distinction a
+        // `Bool` could not express, and the reason A6 could show an unearned tick.
+        status.isSteady = .notChecked
         #expect(status.allChecksPass == false)
     }
 
