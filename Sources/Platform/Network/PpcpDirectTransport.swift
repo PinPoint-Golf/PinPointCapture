@@ -25,7 +25,7 @@
 //  inside the file that must not have one; a second type in a file that compiles
 //  out of the product does not.
 //
-//  ⛔ **A finding, not a licence — see F-D9-1 in `docs/ppcp-conformance.md`.**
+//  ⛔ **A finding, not a licence — see F-D9-1 in `docs/conformance/ppcp-conformance.md`.**
 //  `RV` 2c is a MUST that the direct path completes the §5 handshake, and this
 //  does not. The resolution is that this build's peer does not claim `PPCP-RV`
 //  conformance on this link — 9a permits that — and the reason it has to be
@@ -49,7 +49,7 @@ import CaptureCore
 /// the same reason: `Network.framework` has no per-call cancel, so an `await`
 /// that ignores cancellation makes a structured timeout around it not a slow
 /// timeout but no timeout at all (see the note at the end of
-/// `docs/ppcp-conformance.md`).
+/// `docs/conformance/ppcp-conformance.md`).
 final class PpcpDirectChannel: ByteChannel, @unchecked Sendable {
 
     let channel: PpcpChannel

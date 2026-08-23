@@ -388,7 +388,7 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     /// returned a `present` extraction over no fragments would be the one thing
     /// I10 exists to prevent.
     ///
-    /// ⚠ Recorded in `docs/ppcp-conformance.md` under what needs a phone. The
+    /// ⚠ Recorded in `docs/conformance/ppcp-conformance.md` under what needs a phone. The
     /// seam is what D-compose owed; the wire from the sample callback into the
     /// ring is device work that cannot be verified on a simulator.
     public func extractClip(_ requestedNs: Range<Int64>) -> ClipExtraction {

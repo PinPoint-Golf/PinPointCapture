@@ -53,7 +53,7 @@ EXPECT      ?= violations=0
 CONFORM_RUN_MS ?= 45000
 
 # ⛔ **The claim** (`CONF` 1a): a conformance run without a profile set is not a
-# claim. This is the set `docs/ppcp-conformance.md` §1 states, and the two must
+# claim. This is the set `docs/conformance/ppcp-conformance.md` §1 states, and the two must
 # not drift — a row that passes against a set this application does not claim is
 # measuring somebody else.
 CONFORM_PROFILES ?= core,capture,detect,mint,live,offline,markup

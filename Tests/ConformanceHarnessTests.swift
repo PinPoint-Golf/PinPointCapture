@@ -147,7 +147,7 @@ struct ConformanceHarnessTests {
         // asserted rather than papered over: the run covers the handshake, the
         // Session, the `audio` and `metadata` Streams, the sync exchange and the
         // nomination path. Everything downstream of a camera Source needs a phone
-        // and is recorded as such in `docs/ppcp-conformance.md`.
+        // and is recorded as such in `docs/conformance/ppcp-conformance.md`.
         #expect(report.streamsOpened.isEmpty == false, "\(transcript)")
 
         // ⛔ No `error` frame came back. `ppcp-sim` answers `error` for a message

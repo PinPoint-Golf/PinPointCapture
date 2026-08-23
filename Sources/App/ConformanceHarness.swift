@@ -436,7 +436,7 @@ public actor ConformanceHarness {
             //
             // ⚠ **Not claimed as the fix for CT-S4 (6).** The verifying run has
             // not been made and the other candidates are not excluded; see the
-            // entry in `docs/ppcp-conformance.md`. It is here because 6.1f asks
+            // entry in `docs/conformance/ppcp-conformance.md`. It is here because 6.1f asks
             // for it whether or not it changes that row.
             _ = try? await pump.perform { try $0.publishRelations() }
 

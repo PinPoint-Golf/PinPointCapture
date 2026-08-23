@@ -6,7 +6,7 @@ PinPointCapture turns an iPhone or iPad into a time-synchronised, high-speed cap
 
 The two areas designed to depth are **onboarding** and **host connectivity**. Capture, replay and the session library are designed to the same visual fidelity but are less resolved in interaction detail (markup tools and two-shot comparison are named, not designed).
 
-Source requirements: `capture-companion-requirements.md`. Where a screen encodes a requirement, this document names it.
+Source requirements: [`../capture-companion-requirements.md`](../capture-companion-requirements.md). Where a screen encodes a requirement, this document names it.
 
 ## About the design files
 

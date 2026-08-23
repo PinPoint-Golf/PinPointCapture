@@ -79,5 +79,5 @@ revocable), `NetworkJoin` (§6 — `NEHotspotConfiguration` with consent, and 6b
 session's `AVCaptureVideoDataOutput` drives only the self-test's probe, so nothing
 appends fragments and `CaptureDevice.extractClip` answers `absent` /
 `outside_buffer` — which is 8.4b's own answer for a ring that does not hold the
-interval, and is the truth here. Recorded in `docs/ppcp-conformance.md` as needing
+interval, and is the truth here. Recorded in `docs/conformance/ppcp-conformance.md` as needing
 a phone rather than faked.

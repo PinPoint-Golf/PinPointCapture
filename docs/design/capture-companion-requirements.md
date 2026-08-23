@@ -6,13 +6,16 @@ A mobile device as a time-synchronised high-speed capture source for PinPoint St
 
 | | |
 |---|---|
-| Status | Draft for review |
-| Date | 21 August 2026 |
+| Status | Draft for review — amended 23 August 2026 to record what has been delivered |
+| Date | 21 August 2026, amended 23 August 2026 |
 | Product | **PinPointCapture** — mobile capture and replay app. iOS/iPadOS first, Android a near-term possibility ([§17](#17-platform-portability)). |
 | Protocol | **PPCP** — PinPoint Capture Protocol. Open specification. |
 | Library | **libppcp** — reference implementation, MIT. |
 | Licence | Protocol: open specification. Library: MIT. App: see [OPEN-4](#open-decisions). |
 | Related | PinPointStudio (GPL, desktop), `libwrist` (MIT, wrist sensor) |
+| Delivery | [`delivery-scope.md`](../implementation/delivery-scope.md) — what is built, what is not, and the epics that close the gap |
+| Traceability | [`traceability.md`](../implementation/traceability.md) — every requirement below, to its status, epic and evidence |
+| Conformance | [`ppcp-conformance.md`](../conformance/ppcp-conformance.md) — this implementation's `PPCP-CONF` claim |
 
 ## Repositories
 
@@ -209,10 +212,12 @@ The single most important requirement in the document.
 Three distinct things, all on the wire, routinely different:
 
 - **REQ-CAP-1 (MUST)** **Claimed** — what the device advertises it can do.
-- **REQ-CAP-2 (MUST)** **Measured** — what it observed itself sustaining, from self-test. Re-measured after OS updates. Measured results attach **per capture profile**, not per device or per source: 1080p240 and 1080p120 are separate self-tests with separate results.
+- **REQ-CAP-2 (MUST)** **Measured** — what it observed itself sustaining, from self-test. Re-measured after OS updates. Measured results attach **per capture profile**, not per device or per source: 1080p240 and 1080p120 are separate self-tests with separate results. A self-test carries the **method** by which it was obtained, and a short onboarding sample is `cold_sample`, never `sustained` — the sustained figure requires [REQ-ENC-4](#77-encoder-configuration)'s ~40-minute run under thermal load. Where no sustained measurement exists, the device reports "not measured yet" rather than presenting a cold sample as one.
 - **REQ-CAP-3 (MUST)** **Achieved** — what actually happened on this specific shot, including realised frame intervals, drops and thermal state.
 - **REQ-CAP-4 (MUST)** Capability includes optical quality, not only frame rate: achieved exposure, ISO, and a measured noise or contrast figure at requested settings. "120 fps capable" can hide frames the shaft detector cannot use.
 - **REQ-CAP-5 (MUST)** Frame-rate thresholds are **host ingest policy, not protocol constraints**. A device may honestly declare 60 fps; the host may reject it. PinPoint's current floor is 120 fps (consistent with the documented ≥100 fps requirement for full-swing shaft tracking), but the wire format must not encode it.
+
+- **REQ-CAP-6 (MUST)** Where the device states a capture verdict with **no host present** — [UC-1](#uc-1--entry-level-capture-primary), the normal case — the verdict **names whose ingest policy it applies** and is presented as advisory. It is a claim about a particular host's acceptance, not about the device: a third-party host may accept less or demand more. Until [REQ-CAP-4](#55-capability-declaration)'s optical quality gate is measurable, the verdict rests on frame rate alone and must not be worded as though it rested on more.
 
 *Vendor variance justifies the claimed/measured split: Samsung's developer team states 60+ fps is unsupported through the normal Camera2 path on Galaxy devices for thermal reasons, available only via the constrained high-speed session; and high-speed capability has regressed across firmware updates on some models.*
 
@@ -287,12 +292,12 @@ Requirements:
 - **REQ-OPT-3 (MUST)** Auto-exposure locked — otherwise motion blur varies mid-swing.
 - **REQ-OPT-4 (MUST)** Auto white balance locked.
 - **REQ-OPT-5 (MUST)** Open a **physical** capture device, never a virtual multi-lens device. Virtual devices switch physical lenses automatically on scene and focus distance, silently changing intrinsics mid-session.
-- **REQ-OPT-6 (MUST)** Lens selection is a calibration-affecting decision, recorded as such. Lens change within a session is forbidden, or invalidates calibration. Behind-the-golfer placement in a small studio may force ultra-wide, with heavy distortion and often a lower maximum frame rate.
+- **REQ-OPT-6 (MUST)** Lens selection is a calibration-affecting decision, recorded as such. Lens change within a session is forbidden, or invalidates calibration. Behind-the-golfer placement in a small studio may force ultra-wide, with heavy distortion and often a lower maximum frame rate. **Where two lenses are equally capable, prefer the wide.** The same device commonly offers 1080p240 on both wide and ultra-wide, and an arbitrary tie-break can select the distorting lens for a session whose calibration is then fixed against it — which this requirement forbids changing later.
 - **REQ-OPT-7 (MUST)** Enable per-frame intrinsic matrix delivery where available (`isCameraIntrinsicMatrixDeliveryEnabled` on iOS). Free calibration data; requires stabilisation off in any case.
 
 ### 7.2 Frame rate
 
-- **REQ-FPS-1 (MUST)** Enumerate supported formats and frame-rate ranges; never assume from a spec sheet.
+- **REQ-FPS-1 (MUST)** Enumerate supported formats and frame-rate ranges; never assume from a spec sheet. **Rank them frame-rate-first**, then resolution, then lens. Enumerating is straightforward and ranking is not: a contemporary iPhone reports a 4032×3024 stills format that beats 1080p240 on resolution, so a naive "best format" selection puts a stills mode on the capability card beside a verdict computed from a different one. [REQ-RESOL-1](#73-resolution) argues for the same ordering on separate grounds.
 - **REQ-FPS-2 (MUST)** Verify achieved rate from realised timestamp deltas. A format reporting a 1–240 range will accept a 150 fps request; confirm it is not delivering 120 with duplicates.
 - **REQ-FPS-3 (MUST)** Report achieved intervals per shot ([REQ-CAP-3](#55-capability-declaration)).
 
@@ -300,8 +305,10 @@ Requirements:
 
 ### 7.3 Resolution
 
-- **REQ-RES-1 (MUST)** Target **1080p at the highest sustainable frame rate**. Do not reach for 4K.
-- **REQ-RES-2 (SHOULD)** Do not foreclose 4K. Capability declaration ([§5.5](#55-capability-declaration)) already lets a device offer 4K120 and the host accept or ignore it. No requirement changes are needed to keep the door open.
+> **Identifier note.** These two were `REQ-RES-1` and `REQ-RES-2` and collided with [§9.2](#92-priority-rule)'s five resource-management requirements of the same names. Every reference in the implementation and the design pack meant the §9.2 sense, so **this pair was renamed** and §9.2 is unchanged.
+
+- **REQ-RESOL-1 (MUST)** Target **1080p at the highest sustainable frame rate**. Do not reach for 4K.
+- **REQ-RESOL-2 (SHOULD)** Do not foreclose 4K. Capability declaration ([§5.5](#55-capability-declaration)) already lets a device offer 4K120 and the host accept or ignore it. No requirement changes are needed to keep the door open.
 
 **Rationale.** Resolution is not the binding constraint, and reaching for it costs on four axes that are:
 
@@ -443,7 +450,7 @@ Host-controlled, three capture states crossed with review state.
 
 - **REQ-PRIV-4 (MUST)** Audio windows attach to candidates, including candidates that lost or were rejected. The diagnostic value is explaining **why detection fired**, including when it fired wrongly — a noise in the bay, a shot in the next bay, a phone notification, music. A rejected candidate has no shot, so shot-attached audio cannot serve this.
 - **REQ-PRIV-5 (MUST)** Audio is a **separate stream from video with its own, shorter window** — roughly 1.5–2 s centred on the transient. Muxing audio into the video clip would retain ~4.5 s of room audio per shot for no diagnostic benefit, a privacy cost taken by accident.
-- **REQ-PRIV-6 (MUST)** Retention is therefore ~50 windows × ~2 s ≈ 100 s per session, non-contiguous, each centred on a transient. Speech capture is incidental rather than systematic, and the privacy label must state this accurately rather than claiming no audio is kept.
+- **REQ-PRIV-6 (MUST)** Retention is bounded **in candidates, not in shots**, and the bound is explicit. Candidates outnumber shots by an amount the user does not control — [REQ-MIC-5](#64-acoustic-detection) enumerates why, and an adjacent player in a busy range bay is the case a user would most object to — so an arithmetic computed on the ~50 shots of [§16.2](#162-volume-and-storage) would understate retention by an unknown factor, in the direction that matters. The device therefore declares a **cap on retained candidate windows**, enforces it **by eviction, oldest first**, and re-announces an evicted window as absent rather than silently dropping it. At a cap of 150 windows of ~2 s, retention is bounded at ~300 s per session, non-contiguous, each centred on a transient. Speech capture is incidental rather than systematic, and the privacy label states the **cap**, in these terms, rather than an average — a bound the app can honour is what makes the label defensible.
 - **REQ-PRIV-7 (SHOULD)** Store raw PCM at v1. A derived representation (band energy, spectrogram) has a better privacy posture but forecloses re-running an improved classifier on original audio — a real loss while the detector is immature. Revisit as a default once the classifier settles.
 - **REQ-PRIV-3 (MUST)** No telemetry. Field diagnosis is via user-initiated export ([§12](#12-observability)).
 
@@ -649,17 +656,61 @@ These are known now and cheap to accommodate; they are expensive to retrofit.
 
 ---
 
+## 18. Implementation status
+
+*Added 23 August 2026. This section records what has been **delivered** against the requirements above. It is deliberately short: the detail lives in [`delivery-scope.md`](../implementation/delivery-scope.md), and the requirement-by-requirement position lives in [`traceability.md`](../implementation/traceability.md). Both are generated against the tree rather than against intent, and this section should be re-checked whenever they are.*
+
+### 18.1 The layering, as realised
+
+[§17.1](#171-layering)'s four layers exist, with the boundaries where the requirement puts them.
+
+| Layer (REQ-PORT-1) | As built | State |
+|---|---|---|
+| Protocol | `libppcp`, consumed as a SwiftPM package. `import CPPCP` appears in exactly twelve files, each documented with the rule the library owns there | Delivered. Nothing is deferred on the library |
+| Core logic | `Packages/Core/CaptureCore` — a platform-free Swift package, 42 files, 174 tests | Substantially delivered |
+| Platform capture | `Sources/Platform` — the only place `AVFoundation`, `VideoToolbox`, `CoreMedia`, `CoreMotion` and `Network` may appear | Written; partly connected |
+| UI | `Sources/UI`, `Sources/App` — SwiftUI, 16 of the design pack's 17 screens | Built; largely driven by fixtures |
+
+**[REQ-PORT-3](#171-layering) is enforced mechanically, not by convention.** `LayerPurityTests` fails the build on a forbidden import and walks the tree recursively. This was tested rather than assumed: a SwiftPM package boundary does *not* stop a target importing `AVFoundation`, because system frameworks come from the SDK rather than from declared dependencies. The seam is held by the test, in the same spirit as `libwrist`'s `tests/purity.cmake`.
+
+**[REQ-LIC-3](#14-licensing-and-distribution) — one implementation of the wire format — is the central architectural claim of the app, and it holds.** There is no hand-written PPCP encoder anywhere in this repository. Where the library owns an invariant, it owns it through a signature: [REQ-EXP-2](#52-exposure-convention)'s offset is a *required parameter* of a constructor that refuses the wrong convention, rather than a rule an implementer must remember.
+
+**[REQ-PORT-2](#171-layering) is not yet satisfied.** The port surface is documented as a three-row table headed "the port surface so far". The requirement asks for an enumerated artefact, and a partial list is the failure mode it names.
+
+### 18.2 Conformance
+
+An implementation claim against `PPCP-CONF` exists at [`ppcp-conformance.md`](../conformance/ppcp-conformance.md), with 47 rows: 38 pass, 7 partially implemented with the remaining half named, 1 under review, 1 blocked. It includes interoperability runs against a counterpart this repository did not write, and session bundles written by each side and read by the other are checked in.
+
+Fifteen items are deferred, **nine of them on nothing but a physical device.**
+
+### 18.3 What is not delivered, in one paragraph
+
+Three subsystems exist, are tested, and are not reached by the running application: the **ring buffer** never receives a frame, so no clip has ever carried bytes ([REQ-BUF-1](#76-buffering), [REQ-CLIP-1](#75-clip-container)); the **microphone** has never run outside injected audio ([REQ-MIC-1](#64-acoustic-detection)); and there is **no live host link** in the app, so every requirement in [§5.3](#53-clock-synchronisation) and most of [§8](#8-session-model) is satisfied by code with no caller. Behind those three sit replay, markup, export, the diagnostic bundle and the framing checks — none of which exists. The encoder properties of [§7.7](#77-encoder-configuration) are **not set**, which [REQ-ENC-1](#77-encoder-configuration) exists precisely to prevent.
+
+### 18.4 Measurement debt
+
+This is the section a future reader should be most sceptical of the build on.
+
+**[REQ-TEST-1](#131-led-timecode-rig) says build the LED timecode rig *before* the protocol. It has not been built, and the protocol has.** The consequence is systematic rather than incidental: every rolling-shutter readout and every exposure offset the device declares carries provenance `assumed`, no device has a measured optical quality figure ([REQ-CAP-4](#55-capability-declaration)), no bitrate sweep has run ([REQ-BUF-3](#76-buffering)), no sustained thermal measurement exists ([REQ-ENC-4](#77-encoder-configuration)), the battery target of [REQ-RES-4](#92-priority-rule) is stated and unverified, and no acoustic time of flight has been surveyed — so a shipping session declares no `tof_correction` at all rather than an assumed one.
+
+The implementation is consistently honest about this: nothing emits `measured` where nothing measured it, and the refusals are asserted by tests. That honesty is what makes the debt visible and repayable, but it is debt, and it falls due the first time a number in this document is quoted as though it were an observation.
+
+---
+
 ## Open decisions
 
 | ID | Decision | Recommendation |
 |---|---|---|
 | ~~OPEN-1~~ | ~~Naming.~~ | **Resolved.** PinPointCapture (app), PPCP (protocol), libppcp (library). The vendor-name concern was overstated — licence and specification quality drive adoption, not the acronym. Trademark clearance tracked separately as [REQ-LIC-6](#141-name-clearance--pre-submission-gate). |
 | ~~OPEN-2~~ | ~~Audio retention.~~ | **Resolved.** Candidate-attached windows of ~2 s, separate stream from video, raw PCM at v1. See [REQ-PRIV-4 to 7](#11-security-and-privacy). Sub-threshold retention for false-negative diagnosis is a device diagnostic mode ([REQ-OBS-4](#12-observability)), not a protocol feature. |
-| **OPEN-3** | Minimum device tier. Is 120 fps the floor, and at what resolution and light level? | 120 fps at 1080p as ingest policy; add a measured optical quality gate ([REQ-CAP-4](#55-capability-declaration)) rather than relying on frame rate alone. |
+| **OPEN-3** | Minimum device tier. Is 120 fps the floor, and at what resolution and light level? | 120 fps at 1080p as ingest policy; add a measured optical quality gate ([REQ-CAP-4](#55-capability-declaration)) rather than relying on frame rate alone. **Position, 23 Aug:** the frame-rate half is implemented and now correctly attributed ([REQ-CAP-6](#55-capability-declaration)). The optical half **cannot be closed honestly** until a device has a measured noise or contrast figure, which needs the rig ([REQ-TEST-1](#131-led-timecode-rig)) and the sustained run ([REQ-ENC-4](#77-encoder-configuration)). Also carries the unanswered sub-question of whether a connected host's policy should be adopted for future standalone sessions. |
 | **OPEN-4** | App licence and distribution channel. | Non-GPL for the app if App Store distribution is wanted; the library stays MIT either way. |
-| **OPEN-5** | Version support window ([REQ-VER-3](#56-versioning)). | State a minimum of N releases back, with a written deprecation path. |
-| **OPEN-6** | Does v1 ship tethered-only, deferring the standalone UI? | Defensible. But the **formats** must be standalone-ready from day one — the UI can wait, the schema cannot. |
-| **OPEN-7** | How much core logic is genuinely shared vs. reimplemented natively per platform ([§17.1](#171-layering))? | Decide when the port surface is first enumerated, not now. The binding requirement is that the seams exist and no platform type leaks across them ([REQ-PORT-3](#171-layering)); how much sits behind them can be settled later. |
+| **OPEN-5** | Version support window ([REQ-VER-3](#56-versioning)). | State a minimum of N releases back, with a written deprecation path. **Position, 23 Aug:** unstarted, and it is now the only thing standing between [REQ-VER-3](#56-versioning) and closure — the negotiation machinery it would govern already exists. |
+| **OPEN-6** | Does v1 ship tethered-only, deferring the standalone UI? | Defensible. But the **formats** must be standalone-ready from day one — the UI can wait, the schema cannot. **Position, 23 Aug: recommend closing as "no".** The premise has been overtaken. The standalone path is the *more* complete half of what has been built — hostless sessions, bundle write and read, and the whole zero-host path pass end to end — while the live host link is the part with no caller. Deferring the standalone UI now would defer the half that works in order to ship the half that does not. |
+| **OPEN-7** | How much core logic is genuinely shared vs. reimplemented natively per platform ([§17.1](#171-layering))? | Decide when the port surface is first enumerated, not now. The binding requirement is that the seams exist and no platform type leaks across them ([REQ-PORT-3](#171-layering)); how much sits behind them can be settled later. **Position, 23 Aug:** the seams exist and are **mechanically enforced** — a layer-purity test fails the build on a forbidden import. The shared layer is presently Swift and deliberately temporary; the substitution toward `libppcp` has started and is what makes this decision cheap to defer. |
+| **D-REV-1** | Does [REQ-SHOT-6](#63-shot-identity) narrow to *live* nominators, with file-imported launch monitor records reconciled through `ShotLink`? | From review comment 2, still open. Needs a protocol-side answer so `CORE` and this document do not disagree. |
+| **D-REV-2** | When does [REQ-OBS-4](#12-observability)'s diagnostic mode turn itself off? | From review comment 4, still open. Recommendation stands: it expires with the session. |
+| ~~D-ID-1~~ | ~~Duplicate requirement identifier.~~ | **Resolved, 23 Aug.** `REQ-RES-1/2` named both §7.3's resolution target and §9.2's priority rule. Every reference in the implementation and the design pack meant the §9.2 sense, so §7.3's pair was renamed [REQ-RESOL-1/2](#73-resolution) and §9.2 is untouched. |
 
 ---
 
@@ -691,6 +742,20 @@ Stated in the same register as PinPoint's diagnostics specification principle, a
 
 *Added against this draft alongside `ppcp-protocol-overview.md` (model draft 4). Basis includes implementation experience: the companion app's capability, timebase, session and permission layers have been built and run on an iPhone 16, and several of the points below come from that rather than from reading. Ordered by severity.*
 
+**Disposition, as of 23 August 2026.** Each comment is left in full below, with its outcome recorded against it.
+
+| Comment | Outcome |
+|---|---|
+| 1 — REQ-PRIV-6's arithmetic | ✅ **Closed.** REQ-PRIV-6 rewritten in candidates with an explicit cap enforced by eviction. The implementation already worked this way; the requirement now matches it |
+| 2 — REQ-SHOT-6 and the launch monitor | ⏳ **Open.** Needs a protocol-side answer before the requirement can be narrowed. Tracked as **D-REV-1** |
+| 3 — the A1 capability verdict | ✅ **Closed.** New [REQ-CAP-6](#55-capability-declaration) requires the verdict to name whose policy it applies and to be advisory |
+| 4a — REQ-EXP-2's third field | ✅ **Closed in `libppcp`**, not merely specified — see the note against the comment |
+| 4b — REQ-OBS-4's exit | ⏳ **Open.** Tracked as **D-REV-2** |
+| 4c — REQ-STATE-6 worth protecting | ✅ **Noted and held.** Ported cleanly; `ReadinessMeasurement` emits a measurement and never a state name |
+| Implementation note 1 — format ranking | ✅ **Closed.** REQ-FPS-1 now states frame-rate-first |
+| Implementation note 2 — wide vs ultra-wide | ✅ **Closed.** REQ-OPT-6 now states the tie-break |
+| Implementation note 3 — what A7 may show | ✅ **Closed.** REQ-CAP-2 now states the method and the "not measured yet" answer |
+
 ## 1. REQ-PRIV-6's retention arithmetic is computed on shots, but retention attaches to candidates
 
 The three requirements are individually right and collectively inconsistent.
@@ -710,6 +775,8 @@ Compounding: **REQ-OBS-4** adds a diagnostic mode that *lowers the emission thre
 
 Suggested: express REQ-PRIV-6 in terms of candidates with a stated expected ratio and an explicit cap, rather than in terms of shots; and state whether the cap is enforced by count, by total duration, or by eviction. A bound the app can actually honour is also what makes the privacy label defensible.
 
+> ✅ **Closed, 23 August 2026.** [REQ-PRIV-6](#11-security-and-privacy) is rewritten: bounded in candidates, an explicit cap, enforced by eviction oldest-first, with the evicted window re-announced as absent. The implementation had already reached this shape — the requirement was behind the code, not ahead of it.
+
 ## 2. REQ-SHOT-6 does not accommodate the launch monitor that actually exists
 
 REQ-SHOT-6 requires that *"every nominator is modelled as a capture source with its own clock and calibration, including external devices such as launch monitors"*, on the grounds that a candidate without an identified source has no calibration to apply.
@@ -725,6 +792,8 @@ So there are two distinct things both currently called nomination:
 
 Suggested: state explicitly that file-imported launch monitor records are reconciled through `ShotLink`, **not** through candidate nomination, and narrow REQ-SHOT-6 to live nominators. Otherwise an implementer reads REQ-SHOT-6 and REQ-OFF-12 as describing the same path and builds a clock relation for a CSV.
 
+> ⏳ **Open, tracked as D-REV-1.** REQ-SHOT-6 is unchanged pending a protocol-side answer, because narrowing it here without narrowing `CORE` would put the two documents in disagreement. The consequence for delivery is bounded and known: B5's reconciliation flow (**E9.3**) is the only place it binds, and `SessionMatch` already models the file-imported case as a match rather than as a nomination.
+
 ## 3. The A1 capability verdict is host policy applied where no host exists
 
 REQ-CAP-5 is right that ingest thresholds are host policy and must not reach the protocol, and the protocol honours it (I14). But the consequence for this app is not stated anywhere in this document.
@@ -739,11 +808,17 @@ Three things follow that the requirements should say out loud:
 
 The cheapest honest fix is wording: A1 says whether the device clears *PinPoint Studio's* current bar, naming it, rather than making an unattributed judgement.
 
+> ✅ **Closed, 23 August 2026.** Adopted as new [REQ-CAP-6](#55-capability-declaration), which requires the hostless verdict to name whose ingest policy it applies, to be advisory, and not to be worded as though it rested on an optical gate that no device has yet been measured against. The remaining question the comment raises — whether a connected host's policy should be adopted for future standalone sessions — is a live product decision and is recorded against **OPEN-3**.
+
 ## 4. Smaller points
 
 **REQ-EXP-2's conversion contract needs one more field than it implies.** The requirement now correctly splits declaration across profile convention and per-frame duration. But for `nominal_frame_start` — the convention every AVFoundation source reports, so the default path on iOS — the protocol's §4.5 requires a *third* value, the fixed offset between nominal frame start and actual exposure start, and there is currently no field for it. Raised in full in the protocol review; noted here because REQ-EXP-2 is the requirement that drives it.
 
+> ✅ **Closed in the library, 23 August 2026.** `libppcp` carries `frame_start_to_exposure_offset_ns`, its sigma and its provenance, and makes them **required parameters** of `ppcp_timing_make_nominal_frame_start` — while the sibling constructor refuses the convention outright. The invariant is held by a signature rather than by an implementer's care, which is stronger than the field the comment asked for. Asserted by CT-I22 and CT-I31.
+
 **REQ-OBS-4's default-off state needs a stated exit.** A diagnostic mode that retains audio for sub-threshold events is the right tool for diagnosing false negatives, and default-off is correct. But nothing says whether it self-disables — after a session, a time limit, or an app restart. A diagnostic mode left on by a user who was helping debug something in March is a retention posture nobody chose. Suggested: it expires with the session.
+
+> ⏳ **Open, tracked as D-REV-2.** REQ-OBS-4 is unchanged pending the decision. The mode does not exist yet (**E10.3**), so nothing has been built against an unstated rule — but the rule has to be settled before it is, because "expires with the session" and "expires on restart" are different implementations, not different wordings.
 
 **REQ-STATE-6 is well specified and worth protecting.** Keeping cold/warm/armed device-internal while exporting a readiness measurement is correct and ported cleanly in the implementation. Flagged only because it is the kind of decision that gets quietly reversed the first time someone wants to debug a state transition remotely; the diagnostic bundle (REQ-OBS-1) is where that belongs instead.
 
@@ -751,8 +826,8 @@ The cheapest honest fix is wording: A1 says whether the device clears *PinPoint 
 
 ## Implementation notes that bear on these requirements
 
-From building the companion app against this document, three things proved true in practice and may be worth capturing:
+From building the companion app against this document, three things proved true in practice and may be worth capturing. **All three have since been adopted into the requirements above**, and the notes are kept because the reasoning is the useful part:
 
-- **REQ-FPS-1 is load-bearing and easy to satisfy incorrectly.** Enumerating formats is straightforward; ranking them is not. An iPhone 16 reports a 4032×3024 stills format that beats 1080p240 on resolution, and a naive "best format" selection put it on the capability card next to a verdict computed from a different mode. Ranking must be frame-rate-first, and the requirement might usefully say so, since REQ-RES-1 already argues for it on separate grounds.
-- **The same device offers 1080p240 on both the wide and the ultra-wide lens.** REQ-OPT-6 treats ultra-wide as the fallback a cramped studio *forces*, but nothing in the requirements says wide is preferred when both are equally capable — so an arbitrary tie-break can select the distorting lens for a session whose calibration is then fixed against it (REQ-OPT-6 forbids changing it later). Worth one sentence.
-- **REQ-CAP-2's "measured" cannot be obtained honestly during onboarding.** REQ-ENC-4 requires sustained rate verified under thermal load after ~40 minutes; onboarding affords seconds. The implementation currently reports "not measured yet" rather than presenting a cold three-second sample as sustained, but the requirements should state which figure A7 is allowed to show and when the real one is obtained — otherwise the cold number will quietly become the displayed one.
+- **REQ-FPS-1 is load-bearing and easy to satisfy incorrectly.** Enumerating formats is straightforward; ranking them is not. An iPhone 16 reports a 4032×3024 stills format that beats 1080p240 on resolution, and a naive "best format" selection put it on the capability card next to a verdict computed from a different mode. Ranking must be frame-rate-first, and the requirement might usefully say so, since REQ-RESOL-1 already argues for it on separate grounds. ✅ **Adopted into [REQ-FPS-1](#72-frame-rate).**
+- **The same device offers 1080p240 on both the wide and the ultra-wide lens.** REQ-OPT-6 treats ultra-wide as the fallback a cramped studio *forces*, but nothing in the requirements says wide is preferred when both are equally capable — so an arbitrary tie-break can select the distorting lens for a session whose calibration is then fixed against it (REQ-OPT-6 forbids changing it later). Worth one sentence. ✅ **Adopted into [REQ-OPT-6](#71-optical-configuration).**
+- **REQ-CAP-2's "measured" cannot be obtained honestly during onboarding.** REQ-ENC-4 requires sustained rate verified under thermal load after ~40 minutes; onboarding affords seconds. The implementation currently reports "not measured yet" rather than presenting a cold three-second sample as sustained, but the requirements should state which figure A7 is allowed to show and when the real one is obtained — otherwise the cold number will quietly become the displayed one. ✅ **Adopted into [REQ-CAP-2](#55-capability-declaration).**
