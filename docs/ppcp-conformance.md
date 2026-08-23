@@ -8,9 +8,10 @@
 | Role | `capture` |
 | Against | `PPCP-CORE` revision 9, `PPCP-MSG`, `PPCP-ENC`, `PPCP-CONF` 1.0; `PPCP-RV` revision 8 |
 | Companion | [`libppcp/docs/conformance/matrix.md`](https://github.com/PinPoint-Golf/libppcp) — the compliance record this file feeds |
-| Status | **In progress.** Session S4 wave 2: **D9's claim is filled by `ppcp-conform`** — 3 pass, 0 fail, 1 `n/a`, exit 0 (§1a). CT-S4 (6) passes. L15/L16 adopted, closing F-D5-1, F-D6-1 and F-D6-2, and erratum E4 closed F-D9-1. Earlier, wave 1: **D9's transport landed and D-compose's device half with it** — the application drives a `ppcp_peer` over a real transport for the first time (`PeerLinkPump`), `DetectAndMint` has a caller, the hostless Session opens the `audio` Stream 5.12.1a requires, and the microphone-to-ball distance reaches every Candidate's `tof_correction`. D7's rendezvous pieces are in: the pairing code decodes against the `RV` §10.3 vectors, `PRK` lives in the Keychain under 7.4's three conditions, the join is `NEHotspotConfiguration` with consent, and `_ppcp._tcp` carries 3.3a's five keys and nothing else. Earlier: S3 wave 2: **D5, D6 and D8 landed** — the acoustic detector emits every Candidate, a hostless Session mints its own Shots and its bundle carries them with their Captures, the transfer queue evicts only through the library's I38 predicate, annotations converge and coalesce, and the listener now holds its link table in `libppcp`. `make test-core` 145/145. S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
+| Status | **In progress.** Session S5 wave 2 close: **`libppcp` L17's errata E5–E29 adopted** and everything re-run against `4d0e04a` — `make test-core` 174/174, `make test-app` 29/29, `make conform` 3 pass / 0 fail / 1 n/a exit 0, `make conform-iop` both rows green. E28 closed F-S5-3 and the fix is visible on the wire (§4b); adopting E25 found F-S5-5, a `pv` this peer published that a conformant browser must discard; F-S5-6 is a gap in `ppcp-sim`. Earlier, S5: the `CONF` §5 interoperability rows (§4a) — IOP-1, IOP-2, IOP-6, IOP-10 against `ppcp-sim` and against PinPointStudio's real TLS listener. Earlier, session S4 wave 2: **D9's claim is filled by `ppcp-conform`** — 3 pass, 0 fail, 1 `n/a`, exit 0 (§1a). CT-S4 (6) passes. L15/L16 adopted, closing F-D5-1, F-D6-1 and F-D6-2, and erratum E4 closed F-D9-1. Earlier, wave 1: **D9's transport landed and D-compose's device half with it** — the application drives a `ppcp_peer` over a real transport for the first time (`PeerLinkPump`), `DetectAndMint` has a caller, the hostless Session opens the `audio` Stream 5.12.1a requires, and the microphone-to-ball distance reaches every Candidate's `tof_correction`. D7's rendezvous pieces are in: the pairing code decodes against the `RV` §10.3 vectors, `PRK` lives in the Keychain under 7.4's three conditions, the join is `NEHotspotConfiguration` with consent, and `_ppcp._tcp` carries 3.3a's five keys and nothing else. Earlier: S3 wave 2: **D5, D6 and D8 landed** — the acoustic detector emits every Candidate, a hostless Session mints its own Shots and its bundle carries them with their Captures, the transfer queue evicts only through the library's I38 predicate, annotations converge and coalesce, and the listener now holds its link table in `libppcp`. `make test-core` 145/145. S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
 | Depends on | `libppcp` — MIT, consumed as a SwiftPM package (plan A5), product `CPPCP`. Path `../../../libppcp` during co-development; `https://github.com/PinPoint-Golf/libppcp.git` once tagged. |
-| Date | 23 August 2026 (S3, wave 2) |
+| Against `libppcp` | **`4d0e04a`** — `ppcp/1.0` with errata **E1–E29**. Every row below was re-run against this commit; §4b says what adopting E5–E29 changed here. ⚠ The coordinator first named `ba1cbcb`, which does not resolve in this checkout; `4d0e04a` is what was built and run, and the correction was confirmed. |
+| Date | 23 August 2026 (S5, wave 2 close) |
 
 ---
 
@@ -63,6 +64,12 @@ invocation for each row so any one re-runs on its own.
 
 `exit 0` — every applicable row passed. Summary: **3 pass, 0 fail, 1 n/a, 0
 skipped.** Transport: plaintext, `RV` §2's `direct` path (§2c1, and F-D9-1 in §4).
+
+⚠ **Regenerated 23 August 2026 against `libppcp` `4d0e04a`**, after adopting
+errata E5–E29 (§4b). The table is unchanged from the run against `6aab730`, which
+is the result worth having: adopting eight errata — one of which changed how every
+frame of an imported Session is routed — moved no row. ⛔ Unchanged is not the same
+as unmeasured, which is why it was re-run rather than reasoned about.
 
 ### Reproducing it
 
@@ -137,7 +144,7 @@ What still needs a phone: a camera `CaptureProfile` on the wire, a Capture with
 
 ⛔ **`static` and `fixture` rows are not in this table at all**, by the tool's
 design: they are decidable from a declaration or a recorded stream and belong in
-this implementation's own suite (`make test-core`, 167 tests). CT-I34 is absent
+this implementation's own suite (`make test-core`, 174 tests). CT-I34 is absent
 for a different reason — re-import being idempotent is not visible from the wire.
 
 
@@ -925,6 +932,16 @@ is visible for the first time.
 They are written up below rather than smoothed over, because the first one changed
 the device's behaviour and the second is a finding against the tooling.
 
+⚠ **Every row here was re-run against `libppcp` `4d0e04a`** after adopting errata
+E5–E29 (§4b), and the fix for F-S5-3 is now visible on the wire rather than only in
+a header. The IOP-1 counterpart reports `candidates rx 8 … retained 6`: two
+Candidates arrived on the live Session and six in the two replayed bundles, and the
+host arbitrated the two and **held the six out**. Before E28 the same run reported
+`candidates_foreign 4, adopted 4, groups 2` — two Sessions arbitrated as one. Same
+pairing, same bundles, one erratum between them.
+
+    make conform-iop IOP_TESTS=      # both rows, and the whole app suite, in one launch
+
 | Row | Counterpart | Command | Outcome |
 |---|---|---|---|
 | **IOP-2** — foreign camera conventions, three clocks | `ppcp-sim` `three-timebase-host.json` + `reference-host` | `make conform-iop` | **pass** |
@@ -1396,6 +1413,156 @@ one. Both host summaries say so plainly: `captures_absent: 6`, `payload_frames:
 needs a phone.
 
 
+## 4b. Adopting `libppcp` L17 — errata E5–E29
+
+**Twenty-nine errata are normative and this application builds against all of
+them.** Eight needed a change here; the rest were already satisfied or belong to
+the library. What follows is what changed, and — where nothing changed — why that
+is a finding rather than a shrug.
+
+| Erratum | Clause | What this application did |
+|---|---|---|
+| **E28** | `MSG` 4.1a1, 9.1b | **Imported frames are routed apart, structurally.** See below. |
+| **E29** | `CORE` 8.2d1 | Nothing to call: this peer builds no arbiter. See below. |
+| **E25** | `RV` 3.3d, 3.3e | The version-range syntax — and it **caught a defect of ours** (F-S5-5). |
+| **E21** | `RV` 5.3a1 | `ppcp_rv_psk_identity_draw()` on every live connection. |
+| **E7** | `ENC` 6g, `MSG` 8.3h | `payload_begin` names its container on all three origination paths. |
+| **E9** | `ENC` 7h | Already adopted in S5 wave 1; the checked-in bundles are regenerated. |
+| **E19** | `CONF` 4.4 (1) | The CT-S4 assertion no longer lists `arm`; our test says so. |
+| **E24** | `RV` 4.4a2 | Confirms the build-date test this application already had is sufficient. |
+| **E26** | `RV` 7.4h | A persisted pairing now keeps the network **name**, and has nowhere to put a passphrase. |
+
+### E28 — imported frames, and why it is a type rather than a rule
+
+F-S5-3 (§4a) was found by the wave-2 pairing and is the most serious defect of the
+programme after E1. The fix in this application is not a check: **every frame of
+an imported Session arrives as `PeerLinkEvent.importedFrame` and as nothing
+else.** There is no `shotReceived` to mishandle, because an imported `shot` is not
+one; there is no instant to convert with the wrong clock, because the case that
+would convert it does not receive one. `PeerLinkPump` reads events through
+`DevicePeer.nextEventImported`, and the plain `nextEvent` is no longer on the live
+path at all.
+
+⚠ **This device is the exporter, not the importer**, and an earlier version of the
+IOP-1 row asserted otherwise — that the device would see imported frames of the
+Session *it* replayed. `ppcp_event.imported` is set on the peer that **receives** a
+replay, so the device's own imported accessors stay empty and must. What E28 gives
+an exporter is the property F-S5-3 violated, and that is what the row asserts now:
+the live Session's `timebase_ref` does not move across a replay, and every `shot`
+arriving afterwards is still expressed in it. The wave-2 summaries in §4a are the
+before picture, where it was not.
+
+### E29 — a no-op here, and the reason is worth stating
+
+`CORE` 8.2d1 requires an arbiter to **reconsider** a Candidate it excluded for want
+of a relation, once that relation arrives. `ppcp_arbiter_reconsider()` implements
+it and `shot.h` is explicit that the **embedding** must call it on a relation
+change, because the library owns no event loop.
+
+⛔ **There is nothing to call on this side.** This application declares `core,
+capture, detect, mint, live, offline, markup` and **not Arbitrate**; I20 gives
+arbitration to a peer with `role: host` and to no other, and `ppcp_arbiter_new`
+refuses this peer outright. The `relation_update` handler in `ConformanceHarness`
+says so at the point an implementer would look for the call.
+
+⚠ **The device's own half of the same problem was already structural.**
+`ppcp_mint_pump` re-tests 8.2i1 on every pump — *"a relation may have arrived since
+the nomination"* — so a Candidate this peer could not express when it made it
+becomes mintable the moment it can. That is E29's rule on the minting side, and it
+needed no call and no change.
+
+### F-S5-6 — `ppcp-sim` never calls `ppcp_arbiter_reconsider()`
+
+**Whose defect: the conformance tooling** (`libppcp` `tools/ppcp-sim`).
+
+The IOP-2 row holds its injected swing until an instant is expressible in
+`Session.timebase_ref` (`nominateOnlyOnceConvertible`), which S5 wave 1 introduced
+as the workaround for F-S5-1. E29 should have made it unnecessary. It has not,
+because **the simulator does not call the function**: there is no occurrence of
+`reconsider` anywhere in `tools/ppcp-sim`, and its host tick pumps the arbiter
+without reconsidering. So against this counterpart a Candidate nominated before
+§6.3's burst converged is still retained for the life of the Session, exactly as
+F-S5-1 described, and E29 is **not observable through the conformance tool**.
+
+The hold therefore stays, and the row records why: the gap is in the tool, not in
+the library and not here.
+
+⚠ **The row also cannot retry to find out**, and an attempt to make it
+self-verifying failed for a reason worth recording. `ppcp-sim` binds exactly one
+link — *"a second link_id was offered; this simulator binds one link"*
+(`sim_net.c`) — so a version of the test that ran without the hold and fell back
+to it had its second dial refused with `ECONNREFUSED`, and the row failed for
+something with nothing to do with conformance. One counterpart, one dial, one row.
+
+### F-S5-5 — this peer advertised a `pv` a conformant browser must discard
+
+**Whose defect: this application**, and it is the erratum earning its keep.
+
+`RV` 3.3d (E25) defines the version-range syntax for the first time: `LOW` or
+`LOW-HIGH`, endpoints inclusive and sharing a MAJOR, several MAJORs
+comma-separated — and *"a reader that cannot parse a range ignores that
+advertisement rather than guessing"*.
+
+`DiscoveryAdvertisement` defaulted `pv` to `PpcpLibrary.wireVersion`, which is the
+wire **token** `ppcp/1.0`. That is not a range: each endpoint must be
+`MAJOR.MINOR` as `CORE` 10.1b defines it. So this peer was publishing a TXT record
+every conformant browser is **required to discard**, and would have been invisible
+on the discovery path to anyone who implemented 3.3d. Nothing before E25 could have
+caught it — the syntax was defined nowhere, which is precisely the reason the
+erratum exists (three documents spelled one idea three ways).
+
+`pv` is now `PpcpLibrary.wireVersionRange` — `1.0` — and the browser side parses
+rather than string-matches: an advertisement whose `pv` this build cannot parse is
+not offered to the user at all, which is the same answer 3.4c already gives for an
+unresolvable `rid`. Both directions are asserted in
+`Packages/Core/Tests/CaptureCoreTests/ErrataTests.swift`, including the negative
+one — `ppcp/1.0` must **not** read as a range, or the defect returns.
+
+⚠ `hello.versions` is untouched and stays an ordered **list** of exact tokens
+(3.3e): a range describes, a list offers, and the two are deliberately different.
+
+### E21, E7, E24, E26, E19 — the rest
+
+**E21 — no octet of a PSK identity may be `0x00`.** `RendezvousCredentials`
+now draws through `ppcp_rv_psk_identity_draw()`. Several widely-used TLS stacks
+carry the identity as a C string and take its length with `strlen`: an embedded
+zero truncates it and the handshake fails **one connection in sixteen**, which at a
+driving range is diagnosed as a network fault. ⚠ `ppcp_rv_psk_identity` stays
+reachable and is deliberately not fixed, because `RV` §10.2's vector must still
+reproduce byte for byte; it is simply the wrong entry point for a socket. The test
+drives the draw with a generator that returns zeros every other call and asserts
+no identity ever contains one.
+
+**E7 — the container.** `payload_begin` now names an IANA media type on all three
+paths that originate one — the bundle writer, the live transfer queue and the
+preview producer — through `ppcp_peer_payload_begin_as()`. `ENC` 6h forbids a
+receiver inferring it, and it could not: H.264 alone is QuickTime, fragmented MP4
+and Annex B, and those are three different files. ⚠ The value is `video/mp4` today
+and is **honest in advance of the ring**: when `RingBufferRecorder` is wired, an
+`AVAssetWriter` clip is exactly that, and the codec is already in the
+`CaptureProfile` where it belongs.
+
+**E24 — the clock test.** 4.4a2 names three positive reasons to distrust a wall
+clock and says a peer that can evaluate only the first is conformant. This
+application already implemented only the first — the clock reading earlier than the
+binary's own build date — because test 2 is not readable on iOS, and that was our
+finding (F-D7-1). The erratum settles it; the code now cites 4.4a2 and states which
+of the three it does and why the other two are absent. **No behaviour changed**,
+which is the outcome a decision-erratum should have.
+
+**E26 — the network name.** A persisted pairing keeps `wifi.s` and never `wifi.k`.
+`StoredPairing` gains `networkName`; the Keychain item carries it in
+`kSecAttrDescription`. ⛔ There is deliberately **no field for a passphrase**, so
+a later change that looked reasonable cannot fill one in. It is a hint offered to
+the user, never an instruction: 6a is unchanged, this peer does not join a network
+on its own, and holding no passphrase it could not.
+
+**E19 — CT-S4 assertion 1.** The assertion listed `arm`, and 7.3b forbids a
+hostless bundle containing one. Our test of that refusal is unchanged and still
+worth having; what changed is what it claims to be — a test of 7.3b, not the
+exercise of a row that no longer asks for `arm`.
+
+
 ## 5. What is deferred, and on what
 
 **Nothing is deferred on `libppcp` any more.** L6 (the peer engine) and L8 (the bundle writer and reader) landed on 22 August 2026, and both fences this file described in the previous revision — `PPCP_L6_PEER_ENGINE` and `PPCP_L8_BUNDLE_WRITER` — are gone rather than merely defined. The code behind them was rewritten against the real API, not switched on: the planned signatures had changed in three places (`ppcp_peer_feed` gained `out_consumed`, `ppcp_peer_config` gained `versions`/`min_version`/`listener`, and `ingest_policy` gained `out_reason`), and a fence turned on unread would have compiled against none of them.
@@ -1447,7 +1614,7 @@ device dialled and the failure read as a refused connection. `build-for-testing`
 then `test-without-building` is what makes the window the test's rather than the
 compiler's.
 
-⚠ **`make test-core` is green: 167 tests, 22 suites.** Every `pass` in §3 is one of
+⚠ **`make test-core` is green: 174 tests, 23 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
 
 ⛔ **`make conform-iop` starts TWO counterparts and runs the suite once**, and that
@@ -1461,7 +1628,7 @@ assertion is the tool's exit code rather than anything written here.
 `--expect violations=0` held and `errors 0` in the simulator's own report. See
 CT-S5 (device) in §3 for the transcript.
 
-⚠ **`make test-app` is green: 28 tests, 6 suites**, on an iPhone 17 Pro simulator.
+⚠ **`make test-app` is green: 29 tests, 6 suites**, on an iPhone 17 Pro simulator.
 Five of them report a known issue and every one is a **skip**, not a failure: the
 two D9 harness tests, the two `CONF` §5 rows and the wave-2 interop test all need
 a counterpart handed in through the environment, and a test that failed for a

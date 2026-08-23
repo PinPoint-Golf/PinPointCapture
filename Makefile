@@ -364,6 +364,12 @@ conform-tool: gen
 # ⛔ **`--run-ms` outlives the test, deliberately.** A counterpart that exits
 # first closes the link mid-row and the failure reads as a refusal.
 IOP_RUN_MS ?= 200000
+# Which tests the run drives. ⚠ **`make conform-iop IOP_TESTS=` runs the WHOLE
+# suite**, which is how one simulator launch covers `make test-app` as well as
+# the two rows: booting, installing and launching costs tens of seconds and the
+# rest of the suite needs no counterpart — every test that does skips without a
+# port in the environment.
+IOP_TESTS ?= -only-testing:PinPointCaptureTests/ConformanceHarnessTests
 
 conform-iop: gen
 	@if [ ! -x "$(PPCP_SIM)" ]; then \
@@ -411,7 +417,7 @@ conform-iop: gen
 		-configuration $(CONFIG) \
 		-destination '$(TEST_DEST)' \
 		-derivedDataPath $(DERIVED) \
-		-only-testing:PinPointCaptureTests/ConformanceHarnessTests \
+		$(IOP_TESTS) \
 		-default-test-execution-time-allowance 300 \
 		-maximum-test-execution-time-allowance 600 \
 		2>&1 | grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || rc=$$?; \
