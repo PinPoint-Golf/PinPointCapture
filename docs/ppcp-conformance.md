@@ -8,7 +8,7 @@
 | Role | `capture` |
 | Against | `PPCP-CORE` revision 9, `PPCP-MSG`, `PPCP-ENC`, `PPCP-CONF` 1.0; `PPCP-RV` revision 8 |
 | Companion | [`libppcp/docs/conformance/matrix.md`](https://github.com/PinPoint-Golf/libppcp) — the compliance record this file feeds |
-| Status | **In progress.** Session S3 wave 2: **D5, D6 and D8 landed** — the acoustic detector emits every Candidate, a hostless Session mints its own Shots and its bundle carries them with their Captures, the transfer queue evicts only through the library's I38 predicate, annotations converge and coalesce, and the listener now holds its link table in `libppcp`. `make test-core` 145/145. S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
+| Status | **In progress.** Session S4 wave 1: **D9's transport landed and D-compose's device half with it** — the application drives a `ppcp_peer` over a real transport for the first time (`PeerLinkPump`), `DetectAndMint` has a caller, the hostless Session opens the `audio` Stream 5.12.1a requires, and the microphone-to-ball distance reaches every Candidate's `tof_correction`. D7's rendezvous pieces are in: the pairing code decodes against the `RV` §10.3 vectors, `PRK` lives in the Keychain under 7.4's three conditions, the join is `NEHotspotConfiguration` with consent, and `_ppcp._tcp` carries 3.3a's five keys and nothing else. Earlier: S3 wave 2: **D5, D6 and D8 landed** — the acoustic detector emits every Candidate, a hostless Session mints its own Shots and its bundle carries them with their Captures, the transfer queue evicts only through the library's I38 predicate, annotations converge and coalesce, and the listener now holds its link table in `libppcp`. `make test-core` 145/145. S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
 | Depends on | `libppcp` — MIT, consumed as a SwiftPM package (plan A5), product `CPPCP`. Path `../../../libppcp` during co-development; `https://github.com/PinPoint-Golf/libppcp.git` once tagged. |
 | Date | 23 August 2026 (S3, wave 2) |
 
@@ -35,11 +35,12 @@
 
 | Part | Claimed | State |
 |---|---|---|
-| **Pairing code** (`RV` §4) — REQUIRED of any RV implementation | yes | D7. The device is the **scanner**, therefore the dialler and the TLS client (`RV` 2d, 5.2g). |
+| **Pairing code** (`RV` §4) — REQUIRED of any RV implementation | yes | **D7 landed.** The device is the **scanner**, therefore the dialler and the TLS client (`RV` 2d, 5.2g). Decode, the three failure sentences of 4.2b/4.4a/4.4b, and the endpoint walk of 4.3c are in `RendezvousCoordinator`; the §10.3 vectors reproduce in `make test-core`. |
 | **Key derivation and TLS** (`RV` §5) | yes | D0 + D1 landed. The derivation is `libppcp`'s (`ppcp_rv_derive`, `ppcp_rv_psk_identity`); TLS lives in the application and never in the library (plan A7). |
-| **Security model** (`RV` §7) | yes | D1 landed the transport half; the secret-handling half is D7. |
+| **Security model** (`RV` §7) | yes | D1 landed the transport half; **D7 landed the secret-handling half** — `PRK` only (5.1c), Keychain `ThisDeviceOnly` (7.2c, 7.4c), opt-in/visible/revocable (7.4b), and refused outright for `mu > 1` through the library's own predicate (7.4f). |
 | **Service discovery** (`RV` §3) | **intended, and now in doubt** | See the finding in §4. The device can advertise, but a Network.framework listener cannot accept a conformant rotating PSK identity, and on the discovery path the advertiser listens. |
-| **Network join** (`RV` §6) | intended | D7. `NEHotspotConfiguration` with consent before the endpoint walk. |
+| **Network join** (`RV` §6) | **yes, with 6b's second branch** | D7. `NEHotspotConfiguration` names the network in a system alert (6a) and the join precedes the endpoint walk (4.3f, 6e). ⛔ On session end the configuration is **removed** and the user is told; iOS cannot reassociate a previously-used network, which is the case 6b's disjunction was written for and which it calls conformant. |
+| **Direct path** (`RV` §2, §9a) | **debug builds only** | D9's conformance harness. Plaintext TCP so `ppcp-sim` can drive this peer; see F-D9-1 for why that is a finding as well as a capability. |
 
 ---
 
@@ -550,6 +551,123 @@ overflow the ring for the same reason. `SessionBundleReader` is used with a `nil
 sink everywhere in this application, so nothing here is affected today; it is
 recorded because the replay path of `MSG` 9.1 is the case where it would be.
 
+### Raised from D-compose, D7 and D9
+
+**F-D9-1 — `RV` 2c forbids the transport `CONF` §2c's own test infrastructure
+requires.**
+2c is a MUST: "Whichever path is used, the resulting connection completes the
+handshake of §5 before any PPCP message crosses it. There is no unauthenticated
+path." 9a is equally clear the other way: "Implementing `PPCP-RV` is OPTIONAL. A
+peer connecting only over a tunnel, or handed an established socket, is fully
+PPCP-conformant with no rendezvous implementation." `CONF` 2c requires a software
+peer simulator both sides develop against, and `libppcp`'s `ppcp-sim` speaks
+**plaintext TCP** deliberately — its own README says "a simulator that spoke TLS
+would be testing OpenSSL rather than PPCP".
+
+So an implementation that *claims* `PPCP-RV` conformance — which this one does,
+and which 9b then binds to §5 and §7 in full — has no conformant way to reach the
+simulator the conformance document requires it to develop against. The two clauses
+are individually right and jointly unsatisfiable for the case the suite is built
+around.
+
+⛔ **Not worked around: fenced.** `PpcpDirectTransport` and `ConformanceHarness`
+are `#if DEBUG` in their entirety and a release build contains neither; the
+rendezvous path still has no plaintext branch by construction (5.2f). The claim
+this implementation makes is that its **RV paths** meet 2c, and that its debug
+harness is 9a's case rather than an RV path. **Suggested:** one sentence in §2
+saying that the `direct` path is outside 2c's scope where no rendezvous is
+claimed on it, or in §9 saying a conformance harness is not a deployment.
+
+**F-D7-1 — `RV` 4.4a1's first reason for distrusting the clock is not readable on
+iOS.**
+4.4a1 names two positive reasons: "never synchronised since boot, or reading
+earlier than the software's own build date". The second is implementable — this
+application compares against the executable's own modification date rather than a
+compiled-in literal, because a constant baked at source-edit time drifts from the
+binary. The first is not: iOS has no public interface reporting whether the system
+clock has been set from the network, and the plausible substitutes (a
+`mach_continuous_time` comparison, a `kern.boottime` read) answer a different
+question. So this peer's `untrusted` verdict rests on one of the two reasons, and
+a device with a clock that is merely *unset* rather than *backwards* reads as
+trusted and refuses a valid code.
+
+⚠ Not a defect in the clause — it is a platform gap, and 4.4a1 is a SHOULD. It is
+recorded because the failure it produces is the one 4.4a1 exists to prevent, and
+because a reader would reasonably assume both reasons are available.
+
+**F-D7-2 — `RV` 3.3a's `pv` admits a range whose syntax is defined nowhere.**
+The TXT table gives `pv` as "e.g. `1.0` or `1.0-1.2`" and 3.3a says a browser
+"filters on MAJOR **before** connecting". Neither this document nor `CORE` §10.1
+defines the range form: whether the separator is a hyphen, whether the endpoints
+are inclusive, whether a list (`1.0,1.2`) is also permitted, and what a browser
+does with `1.0-1.2` when it implements only `1.1`. `MSG` 3.1b has a peer send an
+ordered *list* of versions inside the channel, which is a third spelling of the
+same idea.
+
+This implementation advertises the single version `ppcp_wire_version()` returns
+and parses `pv` only far enough to compare a MAJOR, which is the conservative
+reading. Two implementations choosing differently would fail to discover each
+other and would look like a multicast problem, which is the hardest class of bug
+to attribute. **Suggested:** state the grammar, or drop the range and make `pv` a
+comma-separated list matching `MSG` 3.1b.
+
+**F-D7-3 — a persisted pairing cannot rejoin the network its code named.**
+§6 puts network credentials in the pairing code. 4.4c forbids retaining the
+payload "after the pairing it establishes has ended", and §7.4 persists `PRK` and
+nothing else. So a peer that took 7.4a's option and comes back tomorrow holds the
+key material to complete the handshake and **no way to get onto the network the
+host is on** — the SSID and passphrase were in the payload it was required to
+discard, and 6b has just removed the configuration.
+
+The workflow §7.4 exists to serve — "so a later session can be established without
+displaying a new code" — therefore does not work at a venue that provides its own
+network, which §6 says is the case worth optimising for. The gap is not visible
+from either clause alone.
+
+⚠ This implementation does **not** work around it: it persists `PRK` only, and a
+reconnection that cannot reach the host falls back to a new code (3.6b). Two
+plausible fixes and neither is this repository's to choose: permit the SSID (not
+the passphrase) to be persisted alongside `PRK`, or have 6b's first branch keep
+the configuration where the pairing was persisted.
+
+**F-D7-4 — `RV` 3.4d leaves a device with several pairings unable to advertise
+usefully.**
+"A peer holding several pairings advertises the one it is offering to reconnect.
+Advertising several simultaneously is not specified — see Annex B3." A capture
+device that has been paired with two bays in the same building has no way to
+choose, and no way to be found by whichever host is present. This is flagged in
+Annex B3 as open, so it is recorded here only as *reached in practice*: the device
+side is exactly where it bites, because the device is the peer 3.5b says should
+advertise.
+
+⚠ This implementation advertises the most recently used pairing and says so on
+screen. That is a policy invented here, which is what a specification gap
+produces.
+
+**F-L13-1 — ✅ closed, 23 August 2026** (`libppcp` 27b40c4). `ppcp_peer_feed` now
+stops when the event queue is full and reports what it consumed, with
+`ppcp_peer_feed_stalled()` distinguishing that from a partial frame and
+`ppcp_peer_events_dropped()` counting what was lost anyway. `DevicePeer.feed` has
+dropped the hand-written frame walk it needed to avoid the drop and follows the
+loop `peer.h` documents. ⚠ The harness asserts `events_dropped == 0`, which
+`peer.h` names as the check a conformance harness makes.
+
+**F-D6-3 — ✅ closed, 23 August 2026** (`libppcp` 42a690a). A peer that originates
+`session_open` now records its own parameters, so `ppcp_peer_session_params()` is
+non-`NULL` and `ppcp_peer_zero_host()` is true for `CORE` 4.1b's case.
+`LiveLinkTests.hostlessMintWorksForTheWrongReason` was written to fail the day it
+was fixed; it did, and is now inverted to assert that minting takes the hostless
+branch *because the predicate says so* rather than because two parameters happened
+to default to zero.
+
+**F-D3-2 — ✅ closed.** `ppcp_peer_session_manifest()` is in `peer.h`.
+⚠ `SessionBundleWriter.recordManifest` still assembles the `ppcp_msg` by hand and
+is **not yet moved onto it** — the hand-built path is tested and the swap is a
+change with no new assertion behind it, so it is queued rather than rushed. F-D3-1
+(the 48 KB union) stands as a hazard for anyone who does touch it.
+
+---
+
 ## 5. What is deferred, and on what
 
 **Nothing is deferred on `libppcp` any more.** L6 (the peer engine) and L8 (the bundle writer and reader) landed on 22 August 2026, and both fences this file described in the previous revision — `PPCP_L6_PEER_ENGINE` and `PPCP_L8_BUNDLE_WRITER` — are gone rather than merely defined. The code behind them was rewritten against the real API, not switched on: the planned signatures had changed in three places (`ppcp_peer_feed` gained `out_consumed`, `ppcp_peer_config` gained `versions`/`min_version`/`listener`, and `ingest_policy` gained `out_reason`), and a fence turned on unread would have compiled against none of them.
@@ -571,8 +689,23 @@ recorded because the replay path of `MSG` 9.1 is the case where it would be.
 ```
 make test-core      # the neutral layer, the RV §10 vectors and the bundle round trip, on the host
 make test-app       # the TLS-PSK handshake and the ENC §2.1 bind, on a simulator
+make conform        # D9 — this device's peer against libppcp's ppcp-sim
 make gen && make build
 ```
+
+⚠ **`make conform` needs a sibling `../libppcp` with `ppcp-sim` built.** It starts
+the simulator peer on an ephemeral port, hands the port to the test through
+`TEST_RUNNER_PPCP_CONFORM_PORT`, runs the harness suite and then asserts
+`ppcp-sim`'s own exit — so a violation **it** observed fails the target, which is
+the half a test written here cannot check. Point it at another scenario with
+`make conform SCENARIO=silent-host`.
+
+⛔ **Build first, then start the counterpart.** The first version of the target
+started `ppcp-sim` and then ran `xcodebuild test`, which builds — and a compile is
+minutes while `--run-ms` is seconds, so the simulator peer had exited before the
+device dialled and the failure read as a refused connection. `build-for-testing`
+then `test-without-building` is what makes the window the test's rather than the
+compiler's.
 
 ⚠ **`make test-core` is green: 145 tests, 17 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.

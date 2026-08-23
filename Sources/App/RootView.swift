@@ -17,6 +17,9 @@ import CaptureCore
 enum AppRoute: Hashable {
     case sessionLibrary
     case replay(Shot)
+    /// A8 — the microphone-to-ball distance (D7). ⚠ A push rather than a sheet:
+    /// it is a setting a golfer returns to, not a decision blocking a flow.
+    case micToBallDistance
 }
 
 /// Modally presented screens.
@@ -25,6 +28,10 @@ enum AppSheet: Identifiable {
     case hostPanel
     /// B1, modal from A7 or from the host sheet.
     case connectHost
+    /// B1a — scanning a `ppcp:` code (`RV` §4). ⛔ The `failure` is carried on the
+    /// case because 4.2b/4.4a/4.4b are three different sentences and the screen
+    /// has to know which one it is showing.
+    case scanPairingCode(failure: ScanPairingCodeView.Failure?)
     /// B4, when a scanned pairing code carries a network.
     case joinNetwork(ssid: String)
     /// B6, inferred from a connection failure — never from a permission query.
@@ -36,6 +43,7 @@ enum AppSheet: Identifiable {
         switch self {
         case .hostPanel: "hostPanel"
         case .connectHost: "connectHost"
+        case .scanPairingCode: "scanPairingCode"
         case .joinNetwork: "joinNetwork"
         case .localNetworkBlocked: "localNetworkBlocked"
         case .reconcileSession: "reconcileSession"
@@ -47,6 +55,12 @@ struct RootView: View {
     @State private var model = AppModel()
     @State private var path: [AppRoute] = []
     @State private var sheet: AppSheet?
+    /// 7.4b — persistence is opt-in, so the toggle starts **off**.
+    @State private var persistPairing = false
+    private let rendezvous = RendezvousCoordinator()
+    /// Held only between the consent sheet and the resumed walk. ⛔ `RV` 4.4c —
+    /// the payload is not retained after the pairing it establishes has ended.
+    @State private var pendingCode: String?
 
     var body: some View {
         Group {
@@ -118,6 +132,16 @@ struct RootView: View {
                 onExportSession: {}
             )
 
+        case .micToBallDistance:
+            // ⚠ 8.1d — the setting Mark asked for on 23 August 2026. It reaches
+            // every Candidate's `tof_correction` through `CandidateFactory`, and
+            // it takes effect on the next arm rather than mid-session.
+            MicToBallDistanceView(
+                distance: $model.micToBallDistance,
+                wasChosen: model.micToBallDistanceWasChosen,
+                isSessionOpen: model.recording != nil,
+                onDone: { path.removeLast() })
+
         case .replay(let shot):
             ReplayScreen(
                 shot: shot,
@@ -170,14 +194,34 @@ struct RootView: View {
                     model.hostLink = PreviewFixtures.connected
                     self.sheet = nil
                 },
-                onEnterCode: {},
+                onEnterCode: { self.sheet = .scanPairingCode(failure: nil) },
                 onUseCable: {},
                 onCaptureWithoutHost: { self.sheet = nil }
             )
 
+        case .scanPairingCode(let failure):
+            NavigationStack {
+                ScanPairingCodeView(
+                    failure: failure,
+                    // ⛔ 7.4f — the offer is withheld for a `mu > 1` code rather
+                    // than shown and then refused.
+                    mayPersist: persistPairing || failure == nil,
+                    persistPairing: $persistPairing,
+                    onCode: { uri in Task { await scan(uri) } },
+                    onCancel: { self.sheet = nil })
+            }
+
         case .joinNetwork(let ssid):
             JoinNetworkView(ssid: ssid,
-                            onJoin: { self.sheet = nil },
+                            onJoin: {
+                                // 6a — consent given; resume at the join, then the
+                                // endpoint walk (4.3f).
+                                guard let uri = pendingCode else { self.sheet = nil; return }
+                                Task {
+                                    _ = await rendezvous.continueAfterJoining(uri)
+                                    self.sheet = nil
+                                }
+                            },
                             onStayOnCurrentNetwork: { self.sheet = nil })
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
@@ -204,6 +248,39 @@ struct RootView: View {
                     onSendAsNewSession: { self.sheet = nil }
                 )
             }
+        }
+    }
+
+    // MARK: Rendezvous (RV §4, §6, §7.4)
+
+    /// The whole of `RV` §4.4 in one place: decode, expiry, the network, then the
+    /// endpoints — in that order, because 4.3f puts the join **before** the walk.
+    ///
+    /// ⛔ Three failures, three screens, and none of them is a generic one.
+    private func scan(_ uri: String) async {
+        switch await rendezvous.scan(uri) {
+        case .connected:
+            // 7.4b — persisted only where the user asked and 7.4f permits.
+            try? await rendezvous.persistPairing(consent: persistPairing)
+            model.hostLink = HostLink(state: .pairing)
+            sheet = nil
+        case .needsANewerApplication:
+            sheet = .scanPairingCode(failure: .needsANewerApplication)
+        case .invalidCode:
+            sheet = .scanPairingCode(failure: .invalidCode)
+        case .expired:
+            sheet = .scanPairingCode(failure: .expired)
+        case .needsNetworkConsent(let network):
+            // 6a — the consent is for the **specific** network, so the sheet names
+            // it and the walk does not continue until it is given.
+            pendingCode = uri
+            sheet = .joinNetwork(ssid: network.ssid)
+        case .couldNotJoinNetwork(let reason):
+            sheet = .scanPairingCode(failure: .couldNotJoinNetwork(reason))
+        case .noEndpointReachable(let tried, let blocked):
+            // `RV` §8 — inferred from the symptom, never from a permission query.
+            sheet = blocked ? .localNetworkBlocked
+                            : .scanPairingCode(failure: .noEndpointReachable(triedCount: tried))
         }
     }
 

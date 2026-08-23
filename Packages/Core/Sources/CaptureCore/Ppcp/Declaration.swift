@@ -262,9 +262,20 @@ public final class PpcpDeclaration: @unchecked Sendable {
     /// the single owner, which is what let the `catch` below stop releasing.
     public private(set) var sources: [SourceView] = []
 
-    public init(_ input: PpcpDeclarationInput) throws {
+    /// - Parameter allowingNoCameraSource: ⛔ **`false` everywhere except D9's
+    ///   conformance harness.** A capture device with no camera is a broken
+    ///   capture device and `noCameraSource` is this application's product rule
+    ///   saying so — it is **not** a protocol rule: `CORE` §5.2 lets a Peer own no
+    ///   Source ("a Peer owning none participates fully"), `CONF` CT-I12 loads
+    ///   IMU-only bundles, and `ppcp-sim`'s `observer-core.json` declares an empty
+    ///   list. The harness runs on a simulator, which really does have no camera,
+    ///   and the honest declaration there is one with a microphone and an IMU and
+    ///   no camera Source. Defaulting it to `true` would let the rule erode
+    ///   everywhere; naming it at one call site is what keeps it a rule.
+    public init(_ input: PpcpDeclarationInput,
+                allowingNoCameraSource: Bool = false) throws {
         // ── Sources, planned before anything is allocated ─────────────────────
-        let plans = try Self.plan(input)
+        let plans = try Self.plan(input, allowingNoCameraSource: allowingNoCameraSource)
 
         let profileTotal = plans.reduce(0) { $0 + $1.profiles.count }
         timebaseStorage = .allocate(capacity: max(input.timebases.count, 1))
@@ -584,7 +595,8 @@ public final class PpcpDeclaration: @unchecked Sendable {
         let profiles: [ProfilePlan]
     }
 
-    private static func plan(_ input: PpcpDeclarationInput) throws -> [SourcePlan] {
+    private static func plan(_ input: PpcpDeclarationInput,
+                             allowingNoCameraSource: Bool = false) throws -> [SourcePlan] {
         var plans: [SourcePlan] = []
 
         // ── One Source per PHYSICAL lens (5.6d) ───────────────────────────────
@@ -614,7 +626,9 @@ public final class PpcpDeclaration: @unchecked Sendable {
                     .sorted { ($0.height, $0.fps) > ($1.height, $1.fps) }
                     .map { try cameraProfile($0, input: input) }))
         }
-        guard plans.isEmpty == false else { throw PpcpDeclarationError.noCameraSource }
+        guard plans.isEmpty == false || allowingNoCameraSource else {
+            throw PpcpDeclarationError.noCameraSource
+        }
 
         // ── The microphone, on the SAME timebase (I4) ─────────────────────────
         //

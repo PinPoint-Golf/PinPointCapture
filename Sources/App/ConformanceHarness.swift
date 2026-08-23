@@ -55,6 +55,9 @@ public actor ConformanceHarness {
         public var errorCodes: [String] = []
         /// F-L13-1 — ⛔ non-zero is a defect in this application's feed loop.
         public var droppedEvents: UInt64 = 0
+        /// Whether the hardware enumerated a camera. ⛔ `false` on a simulator,
+        /// and the row says what that costs.
+        public var declaredCamera = true
         /// One line per event, for the debug screen and for a failure message.
         public var transcript: [String] = []
 
@@ -97,6 +100,24 @@ public actor ConformanceHarness {
         do {
             declaration = try PpcpDeclaration(
                 device.ppcpDeclarationInput(peerId: peerId, viewpoint: nil))
+            report.declaredCamera = true
+        } catch CaptureDeviceError.noPhysicalCameraFound {
+            // ⚠ **A simulator has no camera, and the honest declaration says so.**
+            // `CORE` §5.2 lets a Peer own no Source of a given kind — "a Peer
+            // owning none participates fully" — so this declares the microphone
+            // and the IMU and no camera Source, which is what this hardware
+            // actually enumerated. ⛔ It does **not** invent a 1080p150 camera to
+            // make the run look complete: the whole value of a conformance
+            // harness is that it declares what is there.
+            //
+            // The consequence is stated on the row rather than hidden: everything
+            // downstream of a camera Source — the video Stream, a Capture with
+            // `achieved_frames`, CT-S7 (4)'s conversion — is not exercised by a
+            // simulator run and needs a phone.
+            declaration = try PpcpDeclaration(
+                try Self.declarationWithoutACamera(peerId: peerId),
+                allowingNoCameraSource: true)
+            report.declaredCamera = false
         } catch {
             throw HarnessError.declarationUnavailable(String(describing: error))
         }
@@ -216,6 +237,39 @@ public actor ConformanceHarness {
         report.droppedEvents = (try? await pump.perform { $0.droppedEventCount }) ?? 0
         await pump.stop(.normal)
         return report
+    }
+
+    /// The declaration a device with no camera makes.
+    ///
+    /// ⚠ Assembled here rather than by loosening `AVFoundationCaptureDevice`,
+    /// because `enumerateCapability()` refusing a device with no camera is
+    /// **correct** for A1's capability card and for arming: a phone whose camera
+    /// failed must not report itself able to capture. What a harness needs is a
+    /// different question — "declare what this hardware is" — and answering it
+    /// here keeps the shipping path unchanged.
+    private static func declarationWithoutACamera(peerId: String) throws
+        -> PpcpDeclarationInput {
+        let identifier = DeviceProfiles.currentIdentifier
+        guard let timing = DeviceProfiles.ppcp(for: identifier) else {
+            throw HarnessError.declarationUnavailable("no timing profile for \(identifier)")
+        }
+        return PpcpDeclarationInput(
+            peerId: peerId,
+            profiles: PpcpProfileSet.device,
+            timebases: PpcpTimebases.all,
+            captureTimebaseId: PpcpTimebases.captureId,
+            // ⛔ Empty, because that is what was enumerated. A12.
+            capability: DeviceCapability(modelIdentifier: identifier,
+                                         modelName: DeviceProfiles.profile(for: identifier)
+                                             .marketingName,
+                                         claimed: []),
+            timing: timing,
+            clipCodec: "hevc",
+            declaresMicrophone: true,
+            declaresIMU: true,
+            viewpoint: nil,
+            product: ("Apple", DeviceProfiles.profile(for: identifier).marketingName,
+                      ProcessInfo.processInfo.operatingSystemVersionString))
     }
 
     // MARK: The Session

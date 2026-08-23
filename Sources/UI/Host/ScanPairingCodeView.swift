@@ -223,7 +223,13 @@ struct PairingCodeScannerView: UIViewControllerRepresentable {
         context.coordinator.preview = preview
         context.coordinator.session = session
 
-        Task.detached { session.startRunning() }
+        // ⚠ `startRunning()` blocks, so it must not run on the main actor — and
+        // the session cannot be captured by a `Task.detached` closure without
+        // crossing an isolation boundary Swift 6 refuses. A plain dispatch to a
+        // background queue is what this is: no isolation to cross, and the object
+        // is `AVCaptureSession`, which Apple documents as safe to configure and
+        // start off the main thread.
+        DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
         return controller
     }
 

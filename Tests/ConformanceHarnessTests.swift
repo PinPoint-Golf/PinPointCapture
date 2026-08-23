@@ -84,6 +84,13 @@ struct ConformanceHarnessTests {
         #expect(report.sessionId != nil, "\(transcript)")
 
         // §5.11 — a Stream per declared Source.
+        //
+        // ⚠ **A simulator has no camera**, so this peer declares no camera Source
+        // and opens no `video` Stream. That is the honest declaration and it is
+        // asserted rather than papered over: the run covers the handshake, the
+        // Session, the `audio` and `metadata` Streams, the sync exchange and the
+        // nomination path. Everything downstream of a camera Source needs a phone
+        // and is recorded as such in `docs/ppcp-conformance.md`.
         #expect(report.streamsOpened.isEmpty == false, "\(transcript)")
 
         // ⛔ No `error` frame came back. `ppcp-sim` answers `error` for a message
