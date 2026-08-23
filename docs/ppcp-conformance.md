@@ -449,12 +449,30 @@ offset *and* rate there is no reading of `timebase_ref` at all, the pump does no
 run, and the Candidates stay retained — which is 8.2i's "held until the deadline"
 rather than a failure, and is the opposite of substituting a zero (5.4b, 8.2i1).
 
-⚠ **The row stays `impl` because the re-run has not completed.** `xcodebuild
-test-without-building` wedged twice on this machine with two builds in flight,
-which is a local resource problem and not a conformance result; the fix is
-committed and the command is above. **The `reference-host` row is unaffected** —
-it asserts the handshake, the Session, the Streams, the sync and the nomination,
-and none of those reads `timebase_ref`.
+⚠ **The row stays `impl` because the fix did not close it, and that is a
+correction to an earlier revision of this file.** The previous text said the
+re-run had not completed. It had: the post-fix run finished, and
+`shotsMinted` was **still zero**. The claim was written from a wedged
+`xcodebuild` and the log was read too early — which is exactly the discipline this
+file asks for elsewhere, applied to itself.
+
+⛔ **So the fix corrected a real defect and did not produce a Shot**, and the two
+remaining explanations are not the same fact:
+
+- 8.2i1 held and the pump *correctly* never ran, because no relation to the host's
+  `timebase_ref` was available to express "now" in. Not minting is then the
+  conformant answer, and the row is blocked on 6.3a rather than on 8.2i.
+- Or the relation exists and `issue_hold_ns` is simply longer than the harness's
+  eight-second window.
+
+`shotsMinted == 0` looks identical in both. The harness now reports
+`referenceInstantAvailable`, `hasArbitration` and `issueHoldNs`, and the suite
+asserts all three so a failure names which one it is. **Nothing is claimed for
+CT-S4 (6) until that run says.**
+
+⚠ **The `reference-host` row is unaffected** — it asserts the handshake, the
+Session, the Streams, the sync burst and the nomination, and none of those reads
+`timebase_ref`. It was re-run green at `5b46d71`, after the fix.
 
 **RT-3 — `pass — make test-core`.**
 `Packages/Core/Tests/CaptureCoreTests/RendezvousCodeTests.swift`. The `RV` §10.3

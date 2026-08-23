@@ -87,6 +87,12 @@ struct ConformanceHarnessView: View {
                     TelemetryRow("Captures", "\(report.capturesAnnounced)")
                     TelemetryRow("Arms answered", "\(report.armsAnswered)")
                     TelemetryRow("Sync events", "\(report.syncEvents)")
+                    TelemetryRow("timebase_ref", report.timebaseRefId ?? "—")
+                    TelemetryRow("Now in timebase_ref",
+                                 report.referenceInstantAvailable ? "yes" : "no",
+                                 tone: report.referenceInstantAvailable ? nil : .warning)
+                    TelemetryRow("issue_hold",
+                                 report.issueHoldNs.map { "\($0 / 1_000_000) ms" } ?? "—")
                     TelemetryRow("Dropped events", "\(report.droppedEvents)",
                                  tone: report.droppedEvents == 0 ? nil : .error)
                     TelemetryRow("Errors", report.errorCodes.isEmpty

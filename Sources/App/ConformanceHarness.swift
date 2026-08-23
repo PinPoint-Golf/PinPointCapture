@@ -55,6 +55,15 @@ public actor ConformanceHarness {
         public var errorCodes: [String] = []
         /// F-L13-1 — ⛔ non-zero is a defect in this application's feed loop.
         public var droppedEvents: UInt64 = 0
+        /// I16 / 8.2 — the deadline the Session actually set, so "the deadline did
+        /// not fire" can be told from "the deadline is longer than this run".
+        public var issueHoldNs: Int64?
+        public var hasArbitration = false
+        /// ⛔ Whether "now" could ever be expressed in `Session.timebase_ref`.
+        /// `false` means 8.2i1 held and the pump correctly did **not** run — which
+        /// is a different fact from a deadline that has not yet arrived, and the
+        /// two look identical from `shotsMinted == 0`.
+        public var referenceInstantAvailable = false
         /// 5.13c — the timebase `Shot.t0` is expressed in. ⚠ The **Session's**,
         /// which with a host is the host's clock and not this device's.
         public var timebaseRefId: String?
@@ -331,6 +340,8 @@ public actor ConformanceHarness {
         let timebaseRef = peer.sessionParameters?.timebaseRefId ?? PpcpTimebases.captureId
         report.timebaseRefId = timebaseRef
         referenceTimebaseId = timebaseRef
+        report.issueHoldNs = peer.sessionParameters?.issueHoldNs
+        report.hasArbitration = peer.sessionParameters?.hasArbitration ?? false
 
         let audio = streams.first { $0.kind == PpcpStreamKind.audio }
         let video = streams.first { $0.kind == PpcpStreamKind.video } ?? audio
@@ -389,6 +400,7 @@ public actor ConformanceHarness {
                              expressedIn: reference)
         }
         guard let nowRef else { return }
+        report.referenceInstantAvailable = true
         let minted = try? await pump.perform { _ in
             try detect.pump(nowRefNs: nowRef)
         }

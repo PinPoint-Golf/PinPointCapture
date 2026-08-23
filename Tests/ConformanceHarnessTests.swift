@@ -123,9 +123,28 @@ struct ConformanceHarnessTests {
         // ⛔ Asserted only against the scenario that produces it: `reference-host`
         // arbitrates, and a device that minted under one would be minting Shots a
         // host had not issued, which is the defect 8.2i exists to close.
+        //
+        // ⚠ **The two ways this can be zero are not the same fact**, and asserting
+        // only `shotsMinted` conflates them: a deadline that has not arrived, and
+        // a peer that cannot express "now" in `Session.timebase_ref` at all
+        // (8.2i1 — in which case not minting is *correct*). Both are asserted so
+        // a failure names which one it is.
         if Self.scenario == "silent-host" {
+            #expect(report.hasArbitration,
+                    "a silent host still opens an arbitrating Session\n\(transcript)")
+            #expect(report.referenceInstantAvailable,
+                    """
+                    8.2i1: no relation to Session.timebase_ref \
+                    (\(report.timebaseRefId ?? "—")), so the mint pump correctly \
+                    never ran — the deadline cannot fire at all
+                    \(transcript)
+                    """)
             #expect(report.shotsMinted >= 1,
-                    "8.2i's deadline did not fire against a silent host\n\(transcript)")
+                    """
+                    8.2i's deadline did not fire against a silent host; \
+                    issue_hold was \(report.issueHoldNs.map(String.init) ?? "unknown") ns
+                    \(transcript)
+                    """)
         }
     }
 }
