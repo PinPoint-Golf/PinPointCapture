@@ -94,7 +94,7 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | CT-I37 | static | no path from an Annotation to a Shot, a Candidate or a relation | D8 | — | — | pass (device) |
 | CT-I38 | paired | nothing unconfirmed is evicted, whatever the retention policy | D6 | — | — | pass (owner half) |
 | CT-S4 (2, 3, 5) | injected | the zero-host path: nominate, promote, mint, extract, bundle | D5, D6 | — | — | pass |
-| CT-S4 (6) | injected | a host that answers nothing, and the 8.2i deadline that fires | D5, D9 | — | — | impl (the run was made and the deadline did **not** fire — see below) |
+| CT-S4 (6) | injected | a host that answers nothing, and the 8.2i deadline that fires | D5, D9 | — | — | **pass** |
 | CT-S4 (7) | injected | link loss, local mint, `session_resume`, sync burst, then payload | D6 | — | — | impl (the sequence is asserted; the live half is blocked, §5) |
 | CT-S5 (device) | injected | a full session against a synthetic host | D6, D9 | — | — | **pass (simulator half)** |
 
@@ -428,77 +428,47 @@ synthetic input, real everything else. A harness that posted a hand-built
 `candidate` would look identical from the far end and would assert nothing about
 the detector, the time of flight, the classifier bytes or the canonical instant.
 
-**CT-S4 (6) — `impl`, and what the run found.**
-`make conform SCENARIO=silent-host` reaches the counterpart, completes the
-session and nominates — and the device mints **nothing** in eight seconds.
-`report.shotsMinted == 0`.
+**CT-S4 (6) — `pass` — `make conform SCENARIO=silent-host`.**
 
-⛔ **The cause is a real defect in the harness's composition and it is worth
-writing down, because it is the shape of the mistake `CORE` 5.13c exists to
-prevent.** `Shot.t0` is in `Session.timebase_ref`, and with a host present that is
-the **host's** clock. The harness was pumping `DeviceMint` with a reading of this
-device's own `tb:hosttime`, passed as though it were the reference timebase — an
-identity that is true in the hostless case (I4) and false the moment a host opens
-the Session. 8.2i's deadline is therefore compared against an instant on the wrong
-clock.
+A host that receives every Candidate and issues no Shot, so the device's own
+8.2i deadline is the only thing that fires. The simulator's report:
 
-The fix is in and is **not** a conversion at the call site: `DevicePeer.instant(_:on:expressedIn:)`
-converts through `ppcp_relations_convert`, which applies **at most one** relation
-and refuses when it holds none (I18, 5.4c). ⛔ So before 6.3a's burst has produced
-offset *and* rate there is no reading of `timebase_ref` at all, the pump does not
-run, and the Candidates stay retained — which is 8.2i's "held until the deadline"
-rather than a failure, and is the opposite of substituting a zero (5.4b, 8.2i1).
+```
+sim report: declares 1  candidates rx 2  shots rx 2  max shot candidates 1
+            issued 0  minted 0  retained 2  relations rx/tx 87/52
+            captures rx/unique/dup 3/3/0  errors 0
+```
 
-⚠ **The row stays `impl`, and the separating run HAS now been made** — which is
-the second correction this entry has needed. An earlier revision said the re-run
-had not completed; it had. A later revision said the *instrumented* run had not
-completed; it had too. Both were written from a wedged `xcodebuild` process list
-rather than from the log on disk, seconds before committing. The lesson is the one
-this file already states about specification text and applies equally to evidence:
-**read the output, not the process table.**
+`issued 0` with `shots rx 2` is the whole row: **the host issued nothing and the
+device minted anyway**, on its own deadline, with `authority: device` (8.3a–c).
+`max shot candidates 1` is I23 travelling with it — a hostless Shot carries
+exactly one Candidate. `--expect violations=0` held.
 
-**What the instrumented run established** (`make conform SCENARIO=silent-host`):
+⛔ **It took three runs and the first two were the interesting ones**, because the
+same symptom had two different causes and `shotsMinted == 0` looks identical in
+both:
 
-| Reported | Value |
-|---|---|
-| `hasArbitration` | **true** — the silent host does open an arbitrating Session |
-| `referenceInstantAvailable` | **false** — "now" could never be expressed in `Session.timebase_ref` |
-| `shotsMinted` | 0 |
+| Run | Cause | Whose |
+|---|---|---|
+| 1 | `DeviceMint` was pumped with this device's `tb:hosttime` passed off as `Session.timebase_ref`. That identity holds hostless (I4) and breaks the moment a host opens the Session — 5.13c exactly. | **ours** |
+| 2 | Fixed, and still zero. Instrumented: `hasArbitration` true, `referenceInstantAvailable` **false**. So 8.2i1 was refusing correctly and the deadline never got to fire. | **ours** |
+| 3 | The harness never called `publishRelations()`. `relations rx/tx` was `0/52` — the device published **none**. It is now `87/52` and the row passes. | **ours** |
 
-⛔ **So not minting is the conformant answer, and CT-S4 (6) is blocked on 6.3a
-rather than on 8.2i.** 8.2i1 and 5.4b: a peer that cannot express an instant in the
-reference timebase does not mint and does not substitute a zero. The Candidates
-stay retained, which is what 8.2i means by "held". The deadline never got the
-chance to fire, so the run says nothing yet about whether it *would*.
+**Run 3's cause is 6.1f and it is worth stating plainly.** A peer's own sync
+estimate reaches its relation set only through `ppcp_peer_publish_relations`
+(`libppcp` `src/ppcp_peer.c:1942`); an arriving `relation_update` is installed
+too (`:2746`), but the host's relations are the host's measurement of the pair
+and did not give `ppcp_relations_convert` what it needed to express *this*
+device's "now" in the reference timebase. 6.1f requires publishing the relation
+you measured; `HostLinkDriver` always did on the real path and the harness did
+not. ⛔ **None of the three causes was `libppcp`'s or the specification's.**
 
-⚠ **The likely cause is this application's, not `libppcp`'s, and it is written as
-a hypothesis because it has not been re-run.** Two things were checked in the
-library's source and both hold:
-
-- a `relation_update` that **arrives** is installed into the peer's relation set
-  (`src/ppcp_peer.c:2746`, `ppcp_relations_put`), so the host's 52 published
-  relations are not being discarded;
-- a peer's **own** estimate reaches that set only through
-  `ppcp_peer_publish_relations` (`src/ppcp_peer.c:1942`), which the harness never
-  called.
-
-6.1f requires a peer to publish the relation it measured, and `HostLinkDriver`
-already does so on the real path; the harness did not. That call is now in the
-tick. ⛔ **It is not claimed as a fix** — the verifying run has not been made, and
-the alternative explanations (a direction `ppcp_relations_convert` will not
-invert, or an id mismatch between the device's `sync_timebase` and what the host
-names) are not excluded.
-
-⚠ **A second thing the run exposed, in the harness rather than the protocol.**
-`make conform` filters `xcodebuild` through `grep -E '^(◇|✔|✘)|error:|…'`, which
-drops the *continuation* lines of a multi-line assertion message — so the
-transcript and `timebaseRefId` attached to every failure were thrown away at
-exactly the moment they were wanted. The three counters above had to be recovered
-from the assertion names alone.
-
-⚠ **The `reference-host` row is unaffected** — it asserts the handshake, the
-Session, the Streams, the sync burst and the nomination, and none of those reads
-`timebase_ref`. It was re-run green at `5b46d71`, after the timebase fix.
+⚠ **The library refused correctly at every step and that is the finding worth
+keeping.** `ppcp_relations_convert` applies at most one relation and refuses when
+it holds none (I18, 5.4c), so a device that could not say when "now" was **did not
+mint** rather than substituting a zero (5.4b, 8.2i1). Three separate bugs in this
+application produced no wrong `t0`, no invented relation and no unlawful Shot —
+they produced silence, which is what those clauses are for.
 
 **RT-3 — `pass — make test-core`.**
 `Packages/Core/Tests/CaptureCoreTests/RendezvousCodeTests.swift`. The `RV` §10.3
