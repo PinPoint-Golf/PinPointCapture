@@ -159,7 +159,7 @@ Sixteen of the design handoff's seventeen screens are built to the specified fid
 
 ## 3. Epics and capability levels
 
-Sixteen engineering epics cut into **fifty-one capability levels**, plus five measurement epics and two release epics. Nine further epics hold the v2/v3 shelf (§8).
+Sixteen engineering epics cut into **fifty-two capability levels**, plus five measurement epics and two release epics. Nine further epics hold the v2/v3 shelf (§8).
 
 ---
 
@@ -511,7 +511,7 @@ Carried as epic IDs so the board can hold them without pretending they are scope
 
 A suggested shape, offered rather than assumed:
 
-- **Issue per capability level** (`E3.2 — Synchronised`), with the components as a task list. **Epic as a parent issue or milestone** (`E3 — The live host link`). Fifty-one v1 level-issues across sixteen epics is a board you can actually run; sixteen epic-issues is not, and 159 requirement-issues is worse.
+- **Issue per capability level** (`E3.2 — Synchronised`), with the components as a task list. **Epic as a parent issue or milestone** (`E3 — The live host link`). Fifty-two v1 level-issues across sixteen epics is a board you can actually run; sixteen epic-issues is not, and 159 requirement-issues is worse.
 - **Fields:** `Epic` · `Level` · `Release` (v1/v2/v3, from the level's Release column) · `Layer` (Protocol / Core / Platform / UI — record the *primary* where a level spans several) · `Blocked on` (a phone / a rig / a decision / another repo / nothing) · `Requirements` (the REQ- ids from the matrix) · `Conformance rows` (what it unblocks in `ppcp-conformance.md`).
 - **Decisions from §5 as issues in a separate view**, so a decision blocking three levels is one item rather than three notes.
 - **§6 and §7 as their own views** — they run on a different clock from engineering and should not compete for the same columns.

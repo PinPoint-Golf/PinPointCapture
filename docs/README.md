@@ -23,8 +23,9 @@ Three folders, one question each.
 
 | File | What it is |
 |---|---|
-| [`delivery-scope.md`](implementation/delivery-scope.md) | **The scope document.** An audit of the current build by architectural layer, then sixteen epics cut into fifty-one capability levels. This is what seeds the GitHub Project board |
+| [`delivery-scope.md`](implementation/delivery-scope.md) | **The scope document.** An audit of the current build by architectural layer, then sixteen epics cut into fifty-two capability levels. This is what seeds the GitHub Project board |
 | [`traceability.md`](implementation/traceability.md) | **The traceability matrix.** Every PRD requirement to its status, owning epic and level, and the evidence — plus a reverse index from level to the requirements it closes |
+| [`backlog.py`](implementation/backlog.py) | **The board's source.** Generates the issue manifest behind [the GitHub project](https://github.com/orgs/PinPoint-Golf/projects/1) — 91 issues and 16 labels. Edit it when a capability level changes in `delivery-scope.md`, so the board and the document cannot drift |
 
 ## `conformance/` — whether it does what the protocol says
 
@@ -48,5 +49,7 @@ Three folders, one question each.
 ## Keeping these honest
 
 `delivery-scope.md` and `traceability.md` are audits, not plans — they go stale the moment code lands. Re-check them when a capability level closes. The PRD's §18 summarises their position and should be re-checked at the same time.
+
+When a capability level is added, split or reworded, change `delivery-scope.md` **and** `backlog.py` together. The script asserts its own counts, which is what caught a fifty-one-versus-fifty-two disagreement between them the first time round.
 
 The conformance folder is different: `ppcp-conformance.md` is hand-written and `ppcp-conform.*` are generated, so a disagreement between them is a real signal rather than drift to be tidied away.
