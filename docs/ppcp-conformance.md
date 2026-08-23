@@ -902,13 +902,213 @@ was fixed; it did, and is now inverted to assert that minting takes the hostless
 branch *because the predicate says so* rather than because two parameters happened
 to default to zero.
 
-**F-D3-2 — ✅ closed.** `ppcp_peer_session_manifest()` is in `peer.h`.
-⚠ `SessionBundleWriter.recordManifest` still assembles the `ppcp_msg` by hand and
-is **not yet moved onto it** — the hand-built path is tested and the swap is a
-change with no new assertion behind it, so it is queued rather than rushed. F-D3-1
-(the 48 KB union) stands as a hazard for anyone who does touch it.
+**F-D3-2 — ✅ closed, and now adopted.** `ppcp_peer_session_manifest()` is in
+`peer.h`, and as of S5 `SessionBundleWriter.recordManifest` goes through it rather
+than assembling a `ppcp_msg` and pushing it through the generic `ppcp_peer_send`
+escape hatch. What that buys is not tidiness: `ENC` 7c's ordering, `MSG` §9.2's
+field rules and the C2 channel check are the library's again rather than this
+file's. It also removes the last place D3 touched the `ppcp_msg` union, which is
+F-D3-1's 48 KB stack temporary — the body struct is still built on the heap
+because `PPCP_MAX_MANIFEST` entries do not belong on a stack, but nothing gets or
+sets a union member any more.
 
 ---
+
+## 4a. Interoperability — `CONF` §5
+
+**Where this application is a real party**, and what each run measured. `CONF` §5
+pairs implementations rather than clauses: the value is that the counterpart was
+written by somebody else, so a rule both halves would have got wrong the same way
+is visible for the first time.
+
+⛔ **Two of these rows failed on the first attempt and both failures were real.**
+They are written up below rather than smoothed over, because the first one changed
+the device's behaviour and the second is a finding against the tooling.
+
+| Row | Counterpart | Command | Outcome |
+|---|---|---|---|
+| **IOP-2** — foreign camera conventions, three clocks | `ppcp-sim` `three-timebase-host.json` + `reference-host` | `make conform-iop` | **pass** |
+| **IOP-1** — the reference host, end to end, plus a session offer and its replay | `ppcp-sim` `reference-host.json` + `reference-host` | `make conform-iop` | **pass** |
+| **IOP-3 / IOP-10** — a bundle this device wrote, imported elsewhere | PinPointStudio | `make conform-iop` then `make pull-bundles` | **written** — `docs/conformance/bundles/*.ppcpbndl`; the import is PinPointStudio's row |
+| **IOP-3 / IOP-10** — a bundle another implementation wrote, read here | `PinPointStudio/docs/conformance/bundles/pinpointstudio-host-session.ppcpbndl` | `make read-bundle FILE=…` | **pass** |
+| **Wave 2** — the real pair over TLS on loopback | PinPointStudio's TLS listener | `make interop HOST=… PSK=… IDENTITY=…` | **not yet run** — the contract is below; it needs the listener |
+
+### IOP-2 — a host whose cameras are not this one's
+
+`three-timebase-host.json` is two machine-vision cameras, each on **its own
+clock** with its own offset and skew, each declaring `timing.convention: start`
+and `geometry.kind: global`. No phone can make that declaration, and `CONF` §2c
+names this as the shape an implementation talking to itself never meets. The
+Session's `timebase_ref` is `tb:host`, so every `Shot.t0` that arrives is an
+instant on a clock this device does not own.
+
+```
+make conform-iop      # starts this counterpart and IOP-1's, runs both rows in one launch
+```
+
+Far end: `frames rx/tx 315/186 · candidates rx 2 · shots tx 1 · issued 1 ·
+retained 0 · probe timebases 3 · errors 0 · violations 0`.
+
+**What is proved — I22, from the receiving side.** `Session.timebase_ref` arrived
+as `tb:host` and not as this device's capture clock; the issued `shot` carried
+`authority: host` and a `t0` **in `tb:host`**; and this device converted that
+instant onto its own capture clock and got a *different* number. The last part is
+the assertion that matters: a conversion that returned its input would pass an
+equality test and prove nothing, so the row asserts the readings differ.
+
+**What is proved — I19, as far as a simulator carries it.** The device declared
+what this hardware enumerated: `core, capture, detect, mint, live, offline,
+markup`, a microphone and an IMU Source, and **no camera**. ⛔ It did **not**
+adopt the host's `convention: start` to make the pairing look tidy, which is what
+the row asserts. The other half of I19 — that a phone declares
+`nominal_frame_start` with provenance `assumed` and a `rolling_shutter` geometry
+against this host's `start`/`global` — is **not** on the wire in a simulator run,
+because a simulator enumerates no camera. That needs a phone and is listed in §5.
+
+**The first attempt failed, and the failure was the device's sequencing.** The
+swing went in on the first loop iteration after `session_open` — about 250 ms in,
+well before the first `relation_update` had crossed. The host could not convert
+the Candidate's instant into `timebase_ref`, so under 8.2d it excluded and
+**retained** it: `arbiter observed 2, retained 2, issued 0`, and the device minted
+both Shots itself under 8.2i. Correct behaviour on both sides, and a useless row —
+there was no issued `t0` to convert. The harness now holds the injected swing
+until an instant on this device's clock can be expressed in `Session.timebase_ref`
+(`ConformanceHarness.run(nominateOnlyOnceConvertible:)`), which is also the honest
+order: a golfer swings seconds after walking into the bay, not 250 ms after.
+
+⚠ **It is a parameter and not a change of default**, because D9's claim in §1a was
+measured with the old sequencing and quietly changing it would invalidate a run
+nobody re-made.
+
+**F-S5-1 — an arbiter that retains a Candidate for want of a relation never
+revisits it.** Whose defect: **`libppcp` / the simulator**, and possibly the
+specification. `ppcp_arbiter_observe` excluded and retained both Candidates
+because no relation existed at the moment they arrived; a relation existed a
+second later and `ppcp_arbiter_pump` never reconsidered them — `retained 2` at
+exit, `issued 0`. 8.2d says a host that cannot convert excludes and retains, which
+is what happened; what neither 8.2d nor 8.2e says is whether a retained Candidate
+must be re-evaluated once the relation it needed arrives. On the reading that it
+must, this is an arbiter defect. On the reading that it need not, a peer that
+nominates early is silently unarbitrated for the rest of the Session, which seems
+the worse of the two. Raised for the protocol team to disposition.
+
+**F-S5-2 — no `ppcp-sim` host scenario originates `capture_request`, so half of
+I22 cannot be driven.** Whose defect: **the simulator** (`libppcp` `tools/`).
+IOP-2 asks a device to convert two things expressed in the host's convention: an
+issued `Shot.t0`, and the window of a `capture_request`. The first is driven and
+passes. The second is not reachable: `sim_run.c` handles `PPCP_EVENT_CAPTURE_REQUEST`
+only on the **receiving** side — a capture-role peer answering with
+`ppcp_peer_capture_absent` — and no scenario flag causes a host to send one. So
+this device's `captureRequested` path (`ConformanceHarness`, which answers
+`absent` / `outside_buffer` per 8.4b) has never been exercised by a counterpart
+this repository did not write. A `SIM_F_REQUEST_CAPTURES` flag on the host
+scenarios would close it. Recorded rather than worked around; a device-side
+fixture pretending to be a host request would assert nothing.
+
+### IOP-1 — the reference host, and the device offering what it holds
+
+⛔ **The device offers and the host chooses.** That is the user's decision of 22
+August 2026 and `MSG` §9.1's shape; there is no file picker anywhere in this
+application and there never has been. The row records two hostless Sessions first
+— one with a single minted Shot, one with two — through the same
+`CaptureSessionRecorder` a range session uses, then offers both, and replays each
+accepted one onto the live link with `ppcp_bundle_replay` (`ENC` 7a: a stored
+Session and a live one are the same bytes).
+
+```
+make conform-iop
+```
+
+Far end: `frames rx/tx 310/187 · declares 3 · candidates rx 8 · issued 1 ·
+offers rx 2 · captures rx/unique/dup 12/12/0 · errors 0 · violations 0`, with
+`--expect offers_rx=2` held on the simulator's own side.
+
+**What the host received.** Two `session_offer` frames, one per stored Session,
+each naming `session_id` **and** `minting_peer_id` (8.5c — a device that offered
+only the id would collide with a Session another device recorded). It accepted
+both, and each accepted bundle then arrived as the frames it was written from:
+`declare`, `session_open`, `stream_open`, the `candidate` and `shot` records, the
+`capture_announce`s and the manifest — `declares 3` is this device's own plus the
+two replayed ones, and `captures rx/unique/dup 12/12/0` is I34 holding, every
+Capture seen exactly once with nothing deduplicated away.
+
+**This closes the D-compose half that was open**: `SessionOfferService` had a full
+test suite and no caller, so nothing in the application had ever offered a stored
+Session to a peer it did not write. It is composed into the conformance harness.
+⚠ It is **not** composed into `AppModel`, and that is not an oversight — see §5.
+
+### IOP-3 / IOP-10 — bundles across the two applications
+
+**Written here, for PinPointStudio to import.** Two files, small and checked in:
+
+| File | Contents |
+|---|---|
+| `docs/conformance/bundles/ses-interop-one-shot.ppcpbndl` | 4 615 bytes, 13 frames, one minted Shot, 3 Captures |
+| `docs/conformance/bundles/ses-interop-two-shots.ppcpbndl` | 7 324 bytes, 20 frames, two minted Shots, 6 Captures |
+
+Both are hostless Sessions (`CORE` 4.1b): no arbitration parameters on
+`session_open` and no `arm` — 7.3b, and the writer makes it structural rather
+than remembered. Both carry `declare` first (`ENC` 7h, erratum E9), then the
+Session, the Streams, the `readiness`, the Candidates, the Shots and their
+Captures, then the manifest.
+
+⛔ **Every Capture in them is `absent` / `outside_buffer`, and the manifest
+asserts `partial`.** There is no camera in a simulator and no ring behind it, so
+there are no bytes; 8.4b makes an absent Capture a **result** and I10 makes
+completeness the owning peer's assertion rather than a reader's inference. A
+bundle that claimed `complete` over missing media would be the one thing a
+conformance fixture must never be. The Shots, the Candidates and their counts are
+complete records of what happened.
+
+⚠ The one thing these are *not* is a phone's bundle. A range session on hardware
+produces the same frames with clips behind them; what a simulator cannot produce
+is the clip.
+
+**Read here, written elsewhere.** `PinPointStudio/docs/conformance/bundles/pinpointstudio-host-session.ppcpbndl`
+— 1 657 bytes, minor 0, 5 frames, 0 Captures, `manifestOrdered` true, completeness
+`complete`, not truncated.
+
+```
+make read-bundle FILE=../PinPointStudio/docs/conformance/bundles/pinpointstudio-host-session.ppcpbndl
+```
+
+⛔ **This is the first `PPCPBNDL` this repository has read that it did not
+write.** Every bundle assertion before it wrote one and read it back, which is
+`CONF` §2c's single-implementation trap: an ordering rule both halves get wrong
+the same way is invisible to it. What is asserted is `ENC` §7's — the `PPCPBNDL`
+magic at offset zero (never the file extension; 5.1a forbids deriving anything
+from a name), major 1, 7c's manifest-before-payload, and that the reader reaches a
+verdict rather than throwing. What the file *contains* is deliberately not
+asserted: that is the other implementation's business, and a row demanding a shape
+would be this repository legislating for it.
+
+### Wave 2 — the real pair over TLS, and its contract
+
+**Not yet run: it needs PinPointStudio's listener.** The target and the device
+half exist; the contract is stated here so the two halves meet on the first
+attempt rather than the third.
+
+```
+make interop HOST=127.0.0.1:9443 PSK=<64 hex characters> IDENTITY=<hex or text>
+```
+
+| | |
+|---|---|
+| **Who listens** | PinPointStudio, on `HOST`. ⛔ The device **dials**: `RV` 2d makes the scanner the dialler and 5.2g makes the dialler the TLS client, and this application has no plaintext listener and no TLS listener on the pairing-code path. |
+| **Transport** | the shipping `PpcpConnector` — `Network.framework`, `RV` §5's profile, two `NWConnection`s each with its own TLS session on the same `K_tls`, `link_bind` as the first frame on each (`ENC` 2.1a). ⛔ **No harness transport and no plaintext**: `PpcpDirectTransport` is a different type precisely so a fallback between them cannot exist (5.2f). |
+| **`PSK`** | the 32-byte `K_tls`, as 64 hex characters. ⚠ Given rather than derived: a real pairing runs `RV` §3 and derives it from the scanned code, and supplying it directly is the *shape* that produces. The derivation is D7's own tested path. |
+| **`IDENTITY`** | the PSK identity, hex if it parses as hex and otherwise its UTF-8 bytes. ⚠ `RV` 5.3a makes a real one fresh per connection and 17 octets; a fixed one is what a listener that can only register one identity in advance can accept (F-D1-1). |
+| **Expected negotiation** | TLS 1.2, `TLS_PSK_WITH_AES_128_GCM_SHA256` (`0x00A8`). ⛔ **Not TLS 1.3**: measured on iOS and macOS, Apple's stack cannot negotiate a TLS 1.3 external PSK at all, and that is what forced `RV` 5.4 to relax forward secrecy to best-effort. A listener that requires TLS 1.3 will refuse this device, and that refusal is a platform fact rather than a defect on either side. |
+| **What the run does** | records a hostless Session and stores it (one minted Shot, its Captures `absent`/`outside_buffer`); dials; `hello` → `declare`; joins the Session the host opens; opens a Stream per declared Source; answers `arm` with a Readiness **measurement** (5.15a — never a state name); injects one synthetic swing through the **real** detector, the real `CandidateFactory` and the user's microphone-to-ball distance, and nominates every onset (7.1d); mints or receives a Shot; offers the stored Session and replays it if accepted. |
+| **What it writes** | `docs/conformance/interop-summary.json` — `security`, `declares` (profiles, source kinds, camera conventions, geometries, offset provenances), `streams_opened`, `candidates_tx`, `shots_rx` (each with `t0_ns`, `t0_timebase`, `authority` and `converted_to_capture_ns`), `captures_announced`, `offers_tx`, `offers_accepted`, `replay_completed`, `errors`, `dropped_events`. ⛔ `RV` 7.2b — no key material, no identity and no address beyond what the operator typed. |
+| **Timing** | the listener must be up **before** the target starts; the device dials once and does not retry for long. `make interop` boots, installs and launches the simulator first, which takes tens of seconds. |
+| **Exit** | non-zero if the dial or the session failed, or if no summary was written. |
+
+⚠ **The simulator still has no camera**, so this row proves the transport, the
+handshake, the Session, the offer and the conversion — and not a Capture with
+bytes in it. That is the same limit every wave-1 row has and it is the same
+answer: it needs a phone.
+
 
 ## 5. What is deferred, and on what
 
@@ -925,7 +1125,10 @@ change with no new assertion behind it, so it is queued rather than rushed. F-D3
 | The **microphone** path end to end | **a phone** | `MicrophoneOnsetSource` has never run on a real microphone. `AppModel` starts it on `arm` and the detector, the factory and the Mint engine are exercised by injected audio in `make conform`; what has not happened is a real transient at a real sample rate with a real `AVAudioTime`. |
 | `NEHotspotConfiguration` | **a phone**, and an App ID capability | The entitlement is in `Support/PinPointCapture.entitlements`; a device build needs Hotspot Configuration enabled on the App ID. The simulator returns an error, which the app reports as "could not join that network". |
 | The Keychain's `ThisDeviceOnly` behaviour (7.4c) | **a phone and a backup** | The property that matters — a pairing does not ride a backup onto a second device — is not observable from a test at any layer. |
-| Interop "device, no host → bundle" | **PinPointStudio** | This side now writes a bundle carrying Shots, Candidates, their evidence and their clips, and re-reads it; only the other application reading it closes the row. |
+| Interop "device, no host → bundle" | **PinPointStudio** | ✅ half closed. This side writes two bundles and checks them in (`docs/conformance/bundles/`), and reads back the one PinPointStudio wrote (§4a). What remains is PinPointStudio importing ours, which is its row and not this one's. |
+| **IOP-2's other half** — a phone's camera declaration meeting a foreign one | **a phone** | The row passes on the conversion of an issued `t0` (§4a). What a simulator cannot put on the wire is `nominal_frame_start` / `rolling_shutter` / provenance `assumed` against the host's `start` / `global`, because it enumerates no camera Source. |
+| **Wave 2** — the real pair over TLS on loopback | **PinPointStudio's listener** | `make interop` and the device half exist and the contract is in §4a. Nothing has dialled a real listener yet. |
+| `SessionOfferService` and `PreviewProducer` in **`AppModel`** | **a live host link in the app** | ⛔ `SessionOfferService` is composed into the conformance harness and IOP-1 exercises it end to end, so it is no longer code with no caller. It is **not** in `AppModel`, and composing it there would be composing it onto `HostLink(state: .none)` — the app has no live host link yet, so there is no connected host to offer to and nothing the composition could be asserted against. `PreviewProducer` is in the same position and is additionally on nothing's path: no `CONF` §5 row this device is a party to needs a preview Stream. |
 | The acoustic detector's **accuracy** | nothing — it is out of scope | `CONF` §6 puts "which candidates a Mint peer promotes" outside conformance, and 8.3c keeps promotion policy out of the specification. What is in scope is that every nomination is emitted, and that is asserted. |
 | A **measured** time of flight | **a rig** | `AcousticTimeOfFlight` takes a surveyed or estimated distance and its sigma; nothing has measured either on this device, so a shipping session declares no `tof_correction` rather than an assumed one (plan A12). |
 
@@ -936,6 +1139,10 @@ make test-core      # the neutral layer, the RV §10 vectors and the bundle roun
 make test-app       # the TLS-PSK handshake and the ENC §2.1 bind, on a simulator
 make conform        # D9 — ppcp-conform drives the device and fills the claim
 make conform SCENARIO=silent-host   # one ppcp-sim scenario, for debugging a row
+make conform-iop    # CONF §5 — IOP-2 and IOP-1, two counterparts in ONE simulator launch
+make pull-bundles   # copy the bundles an IOP-1 run wrote out of the simulator container
+make read-bundle FILE=…/x.ppcpbndl   # read a bundle another implementation wrote
+make interop HOST=127.0.0.1:9443 PSK=<64 hex> IDENTITY=<hex>   # wave 2, real TLS
 make gen && make build
 ```
 
@@ -953,8 +1160,15 @@ device dialled and the failure read as a refused connection. `build-for-testing`
 then `test-without-building` is what makes the window the test's rather than the
 compiler's.
 
-⚠ **`make test-core` is green: 166 tests, 21 suites.** Every `pass` in §3 is one of
+⚠ **`make test-core` is green: 167 tests, 22 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
+
+⛔ **`make conform-iop` starts TWO counterparts and runs the suite once**, and that
+is not thrift. Booting, installing and launching a simulator costs tens of seconds
+and a `CONF` §5 row costs twenty, so IOP-2's foreign three-clock host and IOP-1's
+reference host are each given their own ephemeral port and the device dials them
+in turn. Each `ppcp-sim` carries its own `--expect`, so the far end's half of every
+assertion is the tool's exit code rather than anything written here.
 
 ⚠ **`make conform` is green** against `ppcp-sim --scenario reference-host`, with
 `--expect violations=0` held and `errors 0` in the simulator's own report. See
