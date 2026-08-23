@@ -208,3 +208,22 @@ public enum CaptureBuilder {
         }
     }
 }
+
+// MARK: - ENC 6g / MSG 8.3h (erratum E7) — the container a payload is framed in
+
+/// The IANA media types this application's payloads are.
+///
+/// ⛔ **Named here once, because `ENC` 6h forbids a receiver inferring one.** It
+/// may not read it off `format.codec`, off `Stream.kind`, or by sniffing — and it
+/// could not: H.264 is QuickTime, fragmented MP4 and Annex B, and those are three
+/// different files that a decoder opens three different ways. A sender that omits
+/// the container where the bytes are container-framed hands the receiver a guess.
+public enum PpcpMediaType {
+    /// Every clip this application extracts. `AVAssetWriter` writes an MP4 with
+    /// HEVC or H.264 inside it; the codec is in the `CaptureProfile` and the
+    /// **container** is this.
+    public static let clip = "video/mp4"
+    /// 5.12.1a's Candidate evidence — the window of microphone audio that
+    /// explains why detection fired.
+    public static let audioEvidence = "audio/mp4"
+}

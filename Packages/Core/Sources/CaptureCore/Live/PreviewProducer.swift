@@ -82,7 +82,11 @@ public final class PreviewProducer: @unchecked Sendable {
         try peer.payloadBegin(captureId: id, bytes: UInt64(payload.count),
                               digest: SessionBundleWriter.digest(of: payload),
                               chunkBytes: PayloadTransferQueue.chunkBytes,
-                              channel: channel)
+                              channel: channel,
+                              // `ENC` 6g (erratum E7) — a preview segment is a
+                              // container-framed file like any other clip, and a
+                              // receiver may not infer that (6h).
+                              container: PpcpMediaType.clip)
         try peer.payloadChunk(captureId: id, index: 0,
                               chunkBytes: PayloadTransferQueue.chunkBytes,
                               data: payload, channel: channel)

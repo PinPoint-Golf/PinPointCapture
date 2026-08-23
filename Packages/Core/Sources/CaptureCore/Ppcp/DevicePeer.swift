@@ -685,20 +685,42 @@ public final class DevicePeer: @unchecked Sendable {
     ///   canonical-instant conversion of §6.1 is impossible (I17), and a consumer
     ///   that falls back to the profile's exposure *range* fails CT-S1
     ///   assertion 3.
+    /// - Parameter container: `ENC` 6g / `MSG` 8.3h (erratum E7) — the IANA media
+    ///   type of the bytes, REQUIRED whenever they are a container-framed file.
+    ///   ⛔ **A receiver may not infer one** from `format.codec`, from
+    ///   `Stream.kind`, or by sniffing (6h), and the reason is that it cannot:
+    ///   H.264 is QuickTime, fragmented MP4 and Annex B, and those are three
+    ///   different files. `nil` is for raw samples the Stream's profile describes
+    ///   in full, and a clip is never one of those.
     public func payloadBegin(captureId: String, bytes: UInt64, digest: Data,
                              chunkBytes: UInt32, channel: PpcpChannel = .bulk,
+                             container: String? = nil,
                              achievedFrames: PpcpAchievedFrames? = nil) throws {
         var value = try Self.digest(digest)
         let peer = try handle()
-        guard let achievedFrames else {
-            try check(ppcp_peer_payload_begin(peer, channel.rawValue, captureId,
-                                              bytes, &value, chunkBytes, nil))
-            return
+        // ⚠ `payload_begin_as` in both arms: the old entry point delegates to it
+        // with a NULL container, so there is one code path here rather than two
+        // that can drift.
+        try withOptionalCString(container) { containerC in
+            guard let achievedFrames else {
+                try check(ppcp_peer_payload_begin_as(peer, channel.rawValue, captureId,
+                                                     bytes, &value, chunkBytes,
+                                                     containerC, nil))
+                return
+            }
+            try achievedFrames.withCValue { frames in
+                try check(ppcp_peer_payload_begin_as(peer, channel.rawValue, captureId,
+                                                     bytes, &value, chunkBytes,
+                                                     containerC, frames))
+            }
         }
-        try achievedFrames.withCValue { frames in
-            try check(ppcp_peer_payload_begin(peer, channel.rawValue, captureId,
-                                              bytes, &value, chunkBytes, frames))
-        }
+    }
+
+    /// Run `body` with a borrowed C string, or with `nil`.
+    private func withOptionalCString(_ text: String?,
+                                     _ body: (UnsafePointer<CChar>?) throws -> Void) rethrows {
+        guard let text else { return try body(nil) }
+        try text.withCString { try body($0) }
     }
 
     public func payloadChunk(captureId: String, index: UInt32, chunkBytes: UInt32,
@@ -812,6 +834,15 @@ public final class DevicePeer: @unchecked Sendable {
         let kind: ppcp_event_kind
         let channel: PpcpChannel?
         let status: ppcp_result
+        /// `MSG` 4.1a1 / 9.1b (erratum E28) — this frame belongs to an
+        /// **imported** Session replayed onto the live link, not to the live one.
+        ///
+        /// ⛔ An embedding must not feed such a frame to the live Session's
+        /// arbiter or mint pump, and must not convert its instants with the live
+        /// `timebase_ref`. That is F-S5-3, found by the S5 wave-2 pairing: a host
+        /// that ignored it arbitrated two Sessions as one and expressed every
+        /// subsequent `t0` in the exporting device's clock.
+        let imported: Bool
         private let raw: UnsafeMutableRawPointer?
 
         var message: UnsafePointer<ppcp_msg>? {
@@ -822,6 +853,7 @@ public final class DevicePeer: @unchecked Sendable {
             kind = event.kind
             channel = PpcpChannel(rawValue: event.channel)
             status = event.status
+            imported = event.imported
             guard let source = event.msg else { raw = nil; return }
             let bytes = MemoryLayout<ppcp_msg>.stride
             let storage = UnsafeMutableRawPointer.allocate(
@@ -877,6 +909,22 @@ public final class DevicePeer: @unchecked Sendable {
         guard events.isEmpty == false else { return nil }
         let event = events.removeFirst()
         return try body(event.kind, event.channel, event.message)
+    }
+
+    /// The same, with `ppcp_event.imported` (`MSG` 4.1a1 / 9.1b, erratum E28).
+    ///
+    /// ⛔ **This is the overload a live link must use.** Reading an event without
+    /// asking whether it is imported is what F-S5-3 was: the frames of an offered
+    /// Session go onto the live link by design (`ENC` 7a), and only this flag
+    /// tells them apart from the Session actually in progress.
+    @discardableResult
+    public func nextEventImported<T>(
+        _ body: (ppcp_event_kind, PpcpChannel?, Bool, UnsafePointer<ppcp_msg>?) throws -> T
+    ) rethrows -> T? {
+        harvestEvents()
+        guard events.isEmpty == false else { return nil }
+        let event = events.removeFirst()
+        return try body(event.kind, event.channel, event.imported, event.message)
     }
 
     public var queuedEventCount: Int {

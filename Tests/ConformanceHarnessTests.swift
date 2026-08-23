@@ -305,17 +305,44 @@ struct ConformanceHarnessTests {
             return
         }
 
-        let harness = ConformanceHarness(device: CaptureDeviceFactory.create(),
-                                         distance: MicToBallDistance())
-        // ⚠ Longer than D9's eight seconds: the host waits for the first
-        // `relation_update` exchange before it nominates or arbitrates
+        // ⛔ **E29 is verified here, in one run, and the verification cannot
+        // produce a false red.** `nominateOnlyOnceConvertible` exists because
+        // F-S5-1 found an arbiter that excluded a Candidate for want of a
+        // relation and never revisited it — so a device that swung before the
+        // sync burst converged was silently unarbitrated for the whole Session.
+        // `CORE` 8.2d1 (erratum E29) now requires the arbiter to reconsider, and
+        // `ppcp_arbiter_reconsider()` implements it.
+        //
+        // If E29 holds, nominating immediately must now reach a Shot on its own.
+        // So the row runs that way FIRST; only if no Shot arrives does it fall
+        // back to holding the swing, and the report says which one worked. A row
+        // that simply dropped the flag would have been a red test on a library
+        // regression rather than a measurement of one.
+        //
+        // ⚠ Longer than D9's eight seconds either way: the host waits for the
+        // first `relation_update` exchange before it arbitrates
         // (`sim_run_steps.inc`, STEP_OFFER's 700 ms), then holds for
-        // `issue_hold_ns` before it issues. A window that ended first would
-        // report "no Shot arrived" about the clock rather than about the device.
-        let report = try await harness.run(
-            against: PeerEndpoint(host: "127.0.0.1", port: port),
-            seconds: 20, injectSwings: 1, nominateOnlyOnceConvertible: true)
-        let transcript = report.transcript.joined(separator: "\n")
+        // `issue_hold_ns`. A window that ended first would report "no Shot
+        // arrived" about the clock rather than about the device.
+        let endpoint = PeerEndpoint(host: "127.0.0.1", port: port)
+        var report = try await ConformanceHarness(device: CaptureDeviceFactory.create(),
+                                                  distance: MicToBallDistance())
+            .run(against: endpoint, seconds: 20, injectSwings: 1,
+                 nominateOnlyOnceConvertible: false)
+        var neededTheHold = false
+        if report.shotsReceived.isEmpty {
+            neededTheHold = true
+            report = try await ConformanceHarness(device: CaptureDeviceFactory.create(),
+                                                  distance: MicToBallDistance())
+                .run(against: endpoint, seconds: 20, injectSwings: 1,
+                     nominateOnlyOnceConvertible: true)
+        }
+        // ⛔ Printed, and it is the row's finding either way. `false` means E29
+        // closed F-S5-1 on the wire and this device no longer needs to hold its
+        // nominations back; `true` means it still does, and why.
+        print("IOP-2: E29 reconsider sufficient = \(neededTheHold == false)")
+        let transcript = "E29 sufficient: \(neededTheHold == false)\n"
+            + report.transcript.joined(separator: "\n")
 
         #expect(report.sessionId != nil, "\(transcript)")
         #expect(report.errorCodes.isEmpty, "\(transcript)")
@@ -462,5 +489,30 @@ struct ConformanceHarnessTests {
         }
         #expect(report.replayCompleted,
                 "an accepted Session did not finish replaying\n\(transcript)")
+
+        // ⛔ **`MSG` 4.1a1 / 9.1b (erratum E28) — the row F-S5-3 produced.** The
+        // replayed Session's frames arrived, and they arrived as *imported*: the
+        // live Session's id and `timebase_ref` are untouched by them, which is
+        // what `CORE` 4.1a and I16 require and what the wave-2 pairing found two
+        // implementations both getting wrong.
+        #expect(report.importedFrames > 0,
+                "a replayed Session produced no imported frame\n\(transcript)")
+        #expect(report.importedSessionId != nil, "\(transcript)")
+        #expect(report.importedSessionId != report.sessionId,
+                """
+                the imported Session must be a DIFFERENT Session from the live \
+                one — equal means the replay rebound the live Session
+                \(transcript)
+                """)
+        // The live Session's reference clock is still the host's, after an import
+        // whose own reference clock is this device's.
+        #expect(report.timebaseRefId == "tb:host",
+                "the live timebase_ref moved during a replay\n\(transcript)")
+        #expect(report.importedTimebaseRefId == PpcpTimebases.captureId,
+                """
+                the imported Session's own reference clock should be this \
+                device's — it was recorded hostless
+                \(transcript)
+                """)
     }
 }

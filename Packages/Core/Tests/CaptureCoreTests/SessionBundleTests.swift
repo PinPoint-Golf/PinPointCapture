@@ -266,6 +266,15 @@ struct SessionBundleTests {
     /// been recorded. Those are control messages conferred by **Live**, and with
     /// nobody controlling there is no command to record."
     ///
+    /// ⚠ **`CONF` 4.4 assertion 1 no longer lists `arm`** (erratum E19, 23 August
+    /// 2026). It used to — "declare, stream open, arm, readiness, candidates,
+    /// shots, captures, bundle write, bundle read" — and 7.3b forbids the thing it
+    /// asked for. The hostless peer arms *itself*; what the bundle carries is the
+    /// **effect**, which is `readiness`. So this test is no longer exercising a
+    /// row that asks for `arm`, and what it asserts is unchanged and still worth
+    /// asserting: that the two refusals below exist. It is now a test of 7.3b
+    /// rather than of the row.
+    ///
     /// ⛔ **Two refusals, and the first is the stronger one.** `ppcp_peer_arm`
     /// refuses this peer outright because 7.3a makes arming host-controlled and
     /// this peer is `role: capture` — so the frame does not exist to be recorded.

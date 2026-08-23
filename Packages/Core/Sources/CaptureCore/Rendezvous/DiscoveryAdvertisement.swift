@@ -61,8 +61,9 @@ public struct DiscoveryAdvertisement: Sendable, Hashable {
     /// `HMAC-SHA256(K_id, "ppcp1 rid" || rn)[0..7]`.
     public let rid: Data
     public let role: DiscoveryRole
-    /// The wire versions this peer speaks. ⚠ A browser filters on MAJOR **before**
-    /// connecting, which is why it is in the record at all.
+    /// The wire versions this peer speaks, as `RV` 3.3d's **version range**.
+    /// ⚠ A browser filters on MAJOR **before** connecting, which is why it is in
+    /// the record at all. See `PpcpVersionRange`.
     public let protocolVersions: String
     /// When `rn` was minted, in the timebase the caller ticks with — so
     /// `needsRotation(asOf:)` is answered against a clock that measures rather
@@ -79,7 +80,11 @@ public struct DiscoveryAdvertisement: Sendable, Hashable {
     ///     library that called `rand()` would be the single point at which the
     ///     whole model fails silently.
     public init(identityKey: Data, rn: Data, role: DiscoveryRole = .capture,
-                protocolVersions: String = PpcpLibrary.wireVersion,
+                // ⛔ `wireVersionRange` (`1.0`), never `wireVersion`
+                // (`ppcp/1.0`): `RV` 3.3d makes `pv` a version RANGE whose
+                // endpoints are `MAJOR.MINOR`, and a browser is required to
+                // ignore an advertisement it cannot parse. F-S5-5.
+                protocolVersions: String = PpcpLibrary.wireVersionRange,
                 mintedAtNs: Int64) throws {
         guard identityKey.count == Int(PPCP_RV_KEY_BYTES) else {
             throw TransportError.invalidKeyLength(identityKey.count)
@@ -195,5 +200,84 @@ public enum DiscoveryResolver {
             index = next
         }
         return out
+    }
+}
+
+// MARK: - RV 3.3d / 3.3e (erratum E25) — the version range
+
+/// One `pv` or `detail.supported` value: a comma-separated list of ranges.
+///
+/// ⛔ **A range where a peer DESCRIBES what it supports, a list where it OFFERS**
+/// (3.3e). `pv` here and `detail.supported` on `error` / `unsupported_version`
+/// are ranges; `hello.versions` (`MSG` 3.1b) is an ordered list of exact versions
+/// in preference order, and the two are deliberately different things — the
+/// initiator is choosing rather than describing, and a `hello` is not size-bound
+/// the way a TXT record is. E25 exists because `1.0-1.2` appeared as an example
+/// and was defined nowhere, so three documents spelled one idea three ways and
+/// every implementer would have invented the syntax independently.
+///
+/// `LOW` or `LOW-HIGH`, endpoints **inclusive**, both sharing a MAJOR; a bare
+/// `LOW` is `LOW-LOW`; several MAJORs are several ranges separated by commas,
+/// most preferred first. ⛔ **A reader that cannot parse one ignores the
+/// advertisement rather than guessing** (3.3d), which is what `init?` is for.
+public struct PpcpVersionRange: Sendable, Hashable {
+
+    public let major: Int
+    public let lowMinor: Int
+    public let highMinor: Int
+
+    public init?(_ text: String) {
+        let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 1 || parts.count == 2,
+              let low = Self.version(String(parts[0])) else { return nil }
+        guard parts.count == 2 else {
+            major = low.major; lowMinor = low.minor; highMinor = low.minor
+            return
+        }
+        guard let high = Self.version(String(parts[1])),
+              // 3.3d — "they share a MAJOR", and the endpoints are ordered.
+              high.major == low.major, high.minor >= low.minor else { return nil }
+        major = low.major; lowMinor = low.minor; highMinor = high.minor
+    }
+
+    private static func version(_ text: String) -> (major: Int, minor: Int)? {
+        let parts = text.split(separator: ".")
+        guard parts.count == 2,
+              let major = Int(parts[0]), let minor = Int(parts[1]),
+              major >= 0, minor >= 0,
+              // ⛔ No leading zeros and no signs: `CORE` 10.1b's `MAJOR.MINOR`,
+              // and `Int("+1")` would otherwise accept one.
+              String(major) == parts[0], String(minor) == parts[1] else { return nil }
+        return (major, minor)
+    }
+
+    public func contains(major: Int, minor: Int) -> Bool {
+        major == self.major && minor >= lowMinor && minor <= highMinor
+    }
+
+    public var text: String {
+        lowMinor == highMinor ? "\(major).\(lowMinor)"
+                              : "\(major).\(lowMinor)-\(major).\(highMinor)"
+    }
+
+    /// Parse a whole `pv` value. ⛔ `nil` — **ignore this advertisement** — where
+    /// any range in it is unparseable, rather than taking the ones that happened
+    /// to read (3.3d).
+    public static func parse(_ value: String) -> [PpcpVersionRange]? {
+        let parts = value.split(separator: ",", omittingEmptySubsequences: false)
+        guard parts.isEmpty == false else { return nil }
+        var ranges: [PpcpVersionRange] = []
+        for part in parts {
+            guard let range = PpcpVersionRange(
+                part.trimmingCharacters(in: .whitespaces)) else { return nil }
+            ranges.append(range)
+        }
+        return ranges
+    }
+
+    /// Whether a peer advertising `value` speaks anything in this MAJOR.
+    /// ⛔ `false` for an unparseable value: 3.3d says ignore, not guess.
+    public static func advertises(_ value: String, major: Int) -> Bool {
+        parse(value)?.contains { $0.major == major } ?? false
     }
 }

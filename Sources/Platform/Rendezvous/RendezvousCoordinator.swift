@@ -231,12 +231,34 @@ public enum WallClock {
         return date
     }
 
+    /// ⛔ **`RV` 4.4a2 test 1, and E24 settled that it is enough.**
+    ///
+    /// 4.4a2 (erratum E24, 23 August 2026 — a decision, reversible) names three
+    /// positive reasons to distrust a wall clock and says in as many words that
+    /// "a peer that can evaluate only the first is conformant":
+    ///
+    ///   1. the clock reads **earlier than the software's own build date** —
+    ///      universal, and the one a peer MUST implement. This is it.
+    ///   2. never synchronised since boot — **iOS does not expose it**. There is
+    ///      no public interface that reports whether the system clock has been set
+    ///      from a time source, and inventing one from a `mach_continuous_time`
+    ///      comparison would be a guess dressed as a measurement.
+    ///   3. stepped since boot beyond this peer's tolerance — an observed
+    ///      `ClockDiscontinuity` on a `wall` timebase (`CORE` §5.5).
+    ///
+    /// ⚠ **This finding is ours** (F-D7-1, session S4). 4.4a1 as first written
+    /// named test 2 first, so a peer restricted to test 1 either looked
+    /// non-conformant or skipped 4.4a1 and refused valid codes. Test 1 alone
+    /// catches the case the clause exists for — a clock reset to the epoch or to a
+    /// manufacture date on a flat battery — and 7.3e bounds the cost of a false
+    /// negative to one round trip, because the publisher refuses an expired code
+    /// regardless.
+    ///
+    /// ⚠ Test 3 is not implemented and is not needed for conformance. This peer
+    /// does watch its own clocks (`PpcpTimebases` declares `tb:continuous` beside
+    /// `tb:hosttime` precisely so a step is observable), so it is the one that
+    /// could be added without new machinery if a range ever produces a case.
     public static func trust(now: Date = Date()) -> WallClockTrust {
-        // 4.4a1's second reason. ⛔ The first — "never synchronised since boot" —
-        // is not readable on iOS: there is no public interface that reports
-        // whether the system clock has been set from the network, and inventing
-        // one from a `mach_continuous_time` comparison would be a guess dressed as
-        // a measurement. Recorded rather than approximated.
         now < buildDate ? .untrusted : .trusted
     }
 }

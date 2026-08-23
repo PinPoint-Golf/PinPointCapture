@@ -365,6 +365,28 @@ public extension DevicePeer {
     /// intervals.
     var isZeroHost: Bool { peerHandle.map(ppcp_peer_zero_host) ?? true }
 
+    /// `MSG` 4.1a1 / 9.1b (erratum E28) — the **imported** Session, where one has
+    /// been replayed onto this link, and `nil` where none has.
+    ///
+    /// ⛔ **The live Session's own identity and `timebase_ref` are untouched by an
+    /// import**, which is what `CORE` 4.1a and I16 require and what F-S5-3 found
+    /// them not to be: a replayed `session_open` naming a different Session used
+    /// to rebind the live one, so every subsequent `t0` came out in the exporting
+    /// device's clock. An instant on an imported frame is expressed in
+    /// `importedTimebaseRefId` and in nothing else.
+    var importedSessionId: String? {
+        guard let peer = peerHandle, let id = ppcp_peer_imported_session_id(peer) else {
+            return nil
+        }
+        return ppcpString(id.pointee)
+    }
+
+    var importedTimebaseRefId: String? {
+        guard let peer = peerHandle,
+              let id = ppcp_peer_imported_timebase_ref(peer) else { return nil }
+        return ppcpString(id.pointee)
+    }
+
     /// I16 / 8.3g — the Session parameters as they arrived, **unchanged** by the
     /// link doing anything. `nil` before a `session_open`.
     var sessionParameters: PpcpSessionParameters? {

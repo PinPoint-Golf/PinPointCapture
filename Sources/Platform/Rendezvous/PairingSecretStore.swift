@@ -46,6 +46,21 @@ public struct StoredPairing: Sendable, Hashable, Identifiable {
     /// 7.4c — the counterpart `Peer.id` learned **inside** the authenticated
     /// channel. `nil` until a `hello` has arrived on it.
     public let counterpartPeerId: String?
+    /// `RV` 7.4h (erratum E26) — the **network name** from the code that created
+    /// this pairing, and nothing else from it.
+    ///
+    /// ⛔ **The passphrase is never here and there is no field for it.** A network
+    /// name is broadcast by the access point and is not a secret; a passphrase is,
+    /// which is exactly where E26 puts the line. 4.4c otherwise forbids retaining
+    /// any of a decoded payload, and 7.4h scopes that to this one field.
+    ///
+    /// ⛔ **It is a hint offered to the USER, never an instruction to rejoin.** 6a
+    /// is unchanged: this peer does not join a network on its own, and holding no
+    /// passphrase it could not. Without it §7.4's whole workflow failed at the one
+    /// venue it was written for — a range with its own network, where a persisted
+    /// pairing was useless because the device could no longer name the network the
+    /// host is on (F-D7-3).
+    public let networkName: String?
     public let savedAt: Date
 
     public var id: String { sessionId }
@@ -81,8 +96,10 @@ public enum PairingSecretStore {
         guard code.mayPersistPairing else {
             throw StoreError.multiUseCodeMayNotBePersisted
         }
+        // ⛔ 7.4h (erratum E26) — the **name** and never `wifi.k`. The passphrase
+        // is not read here, is not passed on, and has nowhere to be stored.
         try write(sessionId: code.sessionId, prk: keys.prk, displayName: displayName,
-                  counterpartPeerId: nil)
+                  counterpartPeerId: nil, networkName: code.network?.ssid)
     }
 
     /// 7.4c — records the counterpart identity once `hello` has disclosed it
@@ -91,7 +108,8 @@ public enum PairingSecretStore {
     public static func bind(sessionId: String, toCounterpart peerId: String) throws {
         guard let existing = try load(sessionId: sessionId) else { return }
         try write(sessionId: sessionId, prk: existing.prk,
-                  displayName: existing.displayName, counterpartPeerId: peerId)
+                  displayName: existing.displayName, counterpartPeerId: peerId,
+                  networkName: existing.networkName)
     }
 
     // MARK: Reading
@@ -137,6 +155,9 @@ public enum PairingSecretStore {
             return StoredPairing(sessionId: sessionId,
                                  displayName: item[kSecAttrLabel] as? String,
                                  counterpartPeerId: item[kSecAttrComment] as? String,
+                                 // 7.4h — `kSecAttrDescription`, and nothing in
+                                 // this store holds a passphrase.
+                                 networkName: item[kSecAttrDescription] as? String,
                                  savedAt: item[kSecAttrModificationDate] as? Date ?? .now)
         }
         .sorted { $0.savedAt > $1.savedAt }
@@ -167,7 +188,12 @@ public enum PairingSecretStore {
 
     // MARK: The Keychain itself
 
-    private struct Held { let prk: Data; let displayName: String? }
+    private struct Held {
+        let prk: Data
+        let displayName: String?
+        /// 7.4h — carried so `bind` does not drop it on rewrite.
+        let networkName: String?
+    }
 
     private static func load(sessionId: String) throws -> Held? {
         let query: [CFString: Any] = [
@@ -185,11 +211,13 @@ public enum PairingSecretStore {
               let data = item[kSecValueData] as? Data else {
             throw StoreError.keychain(status)
         }
-        return Held(prk: data, displayName: item[kSecAttrLabel] as? String)
+        return Held(prk: data, displayName: item[kSecAttrLabel] as? String,
+                    networkName: item[kSecAttrDescription] as? String)
     }
 
     private static func write(sessionId: String, prk: Data, displayName: String?,
-                              counterpartPeerId: String?) throws {
+                              counterpartPeerId: String?,
+                              networkName: String? = nil) throws {
         var attributes: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -202,6 +230,10 @@ public enum PairingSecretStore {
         ]
         if let displayName { attributes[kSecAttrLabel] = displayName }
         if let counterpartPeerId { attributes[kSecAttrComment] = counterpartPeerId }
+        // 7.4h (E26) — the network NAME. ⛔ There is deliberately no branch here
+        // for a passphrase: the field does not exist, so it cannot be filled in
+        // by a later change that looked reasonable.
+        if let networkName { attributes[kSecAttrDescription] = networkName }
 
         // Replace rather than update-or-add: a partial update that left an old
         // `PRK` behind would be a pairing that authenticates as something else.

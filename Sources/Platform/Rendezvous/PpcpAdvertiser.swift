@@ -182,7 +182,16 @@ public actor PpcpBrowser {
                       let rid = DiscoveryResolver.hexField(txt["rid"], bytes: 8),
                       let role = DiscoveryRole(rawValue: txt["role"] ?? ""),
                       // 3.3a — a browser filters on MAJOR before connecting.
-                      let versions = txt["pv"] else { continue }
+                      let versions = txt["pv"],
+                      // ⛔ 3.3d / 3.3e (erratum E25) — `pv` is a version RANGE,
+                      // and "a reader that cannot parse a range ignores that
+                      // advertisement rather than guessing". So this is a `guard`
+                      // and not a warning: a peer whose `pv` this build does not
+                      // understand is not offered to the user at all, which is
+                      // the same answer 3.4c gives for an unresolvable `rid`.
+                      PpcpVersionRange.advertises(versions,
+                                                  major: PpcpLibrary.wireMajor)
+                else { continue }
                 // ⛔ 3.4c. Unresolvable means not offered, not "offered with a
                 // warning".
                 guard let index = DiscoveryResolver.resolve(rid: rid, rn: rn,

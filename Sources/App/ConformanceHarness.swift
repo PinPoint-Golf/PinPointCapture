@@ -82,6 +82,17 @@ public actor ConformanceHarness {
         /// from one that does not — which is the whole of IOP-6.
         public var candidatesReceived: [String] = []
 
+        // MARK: The imported Session (MSG 4.1a1 / 9.1b, erratum E28)
+
+        /// How many frames of a **replayed** Session crossed this link.
+        public var importedFrames: Int = 0
+        /// The imported Session's own id and reference clock. ⛔ Recorded beside
+        /// `sessionId` and `timebaseRefId` rather than instead of them: the whole
+        /// of E28 is that an import leaves the live Session untouched, and a
+        /// report that carried one number could not show it.
+        public var importedSessionId: String?
+        public var importedTimebaseRefId: String?
+
         // MARK: What the counterpart's Shots said, and what this device made of them
         //
         // ⛔ **I22, from the receiving side.** 5.13c puts `Shot.t0` in
@@ -248,7 +259,10 @@ public actor ConformanceHarness {
             try peer.hello()
             try peer.declare(declaration)
         }
-        report.negotiatedVersion = try? await pump.perform { $0.negotiatedVersion }
+        // ⛔ **Not read here.** F-S5-4, found by the S5 wave-2 run: at this point
+        // `hello` has been *sent* and `hello_accept` has not arrived, so there is
+        // no agreed version to read and the report said `null` for a link that had
+        // certainly agreed one. It is read on `.connected` below instead.
 
         let deadline = Date().addingTimeInterval(seconds)
         var pendingSwings = injectSwings
@@ -297,6 +311,24 @@ public actor ConformanceHarness {
                             inReplyTo: replyTo)
                     }
 
+                case .connected:
+                    // `MSG` 3.2 — the version is agreed at `hello_accept` and
+                    // readable from here on (F-S5-4).
+                    report.negotiatedVersion =
+                        try? await pump.perform { $0.negotiatedVersion }
+
+                case .importedFrame(_, let sessionId, let timebaseRefId):
+                    // ⛔ **`MSG` 4.1a1 / 9.1b (erratum E28) — an imported frame
+                    // ends here and reaches nothing else.** These are the frames
+                    // of a Session this device *offered*, replayed onto the live
+                    // link by design (`ENC` 7a); they are not this Session's. They
+                    // are counted, their Session is recorded, and they are handed
+                    // to no mint pump, no arbiter and no conversion — which is
+                    // what F-S5-3 found two implementations both failing to do.
+                    report.importedFrames += 1
+                    report.importedSessionId = sessionId
+                    report.importedTimebaseRefId = timebaseRefId
+
                 case .declared(let counterpart):
                     report.counterpartPeerId = counterpart
 
@@ -334,6 +366,24 @@ public actor ConformanceHarness {
                     report.candidatesReceived.append(id)
 
                 case .relationUpdate:
+                    // ⚠ **`CORE` 8.2d1 (erratum E29) — and on this side it is a
+                    // no-op, stated rather than silently skipped.** E29 requires
+                    // an arbiter to RECONSIDER a Candidate it excluded for want
+                    // of a relation, once that relation arrives, and
+                    // `ppcp_arbiter_reconsider()` is what an embedding calls
+                    // here. **This application builds no arbiter**: it declares
+                    // `core, capture, detect, mint, live, offline, markup` and
+                    // not Arbitrate, and I20 gives arbitration to a peer with
+                    // `role: host` and to no other — `ppcp_arbiter_new` refuses
+                    // this peer outright. So there is nothing on the device side
+                    // to call and no hidden obligation being skipped.
+                    //
+                    // ⚠ The device's own half of the same problem is already
+                    // structural: `ppcp_mint_pump` re-tests `8.2i1` on every
+                    // pump ("a relation may have arrived since the nomination"),
+                    // so a Candidate this peer could not express when it made it
+                    // becomes mintable the moment it can. That is E29's rule on
+                    // the minting side, and it needed no call.
                     report.relationUpdates += 1
 
                 case .sync:

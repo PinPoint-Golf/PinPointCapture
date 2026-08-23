@@ -44,14 +44,21 @@ public struct TransferJob: Sendable {
     /// I30 / 5.8d — a camera Capture carries the per-frame series **here** and
     /// only here, on `payload_begin`.
     public let achievedFrames: PpcpAchievedFrames?
+    /// `ENC` 6g / `MSG` 8.3h (erratum E7) — the IANA media type of the bytes.
+    /// ⛔ Defaults to a clip's, because every job this application queues is one;
+    /// 6h forbids the receiver inferring it, so a `nil` here would be a receiver
+    /// left guessing rather than a field politely omitted.
+    public let container: String?
 
     public init(captureId: String, bytes: UInt64, digest: Data,
                 achievedFrames: PpcpAchievedFrames? = nil,
+                container: String? = PpcpMediaType.clip,
                 payload: @escaping @Sendable () throws -> Data) {
         self.captureId = captureId
         self.bytes = bytes
         self.digest = digest
         self.achievedFrames = achievedFrames
+        self.container = container
         self.payload = payload
     }
 }
@@ -147,6 +154,8 @@ public final class PayloadTransferQueue: @unchecked Sendable {
                                   digest: entry.job.digest,
                                   chunkBytes: Self.chunkBytes,
                                   channel: channel,
+                                  // `ENC` 6g (erratum E7).
+                                  container: entry.job.container,
                                   achievedFrames: entry.job.achievedFrames)
             entry.begun = true
         }

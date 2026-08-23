@@ -95,6 +95,24 @@ public enum PeerLinkEvent: Sendable, Hashable {
     /// is reported apart so a screen can tell "the host said goodbye" from "the
     /// Wi-Fi dropped" without reading a log.
     case transportClosed(ChannelCloseReason)
+    /// `MSG` 4.1a1 / 9.1b (erratum E28) — a frame belonging to an **imported**
+    /// Session replayed onto this link, never to the live one.
+    ///
+    /// ⛔ **Every imported frame arrives here and as nothing else, and that is
+    /// the whole point.** F-S5-3 was found by the S5 wave-2 pairing: an offered
+    /// Session's frames go onto the live link by design (`ENC` 7a), and an
+    /// embedding that read them as live fed a second Session's Candidates to the
+    /// live arbiter and let a replayed `session_open` rebind the live
+    /// `timebase_ref`. Routing them to a case of their own makes the mistake
+    /// unavailable rather than merely documented: there is no `shotReceived` to
+    /// mishandle, because an imported `shot` is not one.
+    ///
+    /// - Parameters:
+    ///   - kind: the `ppcp_event_kind` raw value, so a count can be kept per type.
+    ///   - sessionId: the imported Session's own id (`ppcp_peer_imported_session_id`).
+    ///   - timebaseRefId: the imported Session's own reference clock. ⛔ The only
+    ///     timebase an instant on one of these frames may be converted with.
+    case importedFrame(kind: Int32, sessionId: String?, timebaseRefId: String?)
 }
 
 /// Drives one `DevicePeer` over one `PeerTransport`.
@@ -330,7 +348,17 @@ public actor PeerLinkPump {
     public var hasPendingEvents: Bool { pending.isEmpty == false }
 
     private func harvest() {
-        while let event = peer.nextEvent({ kind, msg in Self.translate(kind, msg) }) {
+        // ⛔ **`nextEventImported`, never `nextEvent`** (erratum E28). An offered
+        // Session's frames travel on the live link, and this flag is the only
+        // thing that tells them from the Session in progress. Reading events
+        // without asking is what F-S5-3 was.
+        while let event = peer.nextEventImported({ kind, _, imported, msg in
+            imported
+                ? PeerLinkEvent.importedFrame(kind: Int32(kind.rawValue),
+                                              sessionId: self.peer.importedSessionId,
+                                              timebaseRefId: self.peer.importedTimebaseRefId)
+                : Self.translate(kind, msg)
+        }) {
             pending.append(event)
         }
     }

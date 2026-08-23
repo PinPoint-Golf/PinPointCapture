@@ -53,7 +53,33 @@ func check(_ result: ppcp_result) throws {
 /// other cannot be reproduced.
 public enum PpcpLibrary {
     public static var version: String { String(cString: ppcp_library_version()) }
+    /// The wire version token, `ppcp/MAJOR.MINOR` — what `hello.versions` and
+    /// `Peer.protocol_version` carry.
+    ///
+    /// ⛔ **Not what `pv` carries.** See `wireVersionRange`.
     public static var wireVersion: String { String(cString: ppcp_wire_version()) }
+
+    /// `CORE` 10.1b's `MAJOR` and `MINOR`, from the library's own macros rather
+    /// than by splitting a string.
+    public static var wireMajor: Int { Int(PPCP_WIRE_VERSION_MAJOR) }
+    public static var wireMinor: Int { Int(PPCP_WIRE_VERSION_MINOR) }
+
+    /// `RV` 3.3d (erratum E25) — this peer's `pv`, as a **version range**.
+    ///
+    /// ⛔ **This is `1.0`, and it is NOT `ppcp/1.0`.** Found by adopting E25:
+    /// `DiscoveryAdvertisement` defaulted `pv` to `PpcpLibrary.wireVersion`,
+    /// which is the wire *token* `ppcp/1.0`. 3.3d says each endpoint of a range
+    /// is `MAJOR.MINOR` as `CORE` 10.1b defines it, so `ppcp/1.0` is not a range
+    /// at all and a conformant browser is required to **ignore** an
+    /// advertisement carrying it. This peer was publishing a record another
+    /// implementation must discard, and nothing before E25 could have said so —
+    /// the syntax was defined nowhere, which is exactly why the erratum exists.
+    /// F-S5-5.
+    ///
+    /// ⚠ The two are different strings deliberately: `hello` offers a token in
+    /// preference order, a TXT record describes a supported range in a 200-byte
+    /// budget (3.3e).
+    public static var wireVersionRange: String { "\(wireMajor).\(wireMinor)" }
 }
 
 public extension PpcpKeyLengths {
@@ -174,21 +200,55 @@ public struct RendezvousCredentials: PpcpCredentials {
         return Data(bytes.prefix(count))
     }
 
+    /// ⛔ **`ppcp_rv_psk_identity_draw`, not `ppcp_rv_psk_identity`** — `RV` 5.3a1
+    /// (erratum E21), and this is a live connection.
+    ///
+    /// **No octet of the identity may be `0x00`.** Several widely-used TLS stacks
+    /// carry a PSK identity as a C string and take its length with `strlen`: an
+    /// embedded zero truncates it, the server resolves nothing, and the handshake
+    /// fails **intermittently** — roughly one connection in sixteen, because
+    /// seventeen octets each have a 1-in-256 chance of being zero. At a driving
+    /// range that is diagnosed as a network fault and never as this.
+    ///
+    /// The draw is rejection sampling: it re-draws `rn2` until neither it nor the
+    /// computed tag contains a zero, at an average cost of 1.07 HMACs, and leaves
+    /// `rn2` with more than 63 bits of entropy. ⚠ `ppcp_rv_psk_identity` is
+    /// deliberately *not* fixed and stays reachable, because `RV` §10.2's test
+    /// vector must still reproduce byte for byte from its stated `rn2`; it is
+    /// simply the wrong entry point for a socket.
     public func nextPskIdentity() throws -> Data {
-        let rn2 = randomBytes(Int(PPCP_RV_RN_BYTES))
-        guard rn2.count == Int(PPCP_RV_RN_BYTES) else {
-            throw TransportError.invalidIdentityLength(rn2.count)
-        }
         var identity = [UInt8](repeating: 0, count: Int(PPCP_RV_PSK_IDENTITY_BYTES))
-        try check(identityKey.withUnsafeBytes { keyBytes in
-            rn2.withUnsafeBytes { rnBytes in
-                ppcp_rv_psk_identity(keyBytes.bindMemory(to: UInt8.self).baseAddress,
-                                     rnBytes.bindMemory(to: UInt8.self).baseAddress,
-                                     &identity)
-            }
-        })
+        var rn2 = [UInt8](repeating: 0, count: Int(PPCP_RV_RN_BYTES))
+        // ⚠ The CSPRNG stays the embedding's, which is what makes the §10.2
+        // vector reproducible and what `rv.h` asks for: a library calling
+        // `rand()` would be the single point at which the whole model fails
+        // silently. The library owns only the rejection rule.
+        let source = randomBytes
+        var context = RandomContext(draw: source)
+        try withUnsafeMutablePointer(to: &context) { ctx in
+            try check(identityKey.withUnsafeBytes { keyBytes in
+                ppcp_rv_psk_identity_draw(
+                    keyBytes.bindMemory(to: UInt8.self).baseAddress,
+                    { raw, out, len in
+                        guard let raw, let out else { return false }
+                        let context = raw.assumingMemoryBound(to: RandomContext.self)
+                        let bytes = context.pointee.draw(len)
+                        guard bytes.count == len else { return false }
+                        bytes.copyBytes(to: out, count: len)
+                        return true
+                    },
+                    UnsafeMutableRawPointer(ctx), &rn2, &identity)
+            })
+        }
         // ⛔ `RV` 5.3f — returned as bytes. No transcoding, no UTF-8 validation,
         // no truncation, here or anywhere downstream of here.
         return Data(identity)
+    }
+
+    /// A box for the closure, so it survives the trip through a C `void *`.
+    /// ⚠ A `@convention(c)` callback captures nothing, which is the whole reason
+    /// this exists.
+    private struct RandomContext {
+        let draw: @Sendable (Int) -> Data
     }
 }

@@ -456,12 +456,17 @@ public final class SessionBundleWriter: @unchecked Sendable {
     ///   travels here, with the payload it describes, and nowhere else. A bundle
     ///   written without it is a bundle from which §6.1's conversion cannot be
     ///   performed at all (I17).
+    /// - Parameter container: `ENC` 6g (erratum E7) — the media type of the
+    ///   bytes. ⛔ A bundle is read by another implementation months later, which
+    ///   is precisely the reader 6h forbids to guess.
     public func writePayload(captureId: String, clip: Data,
                              chunkBytes: Int = 256 * 1024,
+                             container: String? = PpcpMediaType.clip,
                              achievedFrames: PpcpAchievedFrames? = nil) throws {
         let digest = Self.digest(of: clip)
         try peer.payloadBegin(captureId: captureId, bytes: UInt64(clip.count),
                               digest: digest, chunkBytes: UInt32(chunkBytes),
+                              container: container,
                               achievedFrames: achievedFrames)
         try flush(.bulk)
 
