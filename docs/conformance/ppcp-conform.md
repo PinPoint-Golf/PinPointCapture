@@ -3,9 +3,9 @@
 
 | Test | Invariant | Profile | Method | PinPointCapture |
 |---|---|---|---|---|
-| CT-S4 | I20, I23 | Mint | injected | impl |
-| CT-I35 | I35 | Arbitrate | injected | impl |
-| CT-I18 | I18 | Core | paired | impl |
-| CT-I20n | I20 | Arbitrate | injected | impl |
+| CT-S4 | I20, I23 | Mint | injected | pass |
+| CT-I35 | I35 | Arbitrate | injected | pass |
+| CT-I18 | I18 | Core | paired | pass |
+| CT-I20n | I20 | Arbitrate | injected | n/a |
 
 Every `pass` above came from a command; the commands are in the JSON beside this file, one per row, and each re-runs on its own.
