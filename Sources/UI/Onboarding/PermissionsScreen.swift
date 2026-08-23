@@ -79,8 +79,8 @@ public struct PermissionsScreen: View {
                     benefit: "The sound of impact gives every shot an exact time, and lines two shots up on impact rather than on clip start."
                 )
 
-                // REQ-PRIV-2 / OPEN-2. The default below is the design's proposal
-                // for confirmation, not a decision — see `AudioRetention`.
+                // REQ-PRIV-2 — explicit, user-visible and configurable, and the
+                // sentence below is the one the privacy label has to agree with.
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Audio kept")
@@ -101,6 +101,18 @@ public struct PermissionsScreen: View {
                         .accessibilityHint(Text("Changes how much audio is kept with each shot."))
                 }
                 .frame(minHeight: PPMetrics.Size.minimumTapTarget)
+
+                // ⛔ **B7 — the retention statement, in the app.** `CORE` §13c and
+                // the requirements review both say the candidate count is not
+                // bounded by anything the user does, so the honest sentence names
+                // the cap and says the rejected noises are kept too. A label built
+                // on the shot count would be wrong in the one direction a user
+                // would mind.
+                Text(audioRetention.userVisibleStatement)
+                    .ppMeasuredDetail()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(Text("What is kept"))
+                    .accessibilityValue(Text(audioRetention.userVisibleStatement))
             }
 
             Section {
