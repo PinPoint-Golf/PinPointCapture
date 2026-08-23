@@ -8,76 +8,9 @@
 | Role | `capture` |
 | Against | `PPCP-CORE` revision 9, `PPCP-MSG`, `PPCP-ENC`, `PPCP-CONF` 1.0; `PPCP-RV` revision 8 |
 | Companion | [`libppcp/docs/conformance/matrix.md`](https://github.com/PinPoint-Golf/libppcp) — the compliance record this file feeds |
-| Status | **In progress.** Session S4 wave 1: **D9's transport landed and D-compose's device half with it** — the application drives a `ppcp_peer` over a real transport for the first time (`PeerLinkPump`), `DetectAndMint` has a caller, the hostless Session opens the `audio` Stream 5.12.1a requires, and the microphone-to-ball distance reaches every Candidate's `tof_correction`. D7's rendezvous pieces are in: the pairing code decodes against the `RV` §10.3 vectors, `PRK` lives in the Keychain under 7.4's three conditions, the join is `NEHotspotConfiguration` with consent, and `_ppcp._tcp` carries 3.3a's five keys and nothing else. Earlier: S3 wave 2: **D5, D6 and D8 landed** — the acoustic detector emits every Candidate, a hostless Session mints its own Shots and its bundle carries them with their Captures, the transfer queue evicts only through the library's I38 predicate, annotations converge and coalesce, and the listener now holds its link table in `libppcp`. `make test-core` 145/145. S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
+| Status | **In progress.** Session S4 wave 2: **D9's claim is filled by `ppcp-conform`** — 3 pass, 0 fail, 1 `n/a`, exit 0 (§1a). CT-S4 (6) passes. L15/L16 adopted, closing F-D5-1, F-D6-1 and F-D6-2, and erratum E4 closed F-D9-1. Earlier, wave 1: **D9's transport landed and D-compose's device half with it** — the application drives a `ppcp_peer` over a real transport for the first time (`PeerLinkPump`), `DetectAndMint` has a caller, the hostless Session opens the `audio` Stream 5.12.1a requires, and the microphone-to-ball distance reaches every Candidate's `tof_correction`. D7's rendezvous pieces are in: the pairing code decodes against the `RV` §10.3 vectors, `PRK` lives in the Keychain under 7.4's three conditions, the join is `NEHotspotConfiguration` with consent, and `_ppcp._tcp` carries 3.3a's five keys and nothing else. Earlier: S3 wave 2: **D5, D6 and D8 landed** — the acoustic detector emits every Candidate, a hostless Session mints its own Shots and its bundle carries them with their Captures, the transfer queue evicts only through the library's I38 predicate, annotations converge and coalesce, and the listener now holds its link table in `libppcp`. `make test-core` 145/145. S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
 | Depends on | `libppcp` — MIT, consumed as a SwiftPM package (plan A5), product `CPPCP`. Path `../../../libppcp` during co-development; `https://github.com/PinPoint-Golf/libppcp.git` once tagged. |
 | Date | 23 August 2026 (S3, wave 2) |
-
----
-
-## 0. Work in progress — S4 wave 2
-
-*Delete this section when the D9 claim below is complete. It exists so the next
-session resumes from facts rather than from a reconstruction.*
-
-**Done and green**
-
-| | |
-|---|---|
-| `make test-core` | **166/166** at `6727d6b` |
-| `make conform SCENARIO=reference-host` | **green** — CT-S5 (device) `pass (simulator half)` |
-| `make conform SCENARIO=silent-host` | **green** — CT-S4 (6) **`pass`** |
-| L15/L16 adoption | F-D5-1, F-D6-1, F-D6-2 closed; erratum E2 API added |
-| Erratum E4 | F-D9-1 closed; 2c1's three conditions held structurally |
-
-**The silent-host result, in full** (this is the row's evidence):
-
-```
-sim report: declares 1  candidates rx 2  shots rx 2  max shot candidates 1
-            issued 0  minted 0  retained 2  relations rx/tx 87/52
-            captures rx/unique/dup 3/3/0  errors 0
-```
-
-`issued 0` with `shots rx 2` is the row: the host issued nothing and the device
-minted on its own 8.2i deadline. It took three runs; **all three causes were
-ours** and the third was the missing 6.1f `publishRelations()` — see the CT-S4 (6)
-entry in §3.
-
-**Next, in order**
-
-1. ⛔ **`make conform` is broken right now.** The dispatch routes the default case
-   to a `conform-tool` target that **has not been written**. `make conform
-   SCENARIO=<name>` works and routes to `conform-sim`. Writing that recipe is the
-   next action.
-2. Run it, check the JSON and Markdown into `docs/conformance/`.
-3. Fill §1's profile set, the reproducing command and the tool's row table
-   verbatim — pass, fail, `n/a`. A failing row is a **finding** with an owner
-   named (ours / `libppcp` / spec), never edited out.
-
-**The exact command**
-
-```sh
-ppcp-conform --profiles core,capture,detect,mint,live,offline,markup \
-             --role capture --listen PORT --column PinPointCapture \
-             --json docs/conformance/ppcp-conform.json \
-             --markdown docs/conformance/ppcp-conform.md
-```
-
-⚠ **`--listen`, not `--connect`.** The device **dials** and has no plaintext
-listener — which is also how `RV` 2c1's "nothing to accept on" stays easy to
-hold. `ppcp-conform` spawns one `ppcp-sim` per row *sequentially on that one
-port*, so the device must dial **once per row**; `ConformanceHarnessTests
-.ppcpConformDrivesTheDevice()` is the loop that does it, reading
-`TEST_RUNNER_PPCP_CONFORM_TOOL_PORT`. It has **never been compiled**.
-
-⚠ Rows `ppcp-conform --list` gives for `--role capture`: CT-S4, CT-I35, CT-I18
-positive; CT-I6, CT-I20n, CT-I26, CT-I25 negative (`n/a` when they pass, for
-profiles this claim does not name — of those only `arbitrate` is undeclared).
-
-**Blocked**
-
-Nothing on `libppcp`. `xcodebuild test-without-building` wedges at 0 % CPU with
-another build in flight on this 16 GB machine — kill and re-run **once**, never
-loop.
 
 ---
 
@@ -95,6 +28,118 @@ loop.
 | **Offline** | yes | The session store *is* the bundle (plan A9). |
 | **Markup** | yes | Device-authored annotations, host annotations stored opaque. |
 | **Arbitrate** | **no** | Host-only by `CORE` I20. The negative test applies: this application parses `capture_request` and **never originates it**, and never originates `session_link`. |
+
+### The claim, as the instrument receives it
+
+⛔ **`CONF` 1a: a conformance run without a profile set is not a claim.** The set
+above is passed to `ppcp-conform` verbatim, and the Makefile holds it in one
+place (`CONFORM_PROFILES`) so the two cannot drift — a row that passes against a
+set this application does not claim is measuring somebody else.
+
+```
+core,capture,detect,mint,live,offline,markup
+```
+
+⚠ **`arbitrate` is deliberately absent.** This is a capture peer: I20 gives
+arbitration to a peer with `role: host` and to no other (8.3d), so the profile is
+not claimed and the rows for it run **negative** — see CT-I20n below.
+
+---
+
+## 1a. D9 — the conformance claim
+
+**Every row `ppcp-conform` applies to this claim and role, verbatim from the
+tool.** ⛔ Not transcribed by hand and not edited: the table below is
+[`docs/conformance/ppcp-conform.md`](conformance/ppcp-conform.md), regenerated by
+the command underneath it, and the JSON beside it carries the exact `ppcp-sim`
+invocation for each row so any one re-runs on its own.
+
+| Test | Invariant | Profile | Method | PinPointCapture |
+|---|---|---|---|---|
+| CT-S4 | I20, I23 | Mint | injected | **pass** |
+| CT-I35 | I35 | Arbitrate | injected | **pass** |
+| CT-I18 | I18 | Core | paired | **pass** |
+| CT-I20n | I20 | Arbitrate | injected | **n/a** |
+
+`exit 0` — every applicable row passed. Summary: **3 pass, 0 fail, 1 n/a, 0
+skipped.** Transport: plaintext, `RV` §2's `direct` path (§2c1, and F-D9-1 in §4).
+
+### Reproducing it
+
+```sh
+make conform          # builds, launches the simulator, then runs the tool
+```
+
+which is, with the port filled in:
+
+```sh
+ppcp-conform --profiles core,capture,detect,mint,live,offline,markup \
+             --role capture --listen PORT --column PinPointCapture \
+             --json docs/conformance/ppcp-conform.json \
+             --markdown docs/conformance/ppcp-conform.md \
+             --sim ../libppcp/build/dev/tools/ppcp-sim/ppcp-sim \
+             --scenarios ../libppcp/tools/scenarios
+```
+
+⚠ **`--listen`, not `--connect`.** The device **dials**: `PpcpDirectConnector` is
+a connector and there is no plaintext listener anywhere in this application —
+which is also what makes `RV` 2c1's "nothing crosses it" easy to hold, because
+there is nothing to accept on. `ppcp-conform` spawns one `ppcp-sim` per row,
+sequentially, on that one port, so the device dials **once per row**;
+`ConformanceHarnessTests.ppcpConformDrivesTheDevice()` is the loop that answers.
+
+⛔ **The verdict is the tool's exit code, not the suite's.** 0 every applicable
+row passed · 1 a row failed · 2 a bad invocation · 3 **no row applied** — and 3
+is handled as a failure and named as one, because a claim naming profiles the
+tool has no row for has not been measured, and "0 failures" about an empty run is
+the failure mode that exit code exists to prevent.
+
+⚠ **The simulator is launched first and the tool second**, with 75 s allowed for
+boot, install and launch. The first attempt started the tool first and **all four
+rows failed** — `ppcp-sim: timed out waiting for two bound channels` — because
+each row gives the peer 5–8 s and the device was still booting. That is the same
+mistake as starting the counterpart before the build, one layer in.
+
+### What each row means, and what `n/a` is doing there
+
+**CT-S4 — `pass`.** The 8.2i deadline against a host that answers nothing. The
+device mints on its own deadline with `authority: device` (8.3a–c) and each Shot
+carries exactly one Candidate (I23). Driven independently as
+`make conform SCENARIO=silent-host`, whose `ppcp-sim` report is quoted under
+CT-S4 (6) in §3.
+
+**CT-I35 — `pass`.** A host that arbitrates **late** — after the device was
+entitled to mint — so 8.2k's attach-rather-than-issue fires and `t0` does not
+move (`t0_revisions=0`). ⚠ The profile column says *Arbitrate* because the row
+needs an arbitrating counterpart; what is measured is the **device's** answer to
+one.
+
+**CT-I18 — `pass`.** `relations_composed=0` against a host declaring three
+timebases. I18 and 5.4c: a peer needing A→C measures it and never derives it from
+A→B and B→C. ⛔ The negative half is the whole row — it passes by the device
+*not* doing something, which is only observable from outside.
+
+**CT-I20n — `n/a`, and it is the most interesting cell in the table.** This claim
+does not name `arbitrate`, so the row runs **negative** (`CONF` 1d): the
+counterpart nominates, and the device must parse `candidate` completely and
+**never originate a Shot for it** (`shots_rx=0`). I20 gives arbitration to a peer
+with `role: host` and to no other. `n/a` is the matrix's vocabulary for a profile
+not claimed *and demonstrably not exercised* — a stronger statement than an empty
+cell, and the half of `CONF` §1 that an implementation testing only itself never
+makes.
+
+### What this run does not cover
+
+⚠ **A simulator has no camera**, so the peer under test declares no camera Source.
+What still needs a phone: a camera `CaptureProfile` on the wire, a Capture with
+`achieved_frames`, the payload path, and CT-S7's conversion against
+`measured-capture.json`. See §5.
+
+⛔ **`static` and `fixture` rows are not in this table at all**, by the tool's
+design: they are decidable from a declaration or a recorded stream and belong in
+this implementation's own suite (`make test-core`, 166 tests). CT-I34 is absent
+for a different reason — re-import being idempotent is not visible from the wire.
+
 
 ## 2. PPCP-RV
 
@@ -889,7 +934,8 @@ change with no new assertion behind it, so it is queued rather than rushed. F-D3
 ```
 make test-core      # the neutral layer, the RV §10 vectors and the bundle round trip, on the host
 make test-app       # the TLS-PSK handshake and the ENC §2.1 bind, on a simulator
-make conform        # D9 — this device's peer against libppcp's ppcp-sim
+make conform        # D9 — ppcp-conform drives the device and fills the claim
+make conform SCENARIO=silent-host   # one ppcp-sim scenario, for debugging a row
 make gen && make build
 ```
 
@@ -907,7 +953,7 @@ device dialled and the failure read as a refused connection. `build-for-testing`
 then `test-without-building` is what makes the window the test's rather than the
 compiler's.
 
-⚠ **`make test-core` is green: 165 tests, 21 suites.** Every `pass` in §3 is one of
+⚠ **`make test-core` is green: 166 tests, 21 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
 
 ⚠ **`make conform` is green** against `ppcp-sim --scenario reference-host`, with
