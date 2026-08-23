@@ -44,7 +44,25 @@ SCENARIO_DECL ?= $(LIBPPCP)/tools/scenarios/$(DECL).json
 # The device side's own deadline is `ConformanceHarness.run(seconds:)`.
 CONFORM_RUN_MS ?= 45000
 
-.PHONY: all gen build build-device _udid test test-core test-app conform device deploy lint clean help
+# ⛔ **The claim** (`CONF` 1a): a conformance run without a profile set is not a
+# claim. This is the set `docs/ppcp-conformance.md` §1 states, and the two must
+# not drift — a row that passes against a set this application does not claim is
+# measuring somebody else.
+CONFORM_PROFILES ?= core,capture,detect,mint,live,offline,markup
+CONFORM_OUT      ?= docs/conformance
+
+.PHONY: all gen build build-device _udid test test-core test-app conform conform-sim conform-tool device deploy lint clean help
+
+# ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
+# what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
+# the direct `ppcp-sim` path, which is how a single scenario is driven while
+# debugging one. `$(origin ...)` is what tells an explicit SCENARIO from the
+# default sitting in this file.
+ifeq ($(origin SCENARIO),command line)
+conform: conform-sim
+else
+conform: conform-tool
+endif
 
 all: build
 
@@ -162,7 +180,7 @@ test-app: gen
 # ⛔ The simulator peer is started BEFORE the test and killed after, whatever
 # happens: a listener left bound holds the port and the next run fails for a
 # reason that has nothing to do with conformance.
-conform: gen
+conform-sim: gen
 	@if [ ! -x "$(PPCP_SIM)" ]; then \
 		echo "make conform: no ppcp-sim at $(PPCP_SIM)"; \
 		echo "  Build it:  cmake --build $(LIBPPCP)/build/dev --target ppcp-sim"; \

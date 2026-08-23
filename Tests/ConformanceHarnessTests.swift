@@ -48,6 +48,20 @@ struct ConformanceHarnessTests {
         return value
     }
 
+    /// The port `ppcp-conform` is listening on, handed in by `make conform`.
+    ///
+    /// ⚠ **`ppcp-conform` listens and this device dials**, which is the `--listen`
+    /// shape rather than `--connect`: the harness is a connector and has no
+    /// plaintext listener, and `RV` 2c1 is easier to hold when there is nothing
+    /// to accept on.
+    static var toolPort: UInt16? {
+        let environment = ProcessInfo.processInfo.environment
+        let raw = environment["PPCP_CONFORM_TOOL_PORT"]
+            ?? environment["TEST_RUNNER_PPCP_CONFORM_TOOL_PORT"]
+        guard let raw, let value = UInt16(raw), value > 0 else { return nil }
+        return value
+    }
+
     /// Which `ppcp-sim` scenario is on the other end, so an assertion can depend
     /// on what that scenario *does*. ⚠ `reference-host` when unset, which is what
     /// `make conform` starts by default.
@@ -146,5 +160,66 @@ struct ConformanceHarnessTests {
                     \(transcript)
                     """)
         }
+    }
+
+    /// **The D9 claim.** `ppcp-conform` drives this device through every row of
+    /// `PPCP-CONF` §3 and §4 that applies to a `capture` peer with this profile
+    /// set, asserting on the wire through `ppcp-sim` — and the verdict is the
+    /// **tool's exit code**, not this test's.
+    ///
+    /// ⛔ **This test is not the assertion.** It is the device answering the
+    /// telephone: `ppcp-conform` spawns one counterpart per row, sequentially, on
+    /// one port, so all this has to do is keep dialling until the rows run out.
+    /// A test that asserted anything about the outcome here would be the
+    /// implementation grading its own paper, which is the whole thing `CONF` §2c
+    /// says not to do — `make conform` reads the exit code.
+    ///
+    /// ⚠ Between rows the tool tears one counterpart down and starts the next, so
+    /// a dial is refused for a moment. That is expected and retried; a run of
+    /// refusals long enough to mean "the rows are finished" ends the loop.
+    @Test("ppcp-conform drives the device through every applicable row",
+          .timeLimit(.minutes(5)))
+    func ppcpConformDrivesTheDevice() async throws {
+        guard let port = Self.toolPort else {
+            withKnownIssue("no ppcp-conform port in the environment — run `make conform`",
+                           isIntermittent: true) {
+                Issue.record("skipped")
+            }
+            return
+        }
+
+        let endpoint = PeerEndpoint(host: "127.0.0.1", port: port)
+        let deadline = Date().addingTimeInterval(240)
+        var sessions = 0
+        var consecutiveRefusals = 0
+
+        // ⛔ Bounded three ways — a row count, a wall-clock deadline and a run of
+        // refusals — because a harness loop that only ends when the far end says
+        // so is a hang waiting for a counterpart that crashed.
+        while sessions < 16, Date() < deadline, consecutiveRefusals < 12 {
+            let harness = ConformanceHarness(device: CaptureDeviceFactory.create(),
+                                             distance: MicToBallDistance())
+            do {
+                // Long enough to outlast the longest row (`run_ms` is 5–8 s).
+                let report = try await harness.run(against: endpoint, seconds: 9,
+                                                   injectSwings: 1)
+                sessions += 1
+                consecutiveRefusals = 0
+                // ⛔ Printed, never asserted on. The tool is the instrument; this
+                // is here so a failing row has a device-side trace beside it.
+                print("ppcp-conform row \(sessions): \(report.transcript.count) events, "
+                      + "\(report.candidatesNominated) candidates, "
+                      + "\(report.shotsMinted) shots, "
+                      + "session \(report.sessionId ?? "—")")
+            } catch {
+                consecutiveRefusals += 1
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+        }
+
+        // The one thing worth asserting here: the device answered at all. If it
+        // never connected, the tool's rows all failed for a reason that has
+        // nothing to do with conformance and the report would mislead.
+        #expect(sessions > 0, "the device never completed a session against ppcp-conform")
     }
 }
