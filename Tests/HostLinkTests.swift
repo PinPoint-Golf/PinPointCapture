@@ -235,3 +235,59 @@ struct HostLinkTests {
         #expect(model.hostLink.state == .none)
     }
 }
+
+// MARK: - The endpoint walk's diagnosis
+
+/// A refusal and an unreachable host are opposite findings, and the walk
+/// reported both as "nothing answered" until 23 August 2026.
+///
+/// ⛔ The bug had a cost: PinPointStudio logged "a phone reached this computer and
+/// the secure connection failed" while this app told the user it had tried six
+/// addresses and reached none of them. Every occurrence sent someone to debug a
+/// network that was working.
+@Suite("Rendezvous — what the walk concludes")
+struct EndpointWalkDiagnosisTests {
+
+    /// A connector that fails every endpoint with a chosen error.
+    private struct FailingConnector: PeerTransportConnector {
+        let error: any Error
+        func connect(to endpoint: PeerEndpoint,
+                     credentials: any PpcpCredentials,
+                     channels: [PpcpChannel]) async throws -> any PeerTransport {
+            throw error
+        }
+    }
+
+    private func outcome(dialling error: any Error) async -> RendezvousOutcome {
+        let coordinator = RendezvousCoordinator(connector: FailingConnector(error: error))
+        // A code with endpoints that will each fail the way the test chose.
+        return await coordinator.scan(Self.sampleCode)
+    }
+
+    /// `RV` §10.3's minimal vector — a real, decodable code, so the walk is
+    /// actually reached rather than short-circuited at the decode.
+    ///
+    /// ⚠ It carries **no `exp`**, so it never expires and the test is not a clock
+    /// away from failing.
+    private static let sampleCode =
+        "ppcp:pWF2AWJlcIGiYWhsMTkyLjE2OC4xLjIwYXAZHmxibXUBY3Bza1AAAQIDBAUGBwgJCgsMDQ4P"
+        + "Y3NpZFA_JQTgT4lB05oMAwXoLDMB"
+
+    @Test("A host that answers and refuses is not reported as unreachable")
+    func refusalIsNotUnreachability() async throws {
+        let result = await outcome(dialling: TransportError.handshakeFailed("alert 20"))
+        guard case .hostRefusedTheCode = result else {
+            Issue.record("expected hostRefusedTheCode, got \(result)")
+            return
+        }
+    }
+
+    @Test("A host that never answers is still reported as unreachable")
+    func unreachabilityIsUnchanged() async throws {
+        let result = await outcome(dialling: TransportError.endpointUnreachable("posix 61"))
+        guard case .noEndpointReachable = result else {
+            Issue.record("expected noEndpointReachable, got \(result)")
+            return
+        }
+    }
+}

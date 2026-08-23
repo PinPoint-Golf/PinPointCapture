@@ -53,7 +53,25 @@ public enum RendezvousOutcome: Sendable {
     case couldNotJoinNetwork(String)
     /// Every endpoint was tried and none completed. ⚠ `localNetworkLikelyBlocked`
     /// is a *symptom* read, not a permission query (RV §8).
+    ///
+    /// ⛔ Reported **only** where nothing answered. A host that answered and
+    /// refused the key material is ``hostRefusedTheCode``, which is a different
+    /// sentence and a different thing for the user to do.
     case noEndpointReachable(triedCount: Int, localNetworkLikelyBlocked: Bool)
+    /// A host answered and the TLS-PSK handshake failed.
+    ///
+    /// ⛔ **This was reported as `noEndpointReachable` for its whole life**, and
+    /// the two are opposite diagnoses: one means nothing is listening, this means
+    /// something is listening and does not accept this code. Observed against
+    /// PinPointStudio on 23 August 2026 — the host logged "a phone reached this
+    /// computer and the secure connection failed (TLS alert 20)" while this
+    /// application told the user it had tried six addresses and reached none of
+    /// them, sending them to debug a network that was working.
+    ///
+    /// The cause is almost always a code that has been used or has expired
+    /// (`RV` §4.4a, 7.3b), which is why the screen offers a new code rather than
+    /// a network remedy.
+    case hostRefusedTheCode(endpoint: String)
 }
 
 /// Walks a scanned code to a link.
@@ -175,6 +193,11 @@ public actor RendezvousCoordinator {
         // 5.3a — a **fresh** identity per connection, from the platform CSPRNG.
         let credentials = RendezvousCredentials(keys: keys)
         var privateAddressFailures = 0
+        /// ⛔ The first endpoint that **answered** and then refused us. A
+        /// handshake failure is evidence the host is there, so it outranks every
+        /// unreachable address: reporting "nothing answered" when something did
+        /// is the error this variable exists to prevent.
+        var refusedBy: String?
 
         for endpoint in code.endpoints {
             do {
@@ -185,6 +208,12 @@ public actor RendezvousCoordinator {
                 return .connected(sessionId: code.sessionId,
                                   security: link.security,
                                   wasPossiblyExpired: possiblyExpired)
+            } catch TransportError.handshakeFailed(let reason) {
+                // ⛔ **Reached, and refused.** Keep the first one and keep
+                // walking: a later endpoint may still accept us, and only if none
+                // does is this the answer.
+                if refusedBy == nil { refusedBy = "\(endpoint.host) — \(reason)" }
+                continue
             } catch {
                 // ⚠ `RV` §8 — the symptom of a blocked local network is a direct
                 // connection to a **private** address failing. Counted rather than
@@ -194,6 +223,11 @@ public actor RendezvousCoordinator {
                 continue
             }
         }
+        // ⛔ A refusal outranks unreachability. If any host answered, "nothing
+        // answered" is false however many other addresses were dead — and the
+        // dead ones are usually just the other five entries in a code that lists
+        // every interface the host has.
+        if let refusedBy { return .hostRefusedTheCode(endpoint: refusedBy) }
         return .noEndpointReachable(
             triedCount: code.endpoints.count,
             localNetworkLikelyBlocked: privateAddressFailures > 0

@@ -369,6 +369,11 @@ struct RootView: View {
             sheet = .joinNetwork(ssid: network.ssid)
         case .couldNotJoinNetwork(let reason):
             sheet = .scanPairingCode(failure: .couldNotJoinNetwork(reason))
+        case .hostRefusedTheCode:
+            // ⛔ Never B6. The local network is demonstrably fine — the host
+            // answered — so offering a permission remedy would be the same wrong
+            // diagnosis in a different screen.
+            sheet = .scanPairingCode(failure: .hostRefusedTheCode)
         case .noEndpointReachable(let tried, let blocked):
             // `RV` §8 — inferred from the symptom, never from a permission query.
             sheet = blocked ? .localNetworkBlocked

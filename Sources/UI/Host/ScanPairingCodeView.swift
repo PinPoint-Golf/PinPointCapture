@@ -51,6 +51,11 @@ public struct ScanPairingCodeView: View {
         case possiblyExpired
         case couldNotJoinNetwork(String)
         case noEndpointReachable(triedCount: Int)
+        /// ⛔ The host answered and would not accept the code. A different
+        /// sentence from ``noEndpointReachable`` because it is a different problem
+        /// with a different remedy — and telling someone their host is unreachable
+        /// when it answered sends them to debug a working network.
+        case hostRefusedTheCode
 
         var title: String {
             switch self {
@@ -60,6 +65,7 @@ public struct ScanPairingCodeView: View {
             case .possiblyExpired: "This code may have expired"
             case .couldNotJoinNetwork: "Could not join that network"
             case .noEndpointReachable: "Could not reach the host"
+            case .hostRefusedTheCode: "Studio would not accept this code"
             }
         }
 
@@ -82,6 +88,12 @@ public struct ScanPairingCodeView: View {
             case .noEndpointReachable(let count):
                 "Tried \(count) address\(count == 1 ? "" : "es") from the code and "
                 + "none answered. Check Studio is running and on this network."
+            case .hostRefusedTheCode:
+                // ⚠ Names the likely cause and the remedy, and says the network is
+                // fine — because the failure this replaced sent people to check it.
+                "Studio is running and this device reached it — it refused the "
+                + "code. That usually means the code has already been used, or it "
+                + "expired. Ask Studio for a new one."
             }
         }
     }

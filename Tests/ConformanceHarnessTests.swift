@@ -592,3 +592,180 @@ struct ConformanceHarnessTests {
         #expect(model.link == nil)
     }
 }
+
+// MARK: - Soaking the real path against PinPointStudio
+
+/// Drives the **shipping** rendezvous path — decode, derive, TLS-PSK dial,
+/// handshake — against whatever host published the code in the environment.
+///
+/// ⛔ **The URI carries the PSK** (`RV` 4.4c, 7.2b): it is read from the
+/// environment, used, and never logged, echoed or written down. Failures report
+/// the *outcome case*, which is the diagnostic value, and never the payload.
+///
+/// ⚠ Diagnostic scaffolding for the intermittent-pairing investigation, not a
+/// conformance row. It runs only when a URI is supplied.
+@Suite("Pairing soak — the real path against a real host", .serialized)
+@MainActor
+struct PairingSoakTests {
+
+    static var pairingURI: String? {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["PPCP_PAIRING_URI"] ?? environment["TEST_RUNNER_PPCP_PAIRING_URI"]
+    }
+
+    @Test("One full pairing against the published host")
+    func onePairing() async throws {
+        guard let uri = Self.pairingURI else {
+            withKnownIssue("no PPCP_PAIRING_URI in the environment", isIntermittent: true) {
+                Issue.record("skipped")
+            }
+            return
+        }
+
+        let rendezvous = RendezvousCoordinator()
+        let outcome = await rendezvous.scan(uri)
+
+        // ⛔ The outcome *case* is the finding. `RV` §4 routes six distinct
+        // failures precisely so "it did not pair" is never the whole answer.
+        switch outcome {
+        case .connected(let sessionId, let security, let wasPossiblyExpired):
+            #expect(wasPossiblyExpired == false, "the code may have been stale")
+            print("SOAK rendezvous=connected security=\(security.summary) session=\(sessionId)")
+
+            let established = try #require(await rendezvous.takeEstablishedLink(),
+                                           "walk connected but handed back no link")
+            let model = AppModel()
+            let declaration = try PpcpDeclaration(
+                ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
+                allowingNoCameraSource: true)
+            await model.connect(transport: established.transport,
+                                sessionId: established.sessionId,
+                                hostDisplayName: established.hostDisplayName,
+                                declaration: declaration)
+
+            let link = try #require(model.link, "no link composed")
+            // Let `hello_accept` and `declare` land.
+            try await Task.sleep(for: .seconds(3))
+            print("SOAK phase=\(link.phase) version=\(link.negotiatedVersion ?? "-") "
+                  + "counterpart=\(link.counterpartPeerId ?? "-") "
+                  + "protocolError=\(link.protocolError ?? "-")")
+            #expect(link.hasSettled, "handshake did not settle: \(link.phase)")
+            #expect(link.protocolError == nil)
+            await model.disconnect()
+
+        case .needsANewerApplication: Issue.record("SOAK outcome=needsANewerApplication")
+        case .invalidCode:           Issue.record("SOAK outcome=invalidCode")
+        case .expired:               Issue.record("SOAK outcome=expired")
+        case .needsNetworkConsent:   Issue.record("SOAK outcome=needsNetworkConsent")
+        case .couldNotJoinNetwork(let why): Issue.record("SOAK outcome=couldNotJoinNetwork \(why)")
+        case .noEndpointReachable(let tried, let blocked):
+            Issue.record("SOAK outcome=noEndpointReachable tried=\(tried) blocked=\(blocked)")
+        case .hostRefusedTheCode(let endpoint):
+            // ⛔ The case the soak could not previously distinguish: the host
+            // answered and refused us, which for a soak almost always means the
+            // code had already been spent.
+            Issue.record("SOAK outcome=hostRefusedTheCode endpoint=\(endpoint)")
+        }
+    }
+}
+
+// MARK: - UC-6: more than one device on one host
+
+/// Three phones paired at once, which is the shape UC-6 actually needs — DTL and
+/// face-on at the same time, on one host.
+///
+/// ⛔ **Codes are single-use and PPS reissues only when a pairing completes**, so
+/// the three URIs cannot be collected up front. The test pairs one device, drops a
+/// marker in its Documents directory, and waits for the harness on the Mac to
+/// capture the freshly published code and write the next one back. That container
+/// is visible from the host, which is what makes the round trip possible at all.
+///
+/// ⚠ Each "device" is a separate `AppModel` with its own peer and its own pump,
+/// which is the honest simulation of three phones: they share nothing but the
+/// host. What they do **not** share is `PeerIdentity.current` — see the note below.
+@Suite("UC-6 — simultaneous devices", .serialized)
+@MainActor
+struct MultiDeviceTests {
+
+    private static var handoff: URL {
+        URL.documentsDirectory.appendingPathComponent("ppcp-handoff", isDirectory: true)
+    }
+
+    /// Tells the harness we are ready for the next code, then waits for it.
+    private func nextURI(_ index: Int) async throws -> String {
+        let directory = Self.handoff
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try "ready".write(to: directory.appendingPathComponent("want-\(index).txt"),
+                          atomically: true, encoding: .utf8)
+        let inbox = directory.appendingPathComponent("uri-\(index).txt")
+        for _ in 0..<120 {                       // up to 60 s
+            if let text = try? String(contentsOf: inbox, encoding: .utf8),
+               text.hasPrefix("ppcp:") {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        throw MultiDeviceError.noCode(index)
+    }
+
+    enum MultiDeviceError: Error { case noCode(Int) }
+
+    @Test("Three devices hold links to one host at the same time")
+    func threeSimultaneousDevices() async throws {
+        guard let first = PairingSoakTests.pairingURI else {
+            withKnownIssue("no PPCP_PAIRING_URI — run the multi-device harness",
+                           isIntermittent: true) { Issue.record("skipped") }
+            return
+        }
+        try? FileManager.default.removeItem(at: Self.handoff)
+
+        var models: [AppModel] = []
+        var uris = [first]
+
+        for index in 1...3 {
+            if index > 1 { uris.append(try await nextURI(index)) }
+
+            let rendezvous = RendezvousCoordinator()
+            let outcome = await rendezvous.scan(uris[index - 1])
+            guard case .connected = outcome else {
+                Issue.record("device \(index) did not pair: \(outcome)")
+                return
+            }
+            let link = try #require(await rendezvous.takeEstablishedLink())
+            let model = AppModel()
+            let declaration = try PpcpDeclaration(
+                ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
+                allowingNoCameraSource: true)
+            await model.connect(transport: link.transport, sessionId: link.sessionId,
+                                hostDisplayName: link.hostDisplayName,
+                                declaration: declaration)
+            models.append(model)
+            print("MULTI device=\(index) phase=\(model.link?.phase.description ?? "-")")
+        }
+
+        // Settle, then check every link is still up — the point of the test is
+        // simultaneity, so an earlier one being dropped is the failure.
+        try await Task.sleep(for: .seconds(4))
+        for (offset, model) in models.enumerated() {
+            let link = try #require(model.link, "device \(offset + 1) lost its link")
+            #expect(link.hasSettled, "device \(offset + 1) not settled: \(link.phase)")
+            #expect(link.protocolError == nil,
+                    "device \(offset + 1) protocol error: \(link.protocolError ?? "")")
+            print("MULTI alive device=\(offset + 1) phase=\(link.phase)")
+        }
+        print("MULTI result=all-three-alive")
+
+        for model in models { await model.disconnect() }
+    }
+}
+
+extension HostLinkSession.Phase: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .connecting: "connecting"
+        case .established: "established"
+        case .closed(let reason): "closed(\(reason ?? "-"))"
+        case .failed(let why): "failed(\(why))"
+        }
+    }
+}
