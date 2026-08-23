@@ -137,7 +137,7 @@ What still needs a phone: a camera `CaptureProfile` on the wire, a Capture with
 
 ⛔ **`static` and `fixture` rows are not in this table at all**, by the tool's
 design: they are decidable from a declaration or a recorded stream and belong in
-this implementation's own suite (`make test-core`, 166 tests). CT-I34 is absent
+this implementation's own suite (`make test-core`, 167 tests). CT-I34 is absent
 for a different reason — re-import being idempotent is not visible from the wire.
 
 
@@ -1174,7 +1174,12 @@ assertion is the tool's exit code rather than anything written here.
 `--expect violations=0` held and `errors 0` in the simulator's own report. See
 CT-S5 (device) in §3 for the transcript.
 
-⚠ **`make test-app` is green: 25 tests, 5 suites**, on an iPhone 17 Pro simulator.
+⚠ **`make test-app` is green: 28 tests, 6 suites**, on an iPhone 17 Pro simulator.
+Five of them report a known issue and every one is a **skip**, not a failure: the
+two D9 harness tests, the two `CONF` §5 rows and the wave-2 interop test all need
+a counterpart handed in through the environment, and a test that failed for a
+missing tool would be a red suite saying nothing about conformance. Run them with
+`make conform`, `make conform-iop` and `make interop`.
 Two of them are `ConformanceHarnessTests`, which **skip** without a port
 in the environment — a suite that failed for a missing tool would be a red run
 saying nothing about conformance.
