@@ -8,81 +8,9 @@
 | Role | `capture` |
 | Against | `PPCP-CORE` revision 9, `PPCP-MSG`, `PPCP-ENC`, `PPCP-CONF` 1.0; `PPCP-RV` revision 8 |
 | Companion | [`libppcp/docs/conformance/matrix.md`](https://github.com/PinPoint-Golf/libppcp) — the compliance record this file feeds |
-| Status | **In progress.** Session S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
+| Status | **In progress.** Session S3 wave 2: **D5, D6 and D8 landed** — the acoustic detector emits every Candidate, a hostless Session mints its own Shots and its bundle carries them with their Captures, the transfer queue evicts only through the library's I38 predicate, annotations converge and coalesce, and the listener now holds its link table in `libppcp`. `make test-core` 145/145. S3 wave 1: **D4 landed** — the REQ-BUF-1 ring extracts a clip around a `t0` into a Capture with `achieved_summary` on the announce and `achieved_frames` with the payload, a `continuous` `metadata` Stream accounts for its own interval (I36), readiness crosses as a measurement and an interruption records its gap. S2: D1 reworked for erratum E1, D2 and D3 landed. Nothing is deferred on `libppcp` — see §5. |
 | Depends on | `libppcp` — MIT, consumed as a SwiftPM package (plan A5), product `CPPCP`. Path `../../../libppcp` during co-development; `https://github.com/PinPoint-Golf/libppcp.git` once tagged. |
-| Date | 22 August 2026 (S3, wave 1) |
-
----
-
-## 0. Work in progress — S3 wave 2 (D5, D6, D8)
-
-*Written mid-session so the next one resumes from here rather than from a guess.*
-
-**Done and building (`cd Packages/Core && swift build -j 3` is clean).**
-
-- **D5 — Detect and Mint.** `CaptureCore/Detect/`: `AcousticOnsetDetector` (emits
-  **every** onset, 5.12c/8.3b/I8, with the REQ-MIC-5 taxonomy as the `classifier`
-  map encoded through `libppcp`'s own CBOR writer); `Candidate.swift`
-  (`PpcpCandidate`, `AcousticTimeOfFlight`, `CandidateFactory` on
-  `ppcp_candidate_make_canonical` — tof applied then the canonical conversion, both
-  corrections visible); `Shot.swift` (`PpcpShot`, `PpcpShotLink`); `DeviceMint`
-  (`ppcp_mint_*`, promotion as a callback, I32's single policy);
-  `CandidateAudioRetention` (B7 — the bound expressed in **candidates**, the cap,
-  and the user-visible statement); `DetectAndMint` (the composition, and
-  `defaultPromotion`).
-- **D6 — Live link.** `CaptureCore/Live/`: `SessionOffer.swift`
-  (`session_offer`/`session_accept` + `BundleReplay` on `ppcp_bundle_replay_*`);
-  `TransferQueue.swift` (`PayloadTransferQueue` — announce/queue split, resume from
-  the library's acked index, `already_present`, preview never queued, eviction only
-  through `ppcp_transfer_is_evictable`; `StorageFloor` — refuse to arm, never shed);
-  `SessionResume.swift` (`MSG` 4.3, hand-built — see F-D6-1); `HostLinkDriver.swift`
-  (`HostLinkState` from `ppcp_peer_link_state`/`_zero_host`/the sync estimator, and
-  the 4.3b order: `session_resume`, burst, **then** queued payload).
-  `Ppcp/LinkBinder.swift` wraps `ppcp_link_binder_*` (**F-D3-3 closed** in Core; the
-  `Sources/Platform` listener still has to move onto it).
-  `Ppcp/DevicePeerLive.swift` is the L9–L11 surface on `DevicePeer` (nominate, shot,
-  shot_link, annotate, sync, liveness, transfers, I38 predicate, drain peek/commit,
-  offer/accept); `health_report` and `sync_timebase` are wired into
-  `ppcp_peer_config`.
-- **D8 — Markup.** `CaptureCore/Markup/`: `Annotation.swift` (`PpcpAnnotation`,
-  placement validated against a real Stream, supersession through
-  `ppcp_annotation_supersedes`); `AnnotationStore.swift` (the library's store, the
-  drag coalescer of 5.18i, and `navigationAnchor` — `device_advisory`, `nav_anchor`,
-  no `stream_id`, never phase data).
-- `SessionBundleWriter`/`CaptureSessionRecorder` now record `candidate`, `shot`,
-  `shot_link` and `annotation`, so a hostless bundle carries Shots **and** their
-  Captures.
-
-**Next.** Tests in `Packages/Core/Tests/CaptureCoreTests` for D5/D6/D8; move the
-`Sources/Platform` listener onto `PpcpLinkBinder`; a platform microphone source
-feeding `AudioWindow`; `DeviceHealthService` → `health_report`; wire `AppModel`;
-then the row table below and §4's findings.
-
-**New findings, stated here now in case this session ends.**
-
-- **F-D5-1 — `ppcp_mint_pump` mints and sends, but an embedding cannot learn *which*
-  Shots it minted.** The host side has `ppcp_arbiter_shot_at(a, group)`; Mint has only
-  `ppcp_mint_minted_count`. A device must extract a clip around each minted `t0`, so
-  D5's whole deliverable needs the Shot, not a count. Worked around in `DeviceMint`
-  by recording ids as the `ppcp_id_fn` is called and then decoding the queued frames
-  with `ppcp_msg_decode` through `ppcp_peer_drain_peek` — the library's own decoder
-  over the library's own bytes, but it is re-parsing our own output. Suggested:
-  `ppcp_mint_shot_at(const ppcp_mint *, size_t)`.
-- **F-D6-1 — there is no `ppcp_peer_session_resume()`.** `MSG` 4.3a is a MUST for any
-  peer that reconnects, and `peer.h` has originators for `session_open`, `_state`,
-  `_close`, `_context_change`, `_offer`, `_accept` and `_manifest` but not this one.
-  It is therefore the only message in this application assembled as a `ppcp_msg` by
-  hand, through `ppcp_peer_send` — and `ppcp_body_session_resume` is one of the large
-  arms (64 shot ids, 64 pending captures), which is exactly the Swift hazard
-  `message.h` warns about.
-- **F-D6-2 — the sync *responder* cannot stamp `t2`/`t3` near the socket.** 6.1c
-  says `t2` is taken as close to reception as the implementation allows. The prober
-  has `ppcp_peer_sync_observe` for exactly that; the responder has only
-  `ppcp_peer_config.sync_timebase`, and the library reads its clock when it handles
-  the decoded frame. On `Network.framework` the earliest reachable point is the
-  receive completion handler, which is well before decode. Suggested: a responder
-  counterpart, or a documented statement that the residence time is included (which
-  6.1c does permit, via `t3 == t2`, but only as a *declaration* the responder makes).
+| Date | 23 August 2026 (S3, wave 2) |
 
 ---
 
@@ -142,11 +70,26 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | CT-I36 | fixture | announced segments and gaps account for the whole open interval | D4 | — | — | pass |
 | CT-I36a | paired | preview sheds as `absent`/`not_retained`, never `pending`, never bundled | D4 | — | — | pass (own half) |
 | CT-S1 (6) | injected | the scalar form and an equivalent constant array convert identically | D4 | — | — | pass |
-| CT-S4 (1) | injected | the zero-host path end to end, including bundle write and read | D3, D4, D5 | — | — | impl (bundle half passes, with a real Capture) |
+| CT-S4 (1) | injected | the zero-host path end to end, including bundle write and read | D3, D4, D5 | — | — | pass |
 | CT-S7 (1) | injected | every emitted timing constant carries a provenance; unmeasured is `assumed` | D2 | — | — | pass |
 | CT-S7 (2) | injected | a device-profile entry with no rig measurement cannot emit `measured` | D2 | — | — | pass |
 | CT-S7 (3) | injected | `exposure_provenance` honest: `per_frame` only where the platform attaches it | D4 | — | — | pass |
 | CT-S7 (4) | injected | converted instants differ by exactly a synthetic peer's declared offset | D4 | — | — | blocked: `ppcp-sim` (L13) |
+| CT-I6 | static | a Candidate carries `source_id`, a canonical `at`, a confidence and its corrections | D5 | — | — | pass |
+| CT-I8 | injected | every nomination is emitted and retained, winners and losers | D5 | — | — | pass (own half) |
+| CT-I18 | static | no relation is ever composed; A→C is measured, never derived | D6 | — | — | pass (own half) |
+| CT-I21 | injected | one sync exchange per Timebase, each relation declared directly | D6 | — | — | pass (own half) |
+| CT-I23 | injected | a hostless Shot carries exactly one Candidate, `authority: device` | D5 | — | — | pass (own half) |
+| CT-I26 | injected | a Candidate names a Source this peer declared, on a declared Timebase | D5 | — | — | pass |
+| CT-I29 | static | `tof_correction` carries value **and** sigma, or is absent | D5 | — | — | pass |
+| CT-I32 | paired | host silence does not promote a Candidate the peer did not believe | D5 | — | — | impl (single-policy half passes; the silent-host half is blocked, §5) |
+| CT-I33 | injected | the canonical instant is converted once, by the nominator | D5 | — | — | pass (own half) |
+| CT-I37 | static | no path from an Annotation to a Shot, a Candidate or a relation | D8 | — | — | pass (device) |
+| CT-I38 | paired | nothing unconfirmed is evicted, whatever the retention policy | D6 | — | — | pass (owner half) |
+| CT-S4 (2, 3, 5) | injected | the zero-host path: nominate, promote, mint, extract, bundle | D5, D6 | — | — | pass |
+| CT-S4 (6) | injected | a host that answers nothing, and the 8.2i deadline that fires | D5 | — | — | blocked: the `direct` path (D9) |
+| CT-S4 (7) | injected | link loss, local mint, `session_resume`, sync burst, then payload | D6 | — | — | impl (the sequence is asserted; the live half is blocked, §5) |
+| CT-S5 (device) | injected | a full session against a synthetic host | D6, D9 | — | — | blocked: the `direct` path (D9) |
 
 ### What each state rests on
 
@@ -296,6 +239,149 @@ What the reviewer is being asked to confirm:
 
 ---
 
+### D5, D6 and D8 — Detect and Mint, the live link, Markup
+
+Every row below reproduces with **`make test-core`**. The files are
+`Packages/Core/Tests/CaptureCoreTests/DetectMintTests.swift`,
+`LiveLinkTests.swift`, `MarkupTests.swift` and `HostlessSessionTests.swift`.
+
+**CT-S4 (1, 2, 3, 5) — `pass — make test-core`.**
+`HostlessSessionTests` drives the scenario UC-1 actually is: a microphone window
+with an impact transient, a Candidate whose `at` is the raw instant with 2 m of
+acoustic time of flight taken off and its sigma recorded, a candidate-anchored
+audio Capture on a **separate** `audio` Stream (5.12.1a), a Shot minted
+`authority: device` carrying exactly that one Candidate (8.3a, I23), the clip
+extracted around its `t0`, and a `PPCPBNDL` that reads back `complete` with the
+manifest ahead of every payload (`ENC` 7c).
+
+⚠ **The last assertion is the one that changed.** D4 could write a Capture but had
+nothing to anchor it to, so a hostless bundle held clips and no events — a consumer
+reading it got video with no shots in it. It now holds two Shots, two
+candidate-anchored audio windows and two shot clips.
+
+**CT-I8 / CT-I6 — `pass` for this peer's own half — `make test-core`.**
+Two transients 9 ms apart — the specification's own ball-into-screen example at
+3 m — produce **two** Candidates and **one** promotion. ⛔ The second is not
+suppressed; it is *not promoted*, which is a different fact and is the one 5.12c
+protects. The fixture gives the two transients different shapes, because one that
+made them identical would prove the detector fires twice and nothing about the
+taxonomy the promotion policy turns on. The refractory period is asserted to be
+shorter than 9 ms for the same reason.
+
+**CT-I26 — `pass — make test-core`.** Refused from both layers: `CandidateFactory`
+answers with the Source's name, and `ppcp_peer_nominate` refuses a Candidate for a
+Source this peer did not declare. ⚠ The second is the load-bearing one — 8.1b says
+a record with no peer, no timebase and no clock **is not a Candidate**, and there
+is no path from the factory to a `shot_link`.
+
+**CT-I29 — `pass — make test-core`.** I29 is in the type system: `ppcp_estimate_make`
+is the only way to obtain the value the setter takes and it cannot be called with
+one of the two, so a correction with no dispersion is not typeable. The positive
+case reproduces the specification's 2 m figure (~5.83 ms), and the negative case
+asserts that a Candidate with no time of flight carries **no** correction rather
+than a zero one.
+
+**CT-I33 — `pass` for this peer's own half — `make test-core`.**
+For a microphone Source the profile has no `format`, so 6.1d fixes
+`convention: mid` and the canonical instant **is** the corrected raw instant. The
+assertion is that the value is *unchanged* — and that an exposure passed in is
+ignored, because a `d/2` applied here would be the exposure of a frame the
+microphone never had.
+
+**CT-I23 — `pass` for this peer's own half — `make test-core`.**
+A hostless Shot carries one Candidate and `authority: device`, and 8.3h's later
+attachment is additive and order-independent: two Shots given the same Candidates
+in opposite orders converge on byte-identical lists, and `t0` does not move (I7).
+
+**CT-I32 — `impl`.** The half this column can hold passes: the promotion policy is
+**one** callback, used for the hostless promotion and for 8.2i's
+would-have-promoted test, so the two cannot disagree. ⚠ Two copies would eventually
+diverge, and the failure mode is a device *with* a host minting Shots it would not
+have minted without one — precisely the defect 8.2i was written to close. The live
+half needs `silent-host`; see §5.
+
+**CT-I38 — `pass` for the owner half — `make test-core`.**
+A `complete` + `pending` shot Capture is **not** evictable and an `absent` one is,
+both answered by `ppcp_transfer_is_evictable` rather than by a predicate of this
+application's. `already_present` then releases the first, which is 5.14g exit 3.
+⛔ The negative half is the load-bearing one: a device under storage pressure that
+asked this question and got the pending clip back would drop a swing the consumer
+has not received. `StorageFloor` is the other side of 5.14g1 — it refuses to arm
+with `blocked_by: storage_full`, which is a **measurement** (5.15a) and not a state
+name, and it never sheds.
+
+**5.11j / CT-I36a — `pass` — `make test-core`.**
+A preview Capture announced `transfer: pending` is refused by the **library** at
+the announce, and `PayloadTransferQueue` has no path that would queue one.
+`PreviewProducer` announces `transfer: present`, puts payload on a channel distinct
+from shot payload (5.11h), and sheds by *announcing* rather than by falling silent
+— I36 makes an unaccounted interval a defect, and 5.14g exit 4 is what makes the
+missing payload lawful.
+
+**CT-I21 / CT-I18 — `pass` for this peer's own half — `make test-core`.**
+One estimator per local timebase; a second registration for one clock is refused
+rather than replacing the first. 6.3a is respected on the way out — nothing is
+published until offset **and** rate exist, and `syncRelation` answers `nil` rather
+than zeros, because a displayed offset of `0.000 ms ± 0.00` reads as a very good
+measurement and is not one. I18's half is an absence: there is no function in
+`CaptureCore` or `libppcp` that takes two relations, and a conversion with no
+direct relation **fails** rather than falling back to a zero offset (8.2i1, 5.4b).
+
+**CT-S4 (7) — `impl`.** `HostLinkDriver.resume` sequences `MSG` 4.3 in its stated
+order — `session_resume` first, then the synchronisation burst, then the queued
+payload — and refuses to release the queue until the burst has produced an
+estimate. ⛔ The order is the assertion: a device that resumed the queue first
+would spend the reconnect's whole bandwidth putting bytes on a timeline it has not
+re-measured, and at 20 ppm the relation drifted about 1.2 ms per minute while the
+link was down. `session_resume` itself round-trips through the library's decoder
+with its minted Shot ids unrenumbered (4.3c). The live half needs a counterpart.
+
+**`ENC` §2.1 / F-D3-3 — `pass — make test-core`, and closed end to end.**
+`PpcpLinkBinder` wraps `ppcp_link_binder_*`, and `Sources/Platform`'s listener has
+no link table of its own any more. The channel comes from the **frame header**,
+which is the value a stream-per-connection listener has; a second claim on a
+channel a link already holds is refused by the library; a partial frame asks for
+more bytes rather than refusing. ⚠ The timeout stays the embedding's, which is what
+2.1c says it is.
+
+**CT-I37 — `pass` (device) — `make test-core`.**
+`CONF` §3 gives the method as "asserted by API surface, not behaviour", so the
+assertion is an absence: nothing takes an Annotation together with a Shot, a
+Candidate, a Calibration or a `TimebaseRelation`, or returns an instant derived
+from one. The impact fiducial reaches an annotation as `provenance:
+device_advisory`, `kind: nav_anchor`, with **no** `stream_id` — 5.18j makes it not
+view-specific — and never as phase data.
+
+**5.18e / 9.0c — `pass — make test-core`.**
+The total order including the equal-revision tiebreak: a coach at a host and a
+golfer at a device both editing revision 1 converge, because `author_peer_id`
+breaks the tie bytewise. ⛔ Revision 7 of the specification claimed they converge
+on the higher revision and they do not — both produce revision 2, each ignores the
+other's, and the two ends diverge permanently while each believes it converged.
+Both delivery orders are asserted through the library's store, because "converges
+in both orders" is a property of a *collection* and cannot be asserted about a
+comparison function alone.
+
+**5.18f / 5.18i / 5.18a — `pass — make test-core`.**
+A `body` over 8 KiB is refused; an unrecognised `format` round-trips byte for byte;
+a 100 ms drag of 21 edits sends **one** revision, and a lifted finger sends it
+without waiting the interval out. ⚠ The reason for coalescing is the channel rather
+than the bandwidth: `annotation` is on **control**, the channel carrying `shot`,
+`candidate` and `readiness`.
+
+**5.18j — `pass — make test-core`, and stronger than expected.**
+`ppcp_annotation_validate` enforces it at **construction**, not only in the
+placement validator, so a `line` with no `stream_id` and a `nav_anchor` with one
+are both unbuildable. Asserted in both directions.
+
+**`MSG` §9.1 — `impl`.** `SessionOfferService` offers every stored bundle on
+connect and replays an accepted one through `ppcp_bundle_replay`, skipping the
+payloads named in `have_digests`. ⛔ `already_held` is recorded per **host**, not
+per session: a second studio has not seen it, and a device that stopped offering
+after the first `already_held` would strand every session on the first host it met.
+The round trip of `session_offer`/`session_accept` passes; the replay half needs a
+counterpart that answers.
+
 ## 4. Findings against the specification
 
 Raised from D1, reported rather than worked around (`libppcp` implementation plan ground rule 3).
@@ -378,19 +464,107 @@ CT-S1 closes with "Assertion 2 is the whole test. The other four are why it is w
 
 ---
 
+### Raised from D5, D6 and D8
+
+**F-D5-1 — `ppcp_mint_pump` mints and sends, but an embedding cannot learn *which*
+Shots it minted.**
+The host side has `ppcp_arbiter_shot_at(a, group)`; Mint has only
+`ppcp_mint_minted_count`. A device must extract a clip around each minted `t0`, so
+this is not a diagnostic convenience — it is D5's whole deliverable. Worked around
+in `DeviceMint` by recording ids as the `ppcp_id_fn` is called and then decoding
+the queued frames with `ppcp_msg_decode` through `ppcp_peer_drain_peek`: the
+library's own decoder over the library's own bytes, and the peek does not disturb
+the drain path, but it is re-parsing our own output. **Suggested:**
+`ppcp_mint_shot_at(const ppcp_mint *, size_t)`, matching the arbiter's.
+
+**F-D6-1 — there is no `ppcp_peer_session_resume()`.**
+`MSG` 4.3a is a MUST for any peer that reconnects to a Session it had joined, and
+`peer.h` has originators for `session_open`, `_state`, `_close`, `_context_change`,
+`_offer`, `_accept` and `_manifest` but not this one. It is therefore the **only**
+message in this application assembled as a `ppcp_msg` by hand, through
+`ppcp_peer_send` — and `ppcp_body_session_resume` is one of the large arms (64 Shot
+ids, 64 pending Captures), which is exactly the Swift hazard `message.h` warns
+about. **Suggested:** an originator taking `ppcp_body_session_resume`.
+
+**F-D6-2 — the sync *responder* cannot stamp `t2`/`t3` near the socket.**
+6.1c requires `t2` to be taken as close to reception as the implementation allows.
+The **prober** has `ppcp_peer_sync_observe` for exactly that; the responder has only
+`ppcp_peer_config.sync_timebase`, and the library reads its clock when it handles
+the already-decoded frame. On `Network.framework` the earliest reachable point is
+the receive completion handler, well before decode, so the residence time this
+device could have removed is instead folded into the measurement. 6.1c *does*
+permit that — a responder setting `t3 == t2` "declares that the residence time is
+included rather than removed" — but as a **declaration** the responder makes, and
+there is no way to make it. **Suggested:** a responder counterpart to
+`ppcp_peer_sync_observe`.
+
+**F-D6-3 — a Session a peer *originates* is not adopted into its own state, so
+8.3g's predicate is false for the case it was written for.**
+`ppcp_peer_session_open` sets `has_session`, `session_id` and `timebase_ref` on the
+originating path but **not** `has_session_params`. So for a hostless
+`session_open` this device records — `CORE` 4.1b's case, and the entry-level
+product's normal mode — `ppcp_peer_session_params()` is `NULL` and
+`ppcp_peer_zero_host()` is `false`, although 8.3a's first entry condition ("a
+Session with no host in its roster") is exactly what has just happened.
+
+⚠ **Minting still works, and that is the part worth reading twice.**
+`ppcp_mint_pump` takes the hostless branch only because `issue_hold_ns` and the
+heartbeat margin both read as zero when there are no parameters to read. A hostless
+`session_open` carrying a `heartbeat_interval_ms` — which 5.10e permits, since only
+the two *arbitration* parameters are conditional — would take the **hosted** branch
+and hold every Candidate for a deadline no host will ever answer. Reproduced by
+`LiveLinkTests.hostlessMintWorksForTheWrongReason`, which asserts both facts as
+they behave so the expectation fails the day it is fixed. **Suggested:** set
+`session_params` on the originating path too.
+
+**F-D6-4 — `ppcp-sim` cannot be reached from this application, and the block is
+the transport rather than the effort.**
+L13's simulator offers plaintext TCP or TLS 1.3 `psk_ke`. `RV` 5.2f forbids the
+first for a real device and `PpcpByteChannel` has no plaintext branch by
+construction; the second is unreachable on Apple platforms, which is measured and
+settled — TLS 1.3 external PSK cannot be negotiated through `Network.framework`'s
+public API at all (see F-D1-1 and `RV` 5.4b1). The route is D9's **`direct`**
+path: a debug-only conformance harness running the device peer over plaintext
+loopback sockets, which is already the work package written for it. Until then
+CT-S5 (device), CT-S4 (6) and interop rows 1, 7, 8 and 9 are `blocked` on D9 rather
+than on `libppcp`. **No change requested of `libppcp`** — recorded so the block is
+attributed correctly.
+
+**F-L13-1 (received, and acted on) — `ppcp_peer_feed` overflows the event ring.**
+The L13 team's finding: `ppcp_peer_feed` consumes unboundedly many whole frames per
+call, the engine's event ring is four deep, and an overflow drops the **oldest**
+event silently. A socket read of 64 KiB is comfortably more than four control
+frames, so handing a whole buffer over loses the first events of a burst — the
+`declare`, the `session_open` — and keeps the last, which is the worst half to
+keep. `DevicePeer.feed` now walks the buffer with `ppcp_frame_read`, feeds exactly
+one frame, and moves whatever was raised into a Swift queue before the next frame
+goes in; each event's `ppcp_msg` is copied onto the heap, because `peer.h` promises
+the borrowed pointer only four events' worth of life. ⚠ A `declare`'s nested
+Sources still point into the engine's arena and nothing here pretends otherwise.
+The library fix is L15's.
+
+⚠ **One feed site this cannot reach.** `ppcp_bundle_reader_feed` drives
+`ppcp_peer_feed` internally, frame by frame, and drains the sink's *answers* — but
+it does not drain the sink's **events**. A bundle read into a live peer will
+overflow the ring for the same reason. `SessionBundleReader` is used with a `nil`
+sink everywhere in this application, so nothing here is affected today; it is
+recorded because the replay path of `MSG` 9.1 is the case where it would be.
+
 ## 5. What is deferred, and on what
 
 **Nothing is deferred on `libppcp` any more.** L6 (the peer engine) and L8 (the bundle writer and reader) landed on 22 August 2026, and both fences this file described in the previous revision — `PPCP_L6_PEER_ENGINE` and `PPCP_L8_BUNDLE_WRITER` — are gone rather than merely defined. The code behind them was rewritten against the real API, not switched on: the planned signatures had changed in three places (`ppcp_peer_feed` gained `out_consumed`, `ppcp_peer_config` gained `versions`/`min_version`/`listener`, and `ingest_policy` gained `out_reason`), and a fence turned on unread would have compiled against none of them.
 
 | Work | Waiting on | Where it sits |
 |---|---|---|
-| CT-S7 (4) — a converted instant against a peer that declares a **non-zero** measured offset | `ppcp-sim` (**L13**) | Nothing to write yet. `CONF` §2c: an unmeasured zero is correct relative to any other implementation that also declared zero. |
-| CT-I19's consumer half (CT-S3) | this repository's **D6** | The engine exists; meeting a *different* peer's declaration does not. |
-| CT-S1 assertions 1–5 — the conversion against a peer declaring a different convention | `ppcp-sim` (**L13**) | Assertion 6 (scalar and constant array agree) passes today; the rest need a counterpart. |
-| CT-I30's third assertion — `capture_update` carries `achieved_frames` only for `transfer: failed` | this repository's **D6** | Needs a peer on the other end. |
-| CT-I36a under **induced contention** | this repository's **D6** | The refusals are asserted; a live preview Stream degrading under load is not. |
+| CT-S7 (4) — a converted instant against a peer that declares a **non-zero** measured offset | this repository's **D9** | `ppcp-sim` exists and runs (L13 landed). ⛔ The block moved: it is now the **transport**, not the counterpart — see F-D6-4. |
+| CT-I19's consumer half (CT-S3) | this repository's **D9** | The engine and the counterpart both exist; a transport they share does not (F-D6-4). |
+| CT-S1 assertions 1–5 — the conversion against a peer declaring a different convention | this repository's **D9** | Assertion 6 (scalar and constant array agree) passes today; the rest need `ppcp-sim` over the `direct` path (F-D6-4). |
+| CT-I30's third assertion — `capture_update` carries `achieved_frames` only for `transfer: failed` | this repository's **D9** | D6 landed; it still needs a peer on the other end. |
+| CT-I36a under **induced contention** | **a phone and a host** | `PreviewProducer` sheds by announcing rather than falling silent, and that is asserted; a live preview Stream degrading under real load is not. |
 | `RingBufferRecorder`'s segment delivery | **a phone** | The simulator has no 150 fps camera. The ring's index and every protocol-constrained decision around it are covered; the `AVAssetWriter` segment path is wiring that has not run. |
-| Interop "device, no host → bundle" | **PinPointStudio** | This side writes and re-reads its own bundle; only the other application reading it closes the row. |
+| Interop "device, no host → bundle" | **PinPointStudio** | This side now writes a bundle carrying Shots, Candidates, their evidence and their clips, and re-reads it; only the other application reading it closes the row. |
+| The acoustic detector's **accuracy** | nothing — it is out of scope | `CONF` §6 puts "which candidates a Mint peer promotes" outside conformance, and 8.3c keeps promotion policy out of the specification. What is in scope is that every nomination is emitted, and that is asserted. |
+| A **measured** time of flight | **a rig** | `AcousticTimeOfFlight` takes a surveyed or estimated distance and its sigma; nothing has measured either on this device, so a shipping session declares no `tof_correction` rather than an assumed one (plan A12). |
 
 ## 6. Reproducing
 
@@ -400,11 +574,13 @@ make test-app       # the TLS-PSK handshake and the ENC §2.1 bind, on a simulat
 make gen && make build
 ```
 
-⚠ **`make test-core` is green: 107 tests, 13 suites.** Every `pass` in §3 is one of
+⚠ **`make test-core` is green: 145 tests, 17 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
 
-⚠ **`make test-app` is green: 23 tests, 4 suites.** It hung for one session; see the
-finding below.
+⚠ **`make test-app` is green: 23 tests, 4 suites**, on an iPhone 17 Pro simulator.
+Its four `link_bind` tests now run over `PpcpLinkBinder` on a real TLS link, which
+is F-D3-3 closed end to end rather than only in the neutral layer. It hung for one
+session; see the finding below.
 
 ⚠ `-jobs 3` on every `xcodebuild`, and `-j 3` on every `swift build`/`swift test`.
 This is a 16 GB machine and an unbounded build has already taken it down once.
