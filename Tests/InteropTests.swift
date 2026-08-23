@@ -31,11 +31,12 @@ import CaptureCore
 @Suite("CONF §5 wave 2 — the real pair over TLS", .serialized)
 struct InteropTests {
 
-    /// `host:port` of the PinPointStudio TLS listener.
-    static var endpoint: PeerEndpoint? {
-        let environment = ProcessInfo.processInfo.environment
-        let raw = environment["PPCP_INTEROP_HOST"]
-            ?? environment["TEST_RUNNER_PPCP_INTEROP_HOST"]
+    /// `host:port` of one PinPointStudio TLS listener. ⚠ **Two of them, one
+    /// simulator launch**: booting, installing and launching costs tens of
+    /// seconds and a row costs thirty, so `make interop HOST=… HOST2=…` starts a
+    /// plain host and an acoustic one and the suite dials each in turn.
+    static func endpoint(_ name: String) -> PeerEndpoint? {
+        let raw = value(name)
         guard let raw else { return nil }
         let parts = raw.split(separator: ":")
         guard parts.count == 2, let port = UInt16(parts[1]), port > 0 else { return nil }
@@ -48,10 +49,10 @@ struct InteropTests {
             ?? environment["TEST_RUNNER_PPCP_INTEROP_\(name)"]
     }
 
-    /// Where the summary is written inside the app container; `make interop`
+    /// Where a summary is written inside the app container; `make interop`
     /// copies it out.
-    static var summaryFile: URL {
-        URL.documentsDirectory.appendingPathComponent("interop-summary.json")
+    static func summaryFile(_ name: String) -> URL {
+        URL.documentsDirectory.appendingPathComponent(name)
     }
 
     /// ⚠ Hex, because a key on a command line has to survive a shell. An
@@ -71,11 +72,73 @@ struct InteropTests {
         return bytes
     }
 
-    @Test("The device dials PinPointStudio's TLS listener and runs a session",
-          .timeLimit(.minutes(3)))
+    /// **IOP-1 (wave 2)** — the reference pairing `CONF` 5a names, over the
+    /// transport both products ship. The device dials, joins, opens its Streams,
+    /// answers `arm`, nominates from injected audio, and offers a stored Session
+    /// which the host imports (**IOP-10**, over the wire rather than through a
+    /// file).
+    @Test("IOP-1 / IOP-10 — the real pair over TLS, and a stored Session offered",
+          .timeLimit(.minutes(4)))
     func aRealPairOverTls() async throws {
-        guard let endpoint = Self.endpoint, let pskText = Self.value("PSK") else {
-            withKnownIssue("no PPCP_INTEROP_HOST/PSK — run `make interop HOST=… PSK=…`",
+        try await runRow(hostVariable: "HOST", summary: "interop-summary.json",
+                         session: "ses:interop:wave2") { report, transcript in
+            // `MSG` 4.1 — the host opened a Session and this peer joined it.
+            #expect(report.sessionId != nil, "\(transcript)")
+            // §5.11 — a Stream per declared Source. ⛔ No camera on a simulator.
+            #expect(report.streamsOpened.isEmpty == false, "\(transcript)")
+            // 5.2a / 7.3c — `arm` is the host's and is answered with a
+            // Readiness MEASUREMENT, never a state name (5.15a).
+            #expect(report.armsAnswered > 0,
+                    "the host armed and this device did not answer\n\(transcript)")
+            // 7.1d / 5.12c — every onset is emitted, promoted or not.
+            #expect(report.candidatesNominated == 2, "\(transcript)")
+            // `MSG` 9.1 — the stored Session was offered and answered.
+            #expect(report.offersSent.count == 1, "offered \(report.offersSent)")
+            #expect(report.offerVerdicts.isEmpty == false,
+                    "the host answered no offer\n\(transcript)")
+            #expect(report.replayCompleted,
+                    "the accepted Session did not finish replaying\n\(transcript)")
+        }
+    }
+
+    /// **IOP-6 (wave 2)** — both peers nominate.
+    ///
+    /// ⛔ **I8 / 5.12c.** The host is started with `--nominate-acoustic`, so it
+    /// owns its own microphone Source and nominates alongside this device: two
+    /// Candidates of the same `basis` from two peers, both emitted, and the
+    /// arbiter's job is to decide between them rather than to see only one. A
+    /// device that never carried the counterpart's Candidates could not tell a
+    /// host that nominates from one that does not.
+    @Test("IOP-6 — a host that nominates from its own acoustic Source",
+          .timeLimit(.minutes(4)))
+    func bothPeersNominate() async throws {
+        try await runRow(hostVariable: "HOST_ACOUSTIC",
+                         summary: "interop-acoustic-summary.json",
+                         session: "ses:interop:wave2-acoustic") { report, transcript in
+            #expect(report.sessionId != nil, "\(transcript)")
+            #expect(report.candidatesNominated == 2, "\(transcript)")
+            // ⛔ The row. The host's own nominations reached this device.
+            #expect(report.candidatesReceived.isEmpty == false,
+                    """
+                    an acoustic host nominated nothing this device saw — 5.12c \
+                    makes every nomination emitted, whoever made it
+                    \(transcript)
+                    """)
+        }
+    }
+
+    /// One row: dial the given listener over the shipping transport, record a
+    /// stored Session first, write the summary whatever happens, then assert.
+    ///
+    /// ⚠ **The summary is written before the assertions**, so a failed row still
+    /// leaves evidence. A wave-2 row whose only artefact is a red test is not
+    /// evidence about interoperability.
+    private func runRow(hostVariable: String, summary: String, session: String,
+                        assert body: (ConformanceHarness.Report, String) -> Void)
+        async throws {
+        guard let endpoint = Self.endpoint(hostVariable),
+              let pskText = Self.value("PSK") else {
+            withKnownIssue("no PPCP_INTEROP_\(hostVariable)/PSK — run `make interop`",
                            isIntermittent: true) {
                 Issue.record("skipped")
             }
@@ -92,8 +155,8 @@ struct InteropTests {
         // ⛔ **Hostless first, then hosted.** A device that only ever ran with a
         // host would never produce the stored Session the second half offers, and
         // the offer is the half `MSG` §9.1 exists for.
-        let root = URL.documentsDirectory.appendingPathComponent("interop-bundles",
-                                                                 isDirectory: true)
+        let root = URL.documentsDirectory
+            .appendingPathComponent("interop-bundles-\(hostVariable)", isDirectory: true)
         try? FileManager.default.removeItem(at: root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let store = SessionStore(root: root)
@@ -101,19 +164,25 @@ struct InteropTests {
         let distance = MicToBallDistance()
         let stored = try InteropBundleFixture.record(
             shots: 1, into: store, device: device, distance: distance,
-            sessionId: "ses:interop:wave2")
+            sessionId: session)
 
         let harness = ConformanceHarness(device: device, distance: distance,
                                          offering: store, credentials: credentials)
         var failure: String?
         var report = ConformanceHarness.Report()
         do {
-            report = try await harness.run(against: endpoint, seconds: 25, injectSwings: 1)
+            // ⚠ `nominateOnlyOnceConvertible` — the lesson IOP-2 taught in wave 1:
+            // a Candidate nominated before a relation exists is one the host
+            // excludes and retains (8.2d), and it is never arbitrated.
+            report = try await harness.run(against: endpoint, seconds: 30,
+                                           injectSwings: 1,
+                                           nominateOnlyOnceConvertible: true)
         } catch {
             failure = String(describing: error)
         }
 
-        try Self.write(summary: report, storedSessionId: stored.bundle.sessionId,
+        try Self.write(summary: report, to: summary,
+                       storedSessionId: stored.bundle.sessionId,
                        endpoint: endpoint, failure: failure)
 
         #expect(failure == nil, "the dial or the run failed: \(failure ?? "")")
@@ -123,18 +192,20 @@ struct InteropTests {
         // used against a production listener.
         #expect(report.security.contains("no TLS") == false,
                 "the shipping transport must negotiate TLS\n\(report.security)")
-        #expect(report.sessionId != nil, "\(transcript)")
         #expect(report.errorCodes.isEmpty, "\(transcript)")
+        guard failure == nil else { return }
+        body(report, transcript)
     }
 
     /// The row's evidence, as JSON. ⛔ `RV` 7.2b — no key material, no identity
     /// and no peer address beyond what the operator typed.
     static func write(summary report: ConformanceHarness.Report,
+                      to name: String,
                       storedSessionId: String,
                       endpoint: PeerEndpoint,
                       failure: String?) throws {
         var json: [String: Any] = [
-            "row": "CONF §5 wave 2 — real pair over TLS",
+            "row": name,
             "endpoint": "\(endpoint.host):\(endpoint.port)",
             "security": report.security,
             "peer_id": report.peerId,
@@ -154,6 +225,7 @@ struct InteropTests {
             ],
             "streams_opened": report.streamsOpened,
             "candidates_tx": report.candidatesNominated,
+            "candidates_rx": report.candidatesReceived,
             "shots_minted_locally": report.shotsMinted,
             "shots_rx": report.shotsReceived.map { arrival in
                 [
@@ -179,6 +251,6 @@ struct InteropTests {
         if let failure { json["failure"] = failure }
         let data = try JSONSerialization.data(withJSONObject: json,
                                               options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: summaryFile)
+        try data.write(to: summaryFile(name))
     }
 }

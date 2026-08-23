@@ -74,6 +74,13 @@ public actor ConformanceHarness {
         /// three declared clocks publishes three (I21, 6.1d), and a device that
         /// received one has no way to express an instant on the other two.
         public var relationUpdates: Int = 0
+        /// `MSG` §7.1 — Candidates the **counterpart** nominated.
+        ///
+        /// ⛔ I8 / 5.12c: a host owning its own acoustic Source nominates
+        /// alongside this device, and both nominations are emitted. A device that
+        /// only ever saw its own would have no way to tell a host that nominates
+        /// from one that does not — which is the whole of IOP-6.
+        public var candidatesReceived: [String] = []
 
         // MARK: What the counterpart's Shots said, and what this device made of them
         //
@@ -322,6 +329,9 @@ public actor ConformanceHarness {
                         shotId: id, t0Ns: t0Ns, t0TimebaseId: t0TimebaseId,
                         authority: String(describing: authority),
                         convertedToCaptureNs: converted ?? nil))
+
+                case .candidateReceived(let id):
+                    report.candidatesReceived.append(id)
 
                 case .relationUpdate:
                     report.relationUpdates += 1

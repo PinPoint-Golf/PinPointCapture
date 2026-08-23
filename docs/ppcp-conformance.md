@@ -931,7 +931,8 @@ the device's behaviour and the second is a finding against the tooling.
 | **IOP-1** — the reference host, end to end, plus a session offer and its replay | `ppcp-sim` `reference-host.json` + `reference-host` | `make conform-iop` | **pass** |
 | **IOP-3 / IOP-10** — a bundle this device wrote, imported elsewhere | PinPointStudio | `make conform-iop` then `make pull-bundles` | **written** — `docs/conformance/bundles/*.ppcpbndl`; the import is PinPointStudio's row |
 | **IOP-3 / IOP-10** — a bundle another implementation wrote, read here | `PinPointStudio/docs/conformance/bundles/pinpointstudio-host-session.ppcpbndl` | `make read-bundle FILE=…` | **pass** |
-| **Wave 2** — the real pair over TLS on loopback | PinPointStudio's TLS listener | `make interop HOST=… PSK=… IDENTITY=…` | **not yet run** — the contract is below; it needs the listener |
+| **Wave 2 / IOP-1 + IOP-10** — the real pair over TLS, and a stored Session offered over the wire | PinPointStudio's real `Ppcp::Listener` | `make interop HOST=… HOST2=… PSK=… IDENTITY=…` | **pass** |
+| **Wave 2 / IOP-6** — both peers nominate | the same listener with `--nominate-acoustic` | the same command | **pass** |
 
 ### IOP-2 — a host whose cameras are not this one's
 
@@ -1084,9 +1085,290 @@ would be this repository legislating for it.
 
 ### Wave 2 — the real pair over TLS, and its contract
 
-**Not yet run: it needs PinPointStudio's listener.** The target and the device
-half exist; the contract is stated here so the two halves meet on the first
-attempt rather than the third.
+**Run on 23 August 2026, and both rows passed.** Two `PinPointStudio`
+`ppcp_conform_host` listeners were started — one plain, one with
+`--nominate-acoustic` — and one simulator launch dialled both. The results are
+below; the contract follows them.
+
+#### What was run
+
+```
+# a 32-byte K_tls, generated once and given to both ends
+PSK=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+
+# IOP-1 / IOP-10 — the plain host
+../PinPointStudio/src/Ppcp/tests/run-tls-host.sh 0 $PSK any 240000 /tmp/pps-iop1.json &
+
+# IOP-6 — the same binary with the one flag run-tls-host.sh has no pass-through
+# for, otherwise the arguments that script builds, verbatim
+../PinPointStudio/build/ppcp-tests/ppcp_conform_host \
+    --row wave2-tls-host-acoustic --port 0 --port-file /tmp/pps-iop6.json.port \
+    --tls-psk $PSK --tls-identity any --nominate-acoustic \
+    --summary /tmp/pps-iop6.json --run-ms 240000 &
+
+make interop HOST=127.0.0.1:58361 HOST2=127.0.0.1:58360 \
+             PSK=$PSK IDENTITY=01a3f19c2b7d4e6058b1c2d3e4f5a6b7c8
+```
+
+⚠ **`IDENTITY` is 17 octets of binary**, which is `RV` 5.3a's shape (`0x01 || rn2
+|| tag`). RFC 4279 prefers a UTF-8 identity and this is not one; it completes a
+handshake unchanged, which was measured on a device in S1 and is confirmed again
+here against a counterpart that did not write our TLS code.
+
+#### The TLS version question, settled before the run and not by a failed one
+
+⛔ **It was expected to fail and it did not.** This device can negotiate **only**
+TLS 1.2 external PSK — `tls_ciphersuite_t` on Apple's platforms contains no PSK
+entry at all, so TLS 1.3 external PSK is unreachable through the public API
+(measured on macOS 27 and on an iPhone 16 on a release OS; it is what forced
+`RV` §5.4 to relax forward secrecy to best-effort). PinPointStudio's listener
+announces itself as *"TLS 1.3 external-PSK"*, so a version mismatch was the
+likely first finding.
+
+It was checked with `openssl s_client` **before** spending a simulator run on it,
+against the real listener on an ephemeral port:
+
+| Probe | Result |
+|---|---|
+| `-tls1_2 -cipher PSK-AES128-GCM-SHA256` | `New, TLSv1.2, Cipher is PSK-AES128-GCM-SHA256` |
+| `-tls1_3` | `Reused, TLSv1.3, Cipher is TLS_CHACHA20_POLY1305_SHA256` |
+
+So their listener offers **both**, and `RV` 5.4b1 is not at issue. The pair then
+negotiated what this platform can do, and both ends independently reported the
+same thing:
+
+- device: `"security": "TLS 1.2, TLS_PSK_WITH_AES_128_GCM_SHA256 — no forward secrecy"`
+- host: `[pps-host] link up — TLSv1.2 TLS_PSK_WITH_AES_128_GCM_SHA256 psk [no forward secrecy]`
+
+⚠ That agreement is worth more than either statement alone. `RV` 5.4k asks a peer
+to surface the mode it got; two implementations that never shared a line of TLS
+code surfacing the same suite and the same *"no forward secrecy"* is the property
+being conformant to 5.4k actually buys.
+
+#### IOP-1 / IOP-10 — pass
+
+**Device** (`docs/conformance/interop-summary.json`, verbatim):
+
+```json
+{
+  "arms_answered" : 1,
+  "candidates_rx" : [ ],
+  "candidates_tx" : 2,
+  "captures_announced" : 3,
+  "counterpart_peer_id" : "peer:pinpointstudio-conform",
+  "declared_camera" : false,
+  "declares" : {
+    "camera_conventions" : [ ], "camera_geometries" : [ ], "offset_provenances" : [ ],
+    "profiles" : [ "core", "capture", "detect", "mint", "live", "offline", "markup" ],
+    "source_kinds" : [ "microphone", "imu" ]
+  },
+  "dropped_events" : 0,
+  "endpoint" : "127.0.0.1:58361",
+  "errors" : [ ],
+  "heartbeats" : 31,
+  "negotiated_version" : null,
+  "offers_accepted" : { "ses:interop:wave2" : "accept" },
+  "offers_tx" : [ "ses:interop:wave2" ],
+  "peer_id" : "peer:1b4b06fd-135b-4f8e-8140-7dcbb11da786",
+  "relation_updates" : 1,
+  "replay_completed" : true,
+  "row" : "interop-summary.json",
+  "security" : "TLS 1.2, TLS_PSK_WITH_AES_128_GCM_SHA256 — no forward secrecy",
+  "session_id" : "sess:73d30ecd-41ca-49ca-afa7-f9908015829d",
+  "shots_minted_locally" : 1,
+  "shots_rx" : [
+    { "authority" : "device", "converted_to_capture_ns" : 70477702764655,
+      "shot_id" : "bcb7d4fc-c9e9-47aa-ab4d-5cb176da6c6d",
+      "t0_ns" : 70477702764655, "t0_timebase" : "tb:hosttime" },
+    { "authority" : "host", "converted_to_capture_ns" : 70477803325863,
+      "shot_id" : "51996495-b6cc-4b04-bb35-7245e9d29922",
+      "t0_ns" : 70477803325863, "t0_timebase" : "tb:hosttime" }
+  ],
+  "stored_session_offered" : "ses:interop:wave2",
+  "streams_opened" : [ "str:audio:src:microphone", "str:metadata:src:imu" ],
+  "sync_events" : 44,
+  "timebase_ref" : "tb:host"
+}
+```
+
+**Host** (`docs/conformance/interop-host-summary.json`, verbatim):
+
+```json
+{
+  "row": "wave2-tls-host", "peer_id": "peer:pinpointstudio-conform",
+  "counterpart": "peer:1b4b06fd-135b-4f8e-8140-7dcbb11da786",
+  "link_up": true, "session_opened": true, "arbiter_started": true, "arbiter_error": "",
+  "declares_rx": 2, "candidates_rx": 4, "shots_rx": 4, "streams_rx": 4,
+  "preview_streams_rx": 0, "continuous_streams_rx": 2,
+  "captures_rx": 6, "captures_absent": 6, "captures_not_retained": 0,
+  "preview_captures_rx": 0, "preview_payload_frames": 0, "payload_frames": 0,
+  "offers_rx": 1, "offers_accepted": 1,
+  "errors_rx": 0, "errors_fatal": 0, "unknown_rx": 0,
+  "nominated": 0, "candidates_foreign": 4, "excluded": 0, "issued": 1, "late": 0,
+  "adopted": 4, "capture_requests": 0, "nominations_refused": 0, "retained": 0,
+  "groups": 2, "max_shot_candidates": 2,
+  "probes_queued": 22, "relations_published": 1, "heartbeat_acks": 31,
+  "sync_estimators": 1, "estimators_without_estimate": 0,
+  "error_codes": [],
+  "shot_ids": ["bcb7d4fc-c9e9-47aa-ab4d-5cb176da6c6d", "51996495-b6cc-4b04-bb35-7245e9d29922"],
+  "counterpart_timebases": [
+    {"id": "tb:hosttime", "has_offset": true, "offset_ns": -4777871},
+    {"id": "tb:continuous", "has_offset": false, "offset_ns": 0},
+    {"id": "tb:wall", "has_offset": false, "offset_ns": 0}
+  ],
+  "import_ran": false, "import_error": "", "import_passes": [],
+  "bundle_written": "", "bundle_frames": 0
+}
+```
+
+**What the pairing proved.** The link came up over the shipping transport on both
+sides, `errors_rx: 0` and `errors_fatal: 0` and this device's `errors: []` and
+`dropped_events: 0`. This device declared what the hardware enumerated — a
+microphone and an IMU and **no camera** — and the host took that declaration
+without complaint; it opened a Session and this device joined it, opened a Stream
+per Source (`streams_rx: 4` counts both ends' — two live, two replayed), armed it
+and got a Readiness **measurement** back, exchanged 22 probes and one published
+relation, and 31 heartbeat acks crossed. Two Candidates went up, the arbiter
+grouped them (`groups: 2`, `max_shot_candidates: 2`), and one Shot was issued.
+
+⛔ **`counterpart_timebases` is `CONF` 5b holding, and it is the best single line
+in either summary.** The host claims a reading for `tb:hosttime` — `has_offset:
+true, offset_ns: -4777871` — and says `has_offset: false, offset_ns: 0` for
+`tb:continuous` and `tb:wall`. A host that substituted a zero for a clock it had
+not measured would have written `true` with `0` and been indistinguishable from a
+host that measured a coincident clock. It did not.
+
+**IOP-10 over the wire.** `offers_rx: 1, offers_accepted: 1` against this
+device's `offers_tx: ["ses:interop:wave2"]` and `replay_completed: true`, and
+`captures_rx: 6, captures_absent: 6, payload_frames: 0` — three Captures from the
+live Session and three from the replayed one, every one of them `absent` and none
+carrying bytes, which is what a device with no camera has and says (8.4b, I10).
+⚠ `import_ran: false`: the host was not given `--import-bundle`, so the replayed
+Session went through the **live ingest** path rather than the import ledger. The
+file-import direction is the row PinPointStudio runs against the two bundles
+checked in here.
+
+#### IOP-6 — pass
+
+The same pairing with the host owning its own microphone Source.
+
+**Device** (`docs/conformance/interop-acoustic-summary.json`) — the fields that
+differ from IOP-1:
+
+```json
+{
+  "row" : "interop-acoustic-summary.json",
+  "endpoint" : "127.0.0.1:58360",
+  "candidates_tx" : 2,
+  "candidates_rx" : [
+    "f3947190-fddc-4878-abbd-2e1f6d56ebf0", "210b97d9-0d42-4305-889b-f3698698fb3e",
+    "03616df7-52f9-49f5-804f-41741aa2d982", "c22eb1ba-a534-42b7-a966-e277fddccd33"
+  ],
+  "offers_tx" : [ "ses:interop:wave2-acoustic" ],
+  "offers_accepted" : { "ses:interop:wave2-acoustic" : "accept" },
+  "replay_completed" : true,
+  "security" : "TLS 1.2, TLS_PSK_WITH_AES_128_GCM_SHA256 — no forward secrecy",
+  "errors" : [ ]
+}
+```
+
+**Host** (`docs/conformance/interop-host-acoustic-summary.json`) — likewise:
+
+```json
+{
+  "row": "wave2-tls-host-acoustic",
+  "nominated": 4, "candidates_foreign": 4, "candidates_rx": 4,
+  "issued": 1, "adopted": 4, "excluded": 0, "retained": 0,
+  "groups": 2, "max_shot_candidates": 4,
+  "offers_rx": 1, "offers_accepted": 1,
+  "errors_rx": 0, "errors_fatal": 0, "error_codes": [],
+  "shot_ids": ["27012abe-4a17-4a73-a424-9a0b58557cea", "fbe5a024-9284-4c21-b84a-38ecc8953694"]
+}
+```
+
+⛔ **I8 / 5.12c, and this is the row that could not be written before.** The host
+nominated four Candidates from its own acoustic Source and this device received
+every one of them; the device nominated two of its own; and
+`max_shot_candidates: 4` is a **single Shot referencing Candidates from both
+peers**. Every nomination was emitted by whoever made it, none was suppressed
+(`nominations_refused: 0`, `excluded: 0`), and the arbiter decided between them
+rather than seeing only one side. A device that never carried the counterpart's
+Candidates could not tell a host that nominates from one that does not, which is
+why this device now records them.
+
+#### F-S5-3 — replaying a stored Session redefines the LIVE Session on both ends
+
+**Whose defect: `libppcp`.** Found by the pairing and by neither implementation
+alone, which is precisely what `CONF` §5 exists for.
+
+**What was observed.** Every `shot` this device received in wave 2 — the adopted
+`authority: device` one and the host-issued `authority: host` one alike — carried
+`t0` in **`tb:hosttime`**, which is this *device's* capture clock, while the live
+Session declared `timebase_ref: tb:host`. The device's own summary records both
+facts side by side: `"timebase_ref": "tb:host"` and
+`"t0_timebase": "tb:hosttime"`. The conversion this device performs was therefore
+the identity (`converted_to_capture_ns == t0_ns`) and the row's whole point was
+silently lost.
+
+**Why it is not the receiving side.** In wave 1 the same device, against
+`ppcp-sim`'s `reference-host` and with **no offer on the link**, received a
+host-issued `shot` correctly tagged `tb:host` and converted it to a different
+number — asserted, and it passes. The only difference in wave 2 is that a stored
+Session was offered and replayed.
+
+**The mechanism, read out of the library rather than guessed.**
+`ppcp_bundle_replay_feed` puts every frame of the stored bundle through
+`ppcp_peer_send` onto the live link (`src/ppcp_bundle.c`), which is `MSG` §9.1's
+documented flow — *"the ordinary ingest path: manifest, declare, session_open,
+captures, payloads"*. On the receiving end `peer_on_session_open`
+(`src/ppcp_peer.c`) guards `timebase_ref` immutability **only when the incoming
+`session_id` equals the one already held**:
+
+```c
+if (p->has_session && ppcp_id_equal(&p->session_id, &b->session_id) &&
+    !ppcp_id_equal(&p->timebase_ref, &b->timebase_ref)) { ...error... }
+p->has_session  = true;
+p->session_id   = b->session_id;
+p->timebase_ref = b->timebase_ref;
+```
+
+A replayed bundle carries a **different** `session_id`, so the guard does not
+fire and the live peer's Session identity, `timebase_ref` and `session_params`
+are silently rebound to the imported Session's. The stored Session here is
+hostless with `timebase_ref: tb:hosttime`, which is exactly the value that then
+appeared on every subsequent `shot`.
+
+**The second consequence, visible in the host's counters.** The imported
+Session's Candidates and Shots entered the **live** arbiter:
+`candidates_foreign: 4` where this device nominated 2 live, `adopted: 4`, and
+`groups: 2`. Two Sessions' events were arbitrated as one.
+
+**The specification question for the protocol team.** `ENC` 7a makes a bundle the
+frames a live link would have carried, and `MSG` §9.1 routes an accepted offer
+back onto the live link — but `CORE` 4.1a / I16 make `timebase_ref` immutable for
+the life of a Session, and 5.13c puts `Shot.t0` in the *Session's*
+`timebase_ref`. An imported Session's frames must be ingested **into that
+Session**, not into the live one. Either the immutability guard should reject a
+second `session_open` naming a different Session on an established link, or the
+replay ingest needs a channel or a marker that says "these frames belong to the
+Session they name, not to yours". Both applications are affected identically and
+neither could have found it alone.
+
+⚠ **Not worked around here.** The rows are recorded as **pass** because every
+assertion they state held: this is a finding about a clause none of them covers,
+and papering over it in the device would hide it from the library.
+
+#### F-S5-4 — this device reports no negotiated wire version
+
+**Whose defect: this application**, and it is cosmetic. `negotiated_version` is
+`null` in both summaries: `ConformanceHarness` reads
+`DevicePeer.negotiatedVersion` immediately after sending `hello` and `declare`,
+which is before `hello_accept` has arrived, so it reads nothing and never reads
+again. The version *was* agreed — the session would not exist otherwise. The
+report is wrong, not the peer. Queued rather than patched blind: the fix is to
+re-read it on `.connected`, and there is no assertion behind it yet.
+
+#### The contract
 
 ```
 make interop HOST=127.0.0.1:9443 PSK=<64 hex characters> IDENTITY=<hex or text>
@@ -1094,20 +1376,24 @@ make interop HOST=127.0.0.1:9443 PSK=<64 hex characters> IDENTITY=<hex or text>
 
 | | |
 |---|---|
-| **Who listens** | PinPointStudio, on `HOST`. ⛔ The device **dials**: `RV` 2d makes the scanner the dialler and 5.2g makes the dialler the TLS client, and this application has no plaintext listener and no TLS listener on the pairing-code path. |
+| **Who listens** | PinPointStudio, on `HOST` (and `HOST2` for the acoustic row; two listeners, one simulator launch). ⛔ The device **dials**: `RV` 2d makes the scanner the dialler and 5.2g makes the dialler the TLS client, and this application has no plaintext listener and no TLS listener on the pairing-code path. |
 | **Transport** | the shipping `PpcpConnector` — `Network.framework`, `RV` §5's profile, two `NWConnection`s each with its own TLS session on the same `K_tls`, `link_bind` as the first frame on each (`ENC` 2.1a). ⛔ **No harness transport and no plaintext**: `PpcpDirectTransport` is a different type precisely so a fallback between them cannot exist (5.2f). |
 | **`PSK`** | the 32-byte `K_tls`, as 64 hex characters. ⚠ Given rather than derived: a real pairing runs `RV` §3 and derives it from the scanned code, and supplying it directly is the *shape* that produces. The derivation is D7's own tested path. |
 | **`IDENTITY`** | the PSK identity, hex if it parses as hex and otherwise its UTF-8 bytes. ⚠ `RV` 5.3a makes a real one fresh per connection and 17 octets; a fixed one is what a listener that can only register one identity in advance can accept (F-D1-1). |
-| **Expected negotiation** | TLS 1.2, `TLS_PSK_WITH_AES_128_GCM_SHA256` (`0x00A8`). ⛔ **Not TLS 1.3**: measured on iOS and macOS, Apple's stack cannot negotiate a TLS 1.3 external PSK at all, and that is what forced `RV` 5.4 to relax forward secrecy to best-effort. A listener that requires TLS 1.3 will refuse this device, and that refusal is a platform fact rather than a defect on either side. |
+| **Negotiated** | TLS 1.2, `TLS_PSK_WITH_AES_128_GCM_SHA256` (`0x00A8`) — confirmed by both ends on 23 August 2026. ⛔ This device **cannot** do TLS 1.3 external PSK; Apple's stack exposes no PSK ciphersuite at all. PinPointStudio's listener offers both versions (probed with `openssl s_client` above), so the pair meets at 1.2. A listener that required 1.3 would refuse this device, and that would be a platform fact rather than a defect on either side. |
 | **What the run does** | records a hostless Session and stores it (one minted Shot, its Captures `absent`/`outside_buffer`); dials; `hello` → `declare`; joins the Session the host opens; opens a Stream per declared Source; answers `arm` with a Readiness **measurement** (5.15a — never a state name); injects one synthetic swing through the **real** detector, the real `CandidateFactory` and the user's microphone-to-ball distance, and nominates every onset (7.1d); mints or receives a Shot; offers the stored Session and replays it if accepted. |
-| **What it writes** | `docs/conformance/interop-summary.json` — `security`, `declares` (profiles, source kinds, camera conventions, geometries, offset provenances), `streams_opened`, `candidates_tx`, `shots_rx` (each with `t0_ns`, `t0_timebase`, `authority` and `converted_to_capture_ns`), `captures_announced`, `offers_tx`, `offers_accepted`, `replay_completed`, `errors`, `dropped_events`. ⛔ `RV` 7.2b — no key material, no identity and no address beyond what the operator typed. |
+| **What it writes** | `docs/conformance/interop-summary.json` and `interop-acoustic-summary.json` — `security`, `declares` (profiles, source kinds, camera conventions, geometries, offset provenances), `streams_opened`, `candidates_tx`, `shots_rx` (each with `t0_ns`, `t0_timebase`, `authority` and `converted_to_capture_ns`), `captures_announced`, `offers_tx`, `offers_accepted`, `replay_completed`, `errors`, `dropped_events`. ⛔ `RV` 7.2b — no key material, no identity and no address beyond what the operator typed. |
 | **Timing** | the listener must be up **before** the target starts; the device dials once and does not retry for long. `make interop` boots, installs and launches the simulator first, which takes tens of seconds. |
 | **Exit** | non-zero if the dial or the session failed, or if no summary was written. |
+| **The host's own evidence** | `run-tls-host.sh` writes its summary on exit or timeout, so the target's `RUN_MS` must outlast the simulator's boot, install and both rows — 240 000 ms was used here for two rows of thirty seconds each. ⛔ **Exit 0 is not a pass**: the row is judged from the two summaries together, which is why both are checked in beside each other. |
+| **IOP-6's flag** | `run-tls-host.sh` has no pass-through for `--nominate-acoustic`, so that row invokes `ppcp_conform_host` directly with the arguments the script builds plus that one. Recorded rather than worked around. |
 
-⚠ **The simulator still has no camera**, so this row proves the transport, the
-handshake, the Session, the offer and the conversion — and not a Capture with
-bytes in it. That is the same limit every wave-1 row has and it is the same
-answer: it needs a phone.
+⚠ **The simulator still has no camera**, so these rows prove the transport, the
+handshake, the Session, the arm, the arbitration, the offer and the replay — and
+**not** a Capture with bytes in it, and not a camera declaration meeting a foreign
+one. Both host summaries say so plainly: `captures_absent: 6`, `payload_frames:
+0`. That is the same limit every wave-1 row has and it is the same answer: it
+needs a phone.
 
 
 ## 5. What is deferred, and on what
@@ -1127,7 +1413,8 @@ answer: it needs a phone.
 | The Keychain's `ThisDeviceOnly` behaviour (7.4c) | **a phone and a backup** | The property that matters — a pairing does not ride a backup onto a second device — is not observable from a test at any layer. |
 | Interop "device, no host → bundle" | **PinPointStudio** | ✅ half closed. This side writes two bundles and checks them in (`docs/conformance/bundles/`), and reads back the one PinPointStudio wrote (§4a). What remains is PinPointStudio importing ours, which is its row and not this one's. |
 | **IOP-2's other half** — a phone's camera declaration meeting a foreign one | **a phone** | The row passes on the conversion of an issued `t0` (§4a). What a simulator cannot put on the wire is `nominal_frame_start` / `rolling_shutter` / provenance `assumed` against the host's `start` / `global`, because it enumerates no camera Source. |
-| **Wave 2** — the real pair over TLS on loopback | **PinPointStudio's listener** | `make interop` and the device half exist and the contract is in §4a. Nothing has dialled a real listener yet. |
+| Wave 2's **import ledger** direction (IOP-3 file import) | **PinPointStudio** | The wave-2 host ran without `--import-bundle`, so the replayed Session went through the live ingest rather than the import ledger. The two bundles in `docs/conformance/bundles/` are what that row reads. |
+| **F-S5-3** — a replayed Session redefines the live one | **`libppcp` and the protocol team** | Recorded in §4a with the code path and both summaries. Not worked around here: papering over it in the device would hide it from the library. |
 | `SessionOfferService` and `PreviewProducer` in **`AppModel`** | **a live host link in the app** | ⛔ `SessionOfferService` is composed into the conformance harness and IOP-1 exercises it end to end, so it is no longer code with no caller. It is **not** in `AppModel`, and composing it there would be composing it onto `HostLink(state: .none)` — the app has no live host link yet, so there is no connected host to offer to and nothing the composition could be asserted against. `PreviewProducer` is in the same position and is additionally on nothing's path: no `CONF` §5 row this device is a party to needs a preview Stream. |
 | The acoustic detector's **accuracy** | nothing — it is out of scope | `CONF` §6 puts "which candidates a Mint peer promotes" outside conformance, and 8.3c keeps promotion policy out of the specification. What is in scope is that every nomination is emitted, and that is asserted. |
 | A **measured** time of flight | **a rig** | `AcousticTimeOfFlight` takes a surveyed or estimated distance and its sigma; nothing has measured either on this device, so a shipping session declares no `tof_correction` rather than an assumed one (plan A12). |
@@ -1142,7 +1429,7 @@ make conform SCENARIO=silent-host   # one ppcp-sim scenario, for debugging a row
 make conform-iop    # CONF §5 — IOP-2 and IOP-1, two counterparts in ONE simulator launch
 make pull-bundles   # copy the bundles an IOP-1 run wrote out of the simulator container
 make read-bundle FILE=…/x.ppcpbndl   # read a bundle another implementation wrote
-make interop HOST=127.0.0.1:9443 PSK=<64 hex> IDENTITY=<hex>   # wave 2, real TLS
+make interop HOST=… HOST2=… PSK=<64 hex> IDENTITY=<hex>   # wave 2, the real pair over TLS
 make gen && make build
 ```
 

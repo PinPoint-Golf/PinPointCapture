@@ -92,7 +92,7 @@ help:
 	@echo "              CONF §5 rows:  make conform ROW=iop1|iop2 SCENARIO=... DECL=..."
 	@echo "pull-bundles  copy the bundles an IOP-1 run wrote out of the simulator container"
 	@echo "read-bundle   read a bundle another implementation wrote: FILE=<path.ppcpbndl>"
-	@echo "interop       wave 2: dial the REAL PinPointStudio TLS listener (HOST=, PSK=, IDENTITY=)"
+	@echo "interop       wave 2: dial the REAL PinPointStudio TLS listeners (HOST=, HOST2=, PSK=, IDENTITY=)"
 	@echo "device        list connected devices"
 	@echo "deploy        gen + build-device + install + launch on a connected device"
 	@echo "lint          run swiftlint"
@@ -450,28 +450,28 @@ pull-bundles:
 		echo "make pull-bundles: no booted simulator holding $(BUNDLE_ID)."; \
 		echo "  Run a row first:  make conform ROW=iop1"; exit 1; \
 	fi; \
-	src="$$dir/Documents/interop-bundles"; \
-	if [ ! -d "$$src" ]; then \
-		echo "make pull-bundles: $$src does not exist — did the IOP-1 row run?"; exit 1; \
-	fi; \
 	mkdir -p $(BUNDLE_OUT); \
 	found=0; \
-	for b in "$$src"/*/*.ppcpbndl; do \
+	for b in "$$dir/Documents/interop-bundles"*/*/*.ppcpbndl; do \
 		[ -e "$$b" ] || continue; \
-		dir=$$(basename $$(dirname "$$b")); \
+		: '⚠ NOT `dir` — that is the container path this loop still needs, and'; \
+		: 'reusing it here cost a run: the summaries were looked for under a'; \
+		: 'bundle directory name and silently not found.'; \
 		: '⚠ The directory is `<peer>~<session>` and a `peer:` is a fresh UUID per'; \
 		: 'install, so the checked-in name is the SESSION half with the two bytes'; \
 		: 'a path cannot carry replaced. 5.1a — nothing is parsed back out of it.'; \
-		name=$$(printf '%s' "$${dir#*~}" | tr ':/' '--'); \
+		bdir=$$(basename $$(dirname "$$b")); \
+		name=$$(printf '%s' "$${bdir#*~}" | tr ':/' '--'); \
 		cp "$$b" "$(BUNDLE_OUT)/$$name.ppcpbndl"; \
 		found=$$((found+1)); \
 		echo "  $(BUNDLE_OUT)/$$name.ppcpbndl  $$(wc -c <"$$b" | tr -d ' ') bytes"; \
 	done; \
-	if [ "$$found" = "0" ]; then echo "make pull-bundles: no .ppcpbndl found"; exit 1; fi; \
-	if [ -f "$$dir/Documents/interop-summary.json" ]; then \
-		cp "$$dir/Documents/interop-summary.json" $(BUNDLE_OUT)/../interop-summary.json; \
-		echo "  $(CONFORM_OUT)/interop-summary.json"; \
-	fi
+	if [ "$$found" = "0" ]; then echo "make pull-bundles: no .ppcpbndl found"; fi; \
+	for j in interop-summary.json interop-acoustic-summary.json; do \
+		if [ -f "$$dir/Documents/$$j" ]; then \
+			cp "$$dir/Documents/$$j" $(CONFORM_OUT)/$$j; echo "  $(CONFORM_OUT)/$$j"; \
+		fi; \
+	done
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WAVE 2 — the real pair. This device, in the simulator, dialling the REAL
@@ -515,9 +515,10 @@ interop: gen
 		-jobs $(JOBS) \
 		| $(XCB)
 	@set -e; \
-	echo "dialling $(HOST) over TLS — the PinPointStudio listener must already be up"; \
+	echo "dialling $(HOST) $(HOST2) over TLS — the listeners must already be up"; \
 	set -o pipefail; \
 	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
+	TEST_RUNNER_PPCP_INTEROP_HOST_ACOUSTIC=$(HOST2) \
 	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
 	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building \
 		-project $(PROJECT) \
@@ -531,7 +532,9 @@ interop: gen
 		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || true
 	@$(MAKE) --no-print-directory pull-bundles || true
 	@if [ -f $(CONFORM_OUT)/interop-summary.json ]; then \
-		echo "--- interop summary ---"; cat $(CONFORM_OUT)/interop-summary.json; \
+		for f in $(CONFORM_OUT)/interop-summary.json $(CONFORM_OUT)/interop-acoustic-summary.json; do \
+			[ -f "$$f" ] || continue; echo "--- $$f ---"; cat "$$f"; \
+		done; \
 	else \
 		echo "make interop: no summary was written — the run did not reach the harness."; \
 		exit 1; \

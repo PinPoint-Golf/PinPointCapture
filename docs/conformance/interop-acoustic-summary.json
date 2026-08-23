@@ -1,0 +1,94 @@
+{
+  "arms_answered" : 1,
+  "candidates_rx" : [
+    "f3947190-fddc-4878-abbd-2e1f6d56ebf0",
+    "210b97d9-0d42-4305-889b-f3698698fb3e",
+    "03616df7-52f9-49f5-804f-41741aa2d982",
+    "c22eb1ba-a534-42b7-a966-e277fddccd33"
+  ],
+  "candidates_tx" : 2,
+  "captures_announced" : 3,
+  "counterpart_peer_id" : "peer:pinpointstudio-conform",
+  "declared_camera" : false,
+  "declares" : {
+    "camera_conventions" : [
+
+    ],
+    "camera_geometries" : [
+
+    ],
+    "offset_provenances" : [
+
+    ],
+    "profiles" : [
+      "core",
+      "capture",
+      "detect",
+      "mint",
+      "live",
+      "offline",
+      "markup"
+    ],
+    "source_kinds" : [
+      "microphone",
+      "imu"
+    ]
+  },
+  "dropped_events" : 0,
+  "endpoint" : "127.0.0.1:58360",
+  "errors" : [
+
+  ],
+  "heartbeats" : 31,
+  "negotiated_version" : null,
+  "offers_accepted" : {
+    "ses:interop:wave2-acoustic" : "accept"
+  },
+  "offers_tx" : [
+    "ses:interop:wave2-acoustic"
+  ],
+  "peer_id" : "peer:1b4b06fd-135b-4f8e-8140-7dcbb11da786",
+  "relation_updates" : 1,
+  "replay_completed" : true,
+  "row" : "interop-acoustic-summary.json",
+  "security" : "TLS 1.2, TLS_PSK_WITH_AES_128_GCM_SHA256 — no forward secrecy",
+  "session_id" : "sess:007cbe12-d8ec-473a-8e0f-cb417ff0b865",
+  "shots_minted_locally" : 1,
+  "shots_rx" : [
+    {
+      "authority" : "device",
+      "converted_to_capture_ns" : 70507818072863,
+      "shot_id" : "27012abe-4a17-4a73-a424-9a0b58557cea",
+      "t0_ns" : 70507818072863,
+      "t0_timebase" : "tb:hosttime"
+    },
+    {
+      "authority" : "device",
+      "converted_to_capture_ns" : 70507818072863,
+      "shot_id" : "27012abe-4a17-4a73-a424-9a0b58557cea",
+      "t0_ns" : 70507818072863,
+      "t0_timebase" : "tb:hosttime"
+    },
+    {
+      "authority" : "device",
+      "converted_to_capture_ns" : 70507818072863,
+      "shot_id" : "27012abe-4a17-4a73-a424-9a0b58557cea",
+      "t0_ns" : 70507818072863,
+      "t0_timebase" : "tb:hosttime"
+    },
+    {
+      "authority" : "host",
+      "converted_to_capture_ns" : 70507902364697,
+      "shot_id" : "fbe5a024-9284-4c21-b84a-38ecc8953694",
+      "t0_ns" : 70507902364697,
+      "t0_timebase" : "tb:hosttime"
+    }
+  ],
+  "stored_session_offered" : "ses:interop:wave2-acoustic",
+  "streams_opened" : [
+    "str:audio:src:microphone",
+    "str:metadata:src:imu"
+  ],
+  "sync_events" : 44,
+  "timebase_ref" : "tb:host"
+}

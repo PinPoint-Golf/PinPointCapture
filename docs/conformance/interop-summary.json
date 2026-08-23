@@ -1,0 +1,77 @@
+{
+  "arms_answered" : 1,
+  "candidates_rx" : [
+
+  ],
+  "candidates_tx" : 2,
+  "captures_announced" : 3,
+  "counterpart_peer_id" : "peer:pinpointstudio-conform",
+  "declared_camera" : false,
+  "declares" : {
+    "camera_conventions" : [
+
+    ],
+    "camera_geometries" : [
+
+    ],
+    "offset_provenances" : [
+
+    ],
+    "profiles" : [
+      "core",
+      "capture",
+      "detect",
+      "mint",
+      "live",
+      "offline",
+      "markup"
+    ],
+    "source_kinds" : [
+      "microphone",
+      "imu"
+    ]
+  },
+  "dropped_events" : 0,
+  "endpoint" : "127.0.0.1:58361",
+  "errors" : [
+
+  ],
+  "heartbeats" : 31,
+  "negotiated_version" : null,
+  "offers_accepted" : {
+    "ses:interop:wave2" : "accept"
+  },
+  "offers_tx" : [
+    "ses:interop:wave2"
+  ],
+  "peer_id" : "peer:1b4b06fd-135b-4f8e-8140-7dcbb11da786",
+  "relation_updates" : 1,
+  "replay_completed" : true,
+  "row" : "interop-summary.json",
+  "security" : "TLS 1.2, TLS_PSK_WITH_AES_128_GCM_SHA256 — no forward secrecy",
+  "session_id" : "sess:73d30ecd-41ca-49ca-afa7-f9908015829d",
+  "shots_minted_locally" : 1,
+  "shots_rx" : [
+    {
+      "authority" : "device",
+      "converted_to_capture_ns" : 70477702764655,
+      "shot_id" : "bcb7d4fc-c9e9-47aa-ab4d-5cb176da6c6d",
+      "t0_ns" : 70477702764655,
+      "t0_timebase" : "tb:hosttime"
+    },
+    {
+      "authority" : "host",
+      "converted_to_capture_ns" : 70477803325863,
+      "shot_id" : "51996495-b6cc-4b04-bb35-7245e9d29922",
+      "t0_ns" : 70477803325863,
+      "t0_timebase" : "tb:hosttime"
+    }
+  ],
+  "stored_session_offered" : "ses:interop:wave2",
+  "streams_opened" : [
+    "str:audio:src:microphone",
+    "str:metadata:src:imu"
+  ],
+  "sync_events" : 44,
+  "timebase_ref" : "tb:host"
+}
