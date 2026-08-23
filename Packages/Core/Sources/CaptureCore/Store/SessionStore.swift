@@ -370,27 +370,20 @@ public final class SessionBundleWriter: @unchecked Sendable {
                                completeness: PpcpCaptureRecord.Completeness,
                                shotCount: UInt64,
                                candidateCount: UInt64) throws {
-        // ⚠ **`ppcp_msg` is about 48 KB and every byte of that is on the heap
-        // here, deliberately.** A C *union* imports into Swift as a struct whose
-        // members are COMPUTED properties, so `message.pointee.body.session_manifest`
-        // is a get-modify-set of the whole union — a 48 KB stack temporary per
-        // field touched. Written the obvious way this suite died with SIGBUS,
-        // which is what a stack overflow looks like on arm64. `body` itself is a
-        // stored property, so taking one pointer to it and rebinding that is
-        // in-place, and nothing large is ever copied.
-        let bytes = MemoryLayout<ppcp_msg>.stride
-        let raw = UnsafeMutableRawPointer.allocate(
-            byteCount: bytes, alignment: MemoryLayout<ppcp_msg>.alignment)
-        raw.initializeMemory(as: UInt8.self, repeating: 0, count: bytes)
-        let message = raw.assumingMemoryBound(to: ppcp_msg.self)
-        defer { raw.deallocate() }
-
-        // ⚠ `1`, not `0`. `ENC` §5 numbers `msg_id` from 1 and
-        // `ppcp_envelope_init` refuses a zero outright; the value here is a
-        // placeholder either way, because `ppcp_peer_send` assigns the real one
-        // from the peer's own sequence (5c) so two frames cannot share one.
-        try check(ppcp_msg_init(message, PPCP_MT_SESSION_MANIFEST, 1))
-
+        // ⛔ **`ppcp_peer_session_manifest`, not a hand-built `ppcp_msg`.** The
+        // manifest used to be assembled here and pushed through the generic
+        // `ppcp_peer_send` escape hatch, which meant this file — and not the
+        // library — decided what a well-formed `session_manifest` is. `peer.h`
+        // gives the message its own constructor, and using it puts `ENC` 7c's
+        // ordering, `MSG` §9.2's field rules and the C2 channel check back where
+        // they belong. The `ppcp_msg` union is also no longer touched, which
+        // removes the 48 KB stack temporary that once killed this suite with
+        // SIGBUS on arm64 (a C union imports into Swift as computed properties,
+        // so every field store is a get-modify-set of the whole union).
+        //
+        // ⚠ The body is still built on the heap: `ppcp_body_session_manifest`
+        // carries `PPCP_MAX_MANIFEST` entries inline and is far too large to be
+        // a local.
         let streams = try DevicePeer.ids(streamIds)
         guard streams.count <= Int(PPCP_MAX_STREAM_IDS),
               captures.count <= Int(PPCP_MAX_MANIFEST) else {
@@ -419,34 +412,35 @@ public final class SessionBundleWriter: @unchecked Sendable {
         case .absent: PPCP_ABSENT
         }
 
-        try withUnsafeMutablePointer(to: &message.pointee.body) { body in
-            try body.withMemoryRebound(to: ppcp_body_session_manifest.self,
-                                       capacity: 1) { manifest in
-                try check(ppcp_id_set_z(&manifest.pointee.session_id, sessionId))
-                // A C fixed array imports as a tuple, which has no subscript;
-                // rebinding it to a buffer is the supported way to index one.
-                withUnsafeMutablePointer(to: &manifest.pointee.streams) { tuple in
-                    tuple.withMemoryRebound(to: ppcp_id.self,
-                                            capacity: Int(PPCP_MAX_STREAM_IDS)) {
-                        for (index, id) in streams.enumerated() { $0[index] = id }
-                    }
-                }
-                manifest.pointee.stream_count = streams.count
-                withUnsafeMutablePointer(to: &manifest.pointee.captures) { tuple in
-                    tuple.withMemoryRebound(to: ppcp_manifest_entry.self,
-                                            capacity: Int(PPCP_MAX_MANIFEST)) {
-                        for (index, entry) in entries.enumerated() { $0[index] = entry }
-                    }
-                }
-                manifest.pointee.capture_count = captures.count
-                manifest.pointee.completeness = asserted
-                manifest.pointee.count_shots = shotCount
-                manifest.pointee.count_candidates = candidateCount
-                manifest.pointee.count_captures = UInt64(captures.count)
+        let bytes = MemoryLayout<ppcp_body_session_manifest>.stride
+        let raw = UnsafeMutableRawPointer.allocate(
+            byteCount: bytes, alignment: MemoryLayout<ppcp_body_session_manifest>.alignment)
+        raw.initializeMemory(as: UInt8.self, repeating: 0, count: bytes)
+        defer { raw.deallocate() }
+        let manifest = raw.assumingMemoryBound(to: ppcp_body_session_manifest.self)
+
+        try check(ppcp_id_set_z(&manifest.pointee.session_id, sessionId))
+        // A C fixed array imports as a tuple, which has no subscript; rebinding
+        // it to a buffer is the supported way to index one.
+        withUnsafeMutablePointer(to: &manifest.pointee.streams) { tuple in
+            tuple.withMemoryRebound(to: ppcp_id.self, capacity: Int(PPCP_MAX_STREAM_IDS)) {
+                for (index, id) in streams.enumerated() { $0[index] = id }
             }
         }
+        manifest.pointee.stream_count = streams.count
+        withUnsafeMutablePointer(to: &manifest.pointee.captures) { tuple in
+            tuple.withMemoryRebound(to: ppcp_manifest_entry.self,
+                                    capacity: Int(PPCP_MAX_MANIFEST)) {
+                for (index, entry) in entries.enumerated() { $0[index] = entry }
+            }
+        }
+        manifest.pointee.capture_count = captures.count
+        manifest.pointee.completeness = asserted
+        manifest.pointee.count_shots = shotCount
+        manifest.pointee.count_candidates = candidateCount
+        manifest.pointee.count_captures = UInt64(captures.count)
 
-        try peer.send(message, on: .control)
+        try check(ppcp_peer_session_manifest(try peer.handleForLive(), manifest))
         try flush(.control)
     }
 

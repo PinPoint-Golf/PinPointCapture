@@ -70,6 +70,54 @@ public actor ConformanceHarness {
         /// Whether the hardware enumerated a camera. ⛔ `false` on a simulator,
         /// and the row says what that costs.
         public var declaredCamera = true
+        /// `MSG` 6.2 — how many `relation_update` frames arrived. ⚠ A host with
+        /// three declared clocks publishes three (I21, 6.1d), and a device that
+        /// received one has no way to express an instant on the other two.
+        public var relationUpdates: Int = 0
+
+        // MARK: What the counterpart's Shots said, and what this device made of them
+        //
+        // ⛔ **I22, from the receiving side.** 5.13c puts `Shot.t0` in
+        // `Session.timebase_ref`, which against a host is the *host's* clock and
+        // not this device's. A device that took the number as-is would be wrong
+        // by an offset nobody measured and would not know it. So both readings
+        // are recorded — the one that arrived and the one this device converted
+        // it to — and the row asserts that they are the pair a conversion
+        // produces rather than the same number twice.
+
+        /// One `shot` as it arrived, and what this device converted it to.
+        public struct ShotArrival: Sendable, Hashable {
+            public var shotId: String
+            /// As it arrived: `Shot.t0` in `Session.timebase_ref`.
+            public var t0Ns: Int64
+            public var t0TimebaseId: String
+            /// 8.3d — who decided. A `shot` from a `role: host` peer says `host`.
+            public var authority: String
+            /// The same instant on **this device's** capture clock, or `nil`
+            /// where no relation existed to express it (5.4b, 8.2i1). ⛔ Never a
+            /// zero offset substituted to make it expressible.
+            public var convertedToCaptureNs: Int64?
+        }
+        public var shotsReceived: [ShotArrival] = []
+
+        // MARK: The stored Sessions this device offered (MSG §9.1)
+
+        public var offersSent: [String] = []
+        /// `sessionId` → the host's verdict, as `SessionOfferService` recorded it.
+        public var offerVerdicts: [String: String] = [:]
+        /// Whether every accepted bundle finished replaying onto the live link.
+        public var replayCompleted = false
+
+        // MARK: I19 — what this device declared, read back off its own declaration
+
+        public var declaredProfiles: [String] = []
+        public var declaredSourceKinds: [String] = []
+        /// The `timing.convention` of every camera profile this device declared.
+        /// ⛔ `nominal_frame_start` on a phone, and never `start`: A12 and I19
+        /// make it what the hardware is, not what the counterpart uses.
+        public var declaredConventions: [String] = []
+        public var declaredGeometries: [String] = []
+        public var declaredOffsetProvenances: [String] = []
         /// One line per event, for the debug screen and for a failure message.
         public var transcript: [String] = []
 
@@ -87,13 +135,32 @@ public actor ConformanceHarness {
 
     private let device: any CaptureDevice
     private let distance: MicToBallDistance
+    /// IOP-1 — the stored Sessions this device offers once a host has declared.
+    /// ⛔ `nil` leaves the run byte-identical to D9's, which is why it is opt-in:
+    /// the D9 claim was measured without an offer on the wire and a harness that
+    /// started offering unconditionally would invalidate it silently.
+    private let offering: SessionStore?
+    /// Wave 2 — the PSK a scanned pairing code would have produced.
+    ///
+    /// ⛔ **Non-`nil` switches the transport to the SHIPPING one.** `PpcpConnector`
+    /// is `Network.framework` with `RV` §5's TLS profile and there is no plaintext
+    /// branch in that file; `PpcpDirectConnector` is the `DEBUG`-only plaintext
+    /// path `RV` §2's `direct` case permits and which `ppcp-sim` speaks. The two
+    /// are different types precisely so a fallback between them cannot exist
+    /// (5.2f).
+    private let credentials: (any PpcpCredentials)?
     private var report = Report()
     /// `Session.timebase_ref`, once a Session exists.
     private var referenceTimebaseId = PpcpTimebases.captureId
+    private var offers: SessionOfferService?
 
-    public init(device: any CaptureDevice, distance: MicToBallDistance) {
+    public init(device: any CaptureDevice, distance: MicToBallDistance,
+                offering: SessionStore? = nil,
+                credentials: (any PpcpCredentials)? = nil) {
         self.device = device
         self.distance = distance
+        self.offering = offering
+        self.credentials = credentials
     }
 
     /// Dials the counterpart and runs until `seconds` elapse or the link closes.
@@ -110,30 +177,22 @@ public actor ConformanceHarness {
 
         // ⛔ The device's own declaration. A harness that declared something
         // convenient would be conformance evidence about a fixture.
-        let declaration: PpcpDeclaration
-        do {
-            declaration = try PpcpDeclaration(
-                device.ppcpDeclarationInput(peerId: peerId, viewpoint: nil))
-            report.declaredCamera = true
-        } catch CaptureDeviceError.noPhysicalCameraFound {
-            // ⚠ **A simulator has no camera, and the honest declaration says so.**
-            // `CORE` §5.2 lets a Peer own no Source of a given kind — "a Peer
-            // owning none participates fully" — so this declares the microphone
-            // and the IMU and no camera Source, which is what this hardware
-            // actually enumerated. ⛔ It does **not** invent a 1080p150 camera to
-            // make the run look complete: the whole value of a conformance
-            // harness is that it declares what is there.
-            //
-            // The consequence is stated on the row rather than hidden: everything
-            // downstream of a camera Source — the video Stream, a Capture with
-            // `achieved_frames`, CT-S7 (4)'s conversion — is not exercised by a
-            // simulator run and needs a phone.
-            declaration = try PpcpDeclaration(
-                try Self.declarationWithoutACamera(peerId: peerId),
-                allowingNoCameraSource: true)
-            report.declaredCamera = false
-        } catch {
-            throw HarnessError.declarationUnavailable(String(describing: error))
+        let honest = try Self.honestDeclaration(of: device, peerId: peerId)
+        let declaration = honest.declaration
+        report.declaredCamera = honest.hasCamera
+
+        // I19 — read back off the declaration this device is about to put on the
+        // wire, so the row asserts what was SENT rather than what a fixture says.
+        report.declaredProfiles = declaration.declaredProfiles
+        report.declaredSourceKinds = declaration.sources.map(\.kind)
+        for source in declaration.sources where source.kind == "camera" {
+            for profile in source.profiles {
+                report.declaredConventions.append(String(describing: profile.convention))
+                report.declaredGeometries.append(
+                    profile.geometry.map { String(describing: $0) } ?? "—")
+                report.declaredOffsetProvenances.append(
+                    profile.offsetProvenance.map { String(describing: $0) } ?? "—")
+            }
         }
 
         let peer = try DevicePeer(
@@ -145,7 +204,16 @@ public actor ConformanceHarness {
             health: { DeviceHealthService.current() },
             syncTimebase: PpcpTimebases.captureId)
 
-        let transport = try await PpcpDirectConnector().connect(to: endpoint)
+        let transport: any PeerTransport
+        if let credentials {
+            // ⛔ The shipping transport, unchanged: two TLS 1.2 PSK connections,
+            // `link_bind` first on each (`ENC` 2.1a), no plaintext branch to fall
+            // back to (`RV` 5.2f).
+            transport = try await PpcpConnector().connect(to: endpoint,
+                                                          credentials: credentials)
+        } else {
+            transport = try await PpcpDirectConnector().connect(to: endpoint)
+        }
         report.security = transport.security.summary
         let pump = PeerLinkPump(peer: peer, transport: transport,
                                 nowNs: { MachClock.hostTimeNs })
@@ -208,6 +276,39 @@ public actor ConformanceHarness {
                 case .declared(let counterpart):
                     report.counterpartPeerId = counterpart
 
+                case .sessionAccepted(let accept):
+                    guard let offers, let host = report.counterpartPeerId else { break }
+                    report.offerVerdicts[accept.sessionId] =
+                        String(describing: accept.verdict)
+                    try await pump.perform { _ in
+                        try offers.received(accept, fromHost: host)
+                    }
+                    // `ENC` 7a — the stored bundle's own frames, renumbered into
+                    // the live sequence and put back on the link. Pumped here and
+                    // again on every tick below, because `feed` stops when the
+                    // outbound queue is full and the drain is the pump's.
+                    report.replayCompleted = try await pump.perform { _ in
+                        try offers.pumpReplay(hostPeerId: host)
+                    }
+
+                case .shotReceived(let id, let t0Ns, let t0TimebaseId, let authority):
+                    // ⛔ **The conversion, not a substitution.** The instant
+                    // arrives on the Session's reference clock; expressing it on
+                    // this device's capture clock is the only way a ring could be
+                    // asked for the right interval, and `nil` where no relation
+                    // exists is 8.2i1's honest answer rather than a zero offset.
+                    let converted = try? await pump.perform { peer in
+                        try peer.instant(t0Ns, on: t0TimebaseId,
+                                         expressedIn: PpcpTimebases.captureId)
+                    }
+                    report.shotsReceived.append(Report.ShotArrival(
+                        shotId: id, t0Ns: t0Ns, t0TimebaseId: t0TimebaseId,
+                        authority: String(describing: authority),
+                        convertedToCaptureNs: converted ?? nil))
+
+                case .relationUpdate:
+                    report.relationUpdates += 1
+
                 case .sync:
                     report.syncEvents += 1
 
@@ -255,6 +356,23 @@ public actor ConformanceHarness {
             // entry in `docs/ppcp-conformance.md`. It is here because 6.1f asks
             // for it whether or not it changes that row.
             _ = try? await pump.perform { try $0.publishRelations() }
+
+            // `MSG` 9.1 — offered once a host has declared **and** a Session
+            // exists. ⚠ Both, and in that order: the peer id is what the
+            // per-(host, session) disposition is keyed on, and offering before a
+            // Session is offering to a peer that has not said what it is yet.
+            if let host = report.counterpartPeerId, report.sessionId != nil {
+                try await offerStoredSessions(to: host, pump: pump)
+            }
+
+            // The replay makes progress only as the outbound queue drains, so it
+            // is pumped on the loop rather than once at accept time.
+            if let offers, let host = report.counterpartPeerId,
+               report.replayCompleted == false, report.offerVerdicts.isEmpty == false {
+                report.replayCompleted = (try? await pump.perform { _ in
+                    try offers.pumpReplay(hostPeerId: host)
+                }) ?? false
+            }
         }
 
         // Drain whatever the transfer queue still holds, so a `payload_end`
@@ -268,6 +386,52 @@ public actor ConformanceHarness {
         return report
     }
 
+    /// `MSG` 9.1 — offer every stored Session this host has not dispositioned.
+    ///
+    /// ⛔ Nothing happens where `offering` is `nil`, which is D9's shape and is
+    /// why that claim survives this file gaining an offer path.
+    private func offerStoredSessions(to hostPeerId: String,
+                                     pump: PeerLinkPump) async throws {
+        guard let store = offering, offers == nil else { return }
+        let service = try await pump.perform { peer in
+            SessionOfferService(peer: peer, store: store) { bundle in
+                try Data(contentsOf: bundle.bundleFile)
+            }
+        }
+        offers = service
+        let offered = try await pump.perform { _ in
+            try service.offerAll(toHost: hostPeerId)
+        }
+        report.offersSent = offered.map(\.sessionId)
+        report.transcript.append("offered \(offered.count) stored session(s)")
+    }
+
+    /// This hardware's own declaration, and whether it enumerated a camera.
+    ///
+    /// ⚠ **A simulator has no camera, and the honest declaration says so.**
+    /// `CORE` §5.2 lets a Peer own no Source of a given kind — "a Peer owning
+    /// none participates fully" — so this declares the microphone and the IMU and
+    /// no camera Source, which is what this hardware actually enumerated. ⛔ It
+    /// does **not** invent a 1080p150 camera to make a run look complete: the
+    /// whole value of a conformance harness is that it declares what is there.
+    ///
+    /// The consequence is stated on the row rather than hidden: everything
+    /// downstream of a camera Source — the video Stream, a Capture with
+    /// `achieved_frames`, CT-S7 (4)'s conversion — is not exercised by a simulator
+    /// run and needs a phone.
+    static func honestDeclaration(of device: any CaptureDevice, peerId: String) throws
+        -> (declaration: PpcpDeclaration, hasCamera: Bool) {
+        do {
+            return (try PpcpDeclaration(
+                device.ppcpDeclarationInput(peerId: peerId, viewpoint: nil)), true)
+        } catch CaptureDeviceError.noPhysicalCameraFound {
+            return (try PpcpDeclaration(try declarationWithoutACamera(peerId: peerId),
+                                        allowingNoCameraSource: true), false)
+        } catch {
+            throw HarnessError.declarationUnavailable(String(describing: error))
+        }
+    }
+
     /// The declaration a device with no camera makes.
     ///
     /// ⚠ Assembled here rather than by loosening `AVFoundationCaptureDevice`,
@@ -276,7 +440,7 @@ public actor ConformanceHarness {
     /// failed must not report itself able to capture. What a harness needs is a
     /// different question — "declare what this hardware is" — and answering it
     /// here keeps the shipping path unchanged.
-    private static func declarationWithoutACamera(peerId: String) throws
+    static func declarationWithoutACamera(peerId: String) throws
         -> PpcpDeclarationInput {
         let identifier = DeviceProfiles.currentIdentifier
         guard let timing = DeviceProfiles.ppcp(for: identifier) else {

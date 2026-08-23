@@ -58,7 +58,18 @@ public enum PeerLinkEvent: Sendable, Hashable {
     case captureRequested(shotId: String, streamIds: [String],
                           preNs: Int64, postNs: Int64, replyTo: UInt64)
     case candidateReceived(id: String)
-    case shotReceived(id: String)
+    /// `MSG` §8.2 — a Shot the counterpart issued.
+    ///
+    /// ⛔ **`t0` is carried, and it is carried WITH the id of the timebase it is
+    /// expressed in.** 5.13c puts `Shot.t0` in `Session.timebase_ref`, which with
+    /// a host is the *host's* clock; a receiver that took the number and used it
+    /// against its own clock would be wrong by whatever offset nobody measured,
+    /// and would not know it. Carrying the pair is what makes I22's conversion
+    /// possible at the receiver at all — and the `authority` beside it is 8.3d's
+    /// answer to "who decided this", which a device needs before it treats a
+    /// Shot as issued rather than minted.
+    case shotReceived(id: String, t0Ns: Int64, t0TimebaseId: String,
+                      authority: PpcpAuthority)
     case sessionOffered(PpcpSessionOffer)
     case sessionAccepted(PpcpSessionAccept)
     /// 7.4c — three consecutive missed intervals. ⛔ Capture does not stop (7.4d).
@@ -381,10 +392,20 @@ public actor PeerLinkPump {
                 ppcpString($0.pointee.candidate.id)
             })
         case PPCP_EVENT_SHOT:
-            guard let msg else { return .shotReceived(id: "") }
-            return .shotReceived(id: body(msg, ppcp_body_shot.self) {
-                ppcpString($0.pointee.shot.id)
-            })
+            guard let msg else {
+                return .shotReceived(id: "", t0Ns: 0, t0TimebaseId: "",
+                                     authority: .host)
+            }
+            return body(msg, ppcp_body_shot.self) { shot in
+                // ⚠ Read here, while the pointer is alive — including the
+                // timebase id, which is a `ppcp_id` inside the instant and not a
+                // pointer into the arena.
+                .shotReceived(id: ppcpString(shot.pointee.shot.id),
+                              t0Ns: shot.pointee.shot.t0.ns,
+                              t0TimebaseId: ppcpString(shot.pointee.shot.t0.tb),
+                              authority: shot.pointee.shot.authority == PPCP_AUTHORITY_DEVICE
+                                  ? .device : .host)
+            }
         case PPCP_EVENT_SESSION_OFFER:
             guard let msg else { break }
             return .sessionOffered(body(msg, ppcp_body_session_offer.self) {

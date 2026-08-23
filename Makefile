@@ -38,6 +38,14 @@ PPCP_CONFORM ?= $(LIBPPCP)/build/dev/tools/ppcp-conform/ppcp-conform
 SCENARIO    ?= reference-host
 DECL        ?= reference-host
 SCENARIO_DECL ?= $(LIBPPCP)/tools/scenarios/$(DECL).json
+# ⚠ **Which `CONF` §5 interoperability row this run is.** `ppcp-sim` serves one
+# link, so a suite where several tests dialled the same listener would have all
+# but one measuring a peer that had already finished. `ROW` picks exactly one;
+# `d9` (the default) is the CT-S5 device row that has always been there.
+ROW         ?= d9
+# What `ppcp-sim` is told to expect of ITSELF, on top of seeing no violation.
+# A row's assertions live on both sides: this is the far end's half.
+EXPECT      ?= violations=0
 # ⚠ Long enough for a simulator to install and run, and no longer — the target
 # `wait`s for ppcp-sim so it can read the exit code its `--expect` produces, so
 # this number is also how long `make conform` takes after the test has passed.
@@ -50,13 +58,17 @@ CONFORM_RUN_MS ?= 45000
 # measuring somebody else.
 CONFORM_PROFILES ?= core,capture,detect,mint,live,offline,markup
 CONFORM_OUT      ?= docs/conformance
+# IOP-3 / IOP-10 — the bundles PinPointStudio imports. Small, and checked in.
+BUNDLE_OUT       ?= docs/conformance/bundles
 # How long the simulator gets to boot, install and reach the dial loop before
 # `ppcp-conform` starts binding ports. ⚠ Generous on purpose: a row lost to a
 # slow boot is a FAILED row, and there is no way to tell that apart from a real
 # refusal afterwards.
 CONFORM_WARMUP_S ?= 75
 
-.PHONY: all gen build build-device _udid test test-core test-app conform conform-sim conform-tool device deploy lint clean help
+COMMA := ,
+
+.PHONY: all gen build build-device _udid test test-core test-app conform conform-sim conform-tool interop pull-bundles device deploy lint clean help
 
 # ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
 # what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
@@ -77,6 +89,9 @@ help:
 	@echo "build-device  build for a physical device (needs signing)"
 	@echo "test          run the unit tests"
 	@echo "conform       ppcp-conform drives the device (D9); SCENARIO=<n> for one ppcp-sim row"
+	@echo "              CONF §5 rows:  make conform ROW=iop1|iop2 SCENARIO=... DECL=..."
+	@echo "pull-bundles  copy the bundles an IOP-1 run wrote out of the simulator container"
+	@echo "interop       wave 2: dial the REAL PinPointStudio TLS listener (HOST=, PSK=, IDENTITY=)"
 	@echo "device        list connected devices"
 	@echo "deploy        gen + build-device + install + launch on a connected device"
 	@echo "lint          run swiftlint"
@@ -213,7 +228,8 @@ conform-sim: gen
 	log=$$(mktemp -t ppcp-conform-log); \
 	"$(PPCP_SIM)" --role host --listen 0 --port-file "$$portfile" \
 		--declaration "$(SCENARIO_DECL)" --scenario $(SCENARIO) \
-		--expect violations=0 --run-ms $(CONFORM_RUN_MS) >"$$log" 2>&1 & \
+		$(foreach e,$(subst $(COMMA), ,$(EXPECT)),--expect $(e)) \
+		--run-ms $(CONFORM_RUN_MS) >"$$log" 2>&1 & \
 	simpid=$$!; \
 	trap 'kill $$simpid 2>/dev/null || true' EXIT; \
 	for i in 1 2 3 4 5 6 7 8 9 10; do \
@@ -225,6 +241,7 @@ conform-sim: gen
 	echo "ppcp-sim listening on $$port, scenario $(SCENARIO)"; \
 	set -o pipefail; \
 	TEST_RUNNER_PPCP_CONFORM_PORT=$$port \
+	TEST_RUNNER_PPCP_CONFORM_ROW=$(ROW) \
 	TEST_RUNNER_PPCP_CONFORM_SCENARIO=$(SCENARIO) xcodebuild test-without-building \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
@@ -320,6 +337,103 @@ conform-tool: gen
 	  *) echo "make conform: ppcp-conform exited $$rc";; \
 	esac; \
 	exit $$rc
+
+# The bundles an IOP-1 / `make interop` run wrote, copied out of the simulator's
+# app container into the repository.
+#
+# ⚠ **`booted`, and it is the one fragile thing here.** A test writes into the
+# app's Documents directory, which lives inside a container only `simctl` can
+# name. With two simulators booted this picks the wrong one; the target says what
+# it found rather than failing quietly.
+pull-bundles:
+	@set -e; \
+	dir=$$(xcrun simctl get_app_container booted $(BUNDLE_ID) data 2>/dev/null || true); \
+	if [ -z "$$dir" ]; then \
+		echo "make pull-bundles: no booted simulator holding $(BUNDLE_ID)."; \
+		echo "  Run a row first:  make conform ROW=iop1"; exit 1; \
+	fi; \
+	src="$$dir/Documents/interop-bundles"; \
+	if [ ! -d "$$src" ]; then \
+		echo "make pull-bundles: $$src does not exist — did the IOP-1 row run?"; exit 1; \
+	fi; \
+	mkdir -p $(BUNDLE_OUT); \
+	found=0; \
+	for b in "$$src"/*/*.ppcpbndl; do \
+		[ -e "$$b" ] || continue; \
+		name=$$(basename $$(dirname "$$b")); \
+		cp "$$b" "$(BUNDLE_OUT)/$$name.ppcpbndl"; \
+		found=$$((found+1)); \
+		echo "  $(BUNDLE_OUT)/$$name.ppcpbndl  $$(wc -c <"$$b" | tr -d ' ') bytes"; \
+	done; \
+	if [ "$$found" = "0" ]; then echo "make pull-bundles: no .ppcpbndl found"; exit 1; fi; \
+	if [ -f "$$dir/Documents/interop-summary.json" ]; then \
+		cp "$$dir/Documents/interop-summary.json" $(BUNDLE_OUT)/../interop-summary.json; \
+		echo "  $(CONFORM_OUT)/interop-summary.json"; \
+	fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WAVE 2 — the real pair. This device, in the simulator, dialling the REAL
+# PinPointStudio TLS listener.
+#
+#     make interop HOST=127.0.0.1:9443 PSK=<64 hex chars> IDENTITY=<hex or text>
+#
+# ⛔ **No harness transport.** `PPCP_INTEROP_HOST` makes `ConformanceHarness`
+# dial `PpcpConnector` — `Network.framework`, `RV` §5's TLS profile, the file
+# with no plaintext branch in it — rather than the `DEBUG` plaintext connector
+# `ppcp-sim` speaks. `PSK` is the 32-byte `K_tls` a scanned pairing code would
+# have derived (`RV` §3); supplying it directly is the *shape* that produces, and
+# the derivation itself is D7's own tested path.
+#
+# ⚠ **PinPointStudio provides the listener**, and it must be running before this
+# starts: the device dials and does not retry for long. What the run does, in
+# order — a hostless Session recorded and stored (one minted Shot, its Captures
+# `absent`/`outside_buffer` because a simulator has no camera), then the dial,
+# the `MSG` §3 handshake, the Session, a Stream per declared Source, the `arm`
+# answered with a Readiness measurement, one injected swing through the real
+# detector to a Candidate, and the stored Session offered and replayed.
+#
+# The summary is JSON: declares, candidates tx, shots rx, offers tx/accepted,
+# errors. It is written inside the app container and copied to
+# `$(CONFORM_OUT)/interop-summary.json`.
+interop: gen
+	@if [ -z "$(HOST)" ] || [ -z "$(PSK)" ]; then \
+		echo "make interop: HOST=<host:port> and PSK=<64 hex chars> are required."; \
+		echo "  e.g. make interop HOST=127.0.0.1:9443 PSK=$$(python3 -c 'print(\"ab\"*32)') IDENTITY=deadbeef"; \
+		exit 1; \
+	fi
+	@if [ -z "$(SIM_NAME)" ]; then \
+		echo "make interop: no available iPhone simulator found."; exit 1; \
+	fi
+	set -o pipefail && xcodebuild build-for-testing \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		| $(XCB)
+	@set -e; \
+	echo "dialling $(HOST) over TLS — the PinPointStudio listener must already be up"; \
+	set -o pipefail; \
+	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
+	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-only-testing:PinPointCaptureTests/InteropTests \
+		-default-test-execution-time-allowance 300 \
+		-maximum-test-execution-time-allowance 600 \
+		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || true
+	@$(MAKE) --no-print-directory pull-bundles || true
+	@if [ -f $(CONFORM_OUT)/interop-summary.json ]; then \
+		echo "--- interop summary ---"; cat $(CONFORM_OUT)/interop-summary.json; \
+	else \
+		echo "make interop: no summary was written — the run did not reach the harness."; \
+		exit 1; \
+	fi
 
 device:
 	@xcrun devicectl list devices

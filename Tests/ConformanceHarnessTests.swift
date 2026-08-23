@@ -72,12 +72,33 @@ struct ConformanceHarnessTests {
             ?? "reference-host"
     }
 
+    /// Which `CONF` §5 interoperability row this invocation is running.
+    ///
+    /// ⛔ **One row per invocation, and the gate is not tidiness.** `ppcp-sim`
+    /// serves one link; a suite where three tests each dialled the same listener
+    /// would have two of them measuring a peer that had already finished. So
+    /// `make conform ROW=<name>` runs exactly one of the rows below and the
+    /// others return immediately.
+    static var row: String {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["PPCP_CONFORM_ROW"]
+            ?? environment["TEST_RUNNER_PPCP_CONFORM_ROW"]
+            ?? "d9"
+    }
+
+    /// Where the IOP-1 / IOP-3 bundles are written inside the app container, so
+    /// `make pull-bundles` knows where to find them.
+    static var bundleRoot: URL {
+        URL.documentsDirectory.appendingPathComponent("interop-bundles", isDirectory: true)
+    }
+
     /// CT-S5 (device), first half: the device peer completes `ENC` §2.1's bind on
     /// both channels, the `MSG` §3 handshake, joins the Session the host opens,
     /// opens a Stream per declared Source, and answers the host's sync and `arm` —
     /// with the simulator reporting **no** violation of any rule it checks.
     @Test("A full session against a synthetic host, over the direct path")
     func aSessionAgainstPpcpSim() async throws {
+        guard Self.row == "d9" else { return }
         guard let port = Self.port else {
             // ⛔ Skipped, not failed. See the note at the top.
             withKnownIssue("no ppcp-sim port in the environment — run `make conform`",
@@ -231,5 +252,205 @@ struct ConformanceHarnessTests {
         // never connected, the tool's rows all failed for a reason that has
         // nothing to do with conformance and the report would mislead.
         #expect(sessions > 0, "the device never completed a session against ppcp-conform")
+    }
+
+    // MARK: - CONF §5 interoperability, wave 1
+
+    /// **IOP-2** — this device against a host that declares camera conventions it
+    /// does not share.
+    ///
+    /// `three-timebase-host.json` is two machine-vision cameras, each on its own
+    /// clock, each declaring `timing.convention: start` and
+    /// `geometry.kind: global` — a declaration no phone can make and the shape
+    /// `CONF` §2c says an implementation talking to itself never meets. The
+    /// Session's `timebase_ref` is the **host's** clock, so every `Shot.t0` that
+    /// arrives is an instant on a clock this device does not own.
+    ///
+    /// ⛔ **What is proved here is I22 from the RECEIVING side.** 5.13c puts
+    /// `Shot.t0` in `Session.timebase_ref`; a device that took the number and
+    /// handed it to its own ring would ask for an interval wrong by an offset
+    /// nobody measured, and nothing would say so. The assertion is that the
+    /// instant arrived on the host's timebase, that this device converted it to
+    /// its own, and that the two readings are *different* — a conversion that
+    /// returned its input would pass an equality test and prove nothing.
+    ///
+    /// ⚠ **And I19 only as far as a simulator can carry it.** I19 is "declare
+    /// what this hardware is"; a simulator enumerates no camera, so the camera
+    /// half of the declaration — `nominal_frame_start`, `rolling_shutter`,
+    /// provenance `assumed` — is not on the wire in this run and the row says so.
+    /// What *is* asserted is that the device did not borrow the host's
+    /// convention to make the pairing look tidy.
+    ///
+    ///     make conform SCENARIO=reference-host DECL=three-timebase-host ROW=iop2
+    @Test("IOP-2 — a host with foreign camera conventions and three clocks",
+          .timeLimit(.minutes(2)))
+    func iop2AgainstAForeignHost() async throws {
+        guard Self.row == "iop2" else { return }
+        guard let port = Self.port else {
+            withKnownIssue("no ppcp-sim port in the environment — run `make conform`",
+                           isIntermittent: true) {
+                Issue.record("skipped")
+            }
+            return
+        }
+
+        let harness = ConformanceHarness(device: CaptureDeviceFactory.create(),
+                                         distance: MicToBallDistance())
+        // ⚠ Longer than D9's eight seconds: the host waits for the first
+        // `relation_update` exchange before it nominates or arbitrates
+        // (`sim_run_steps.inc`, STEP_OFFER's 700 ms), then holds for
+        // `issue_hold_ns` before it issues. A window that ended first would
+        // report "no Shot arrived" about the clock rather than about the device.
+        let report = try await harness.run(
+            against: PeerEndpoint(host: "127.0.0.1", port: port),
+            seconds: 16, injectSwings: 1)
+        let transcript = report.transcript.joined(separator: "\n")
+
+        #expect(report.sessionId != nil, "\(transcript)")
+        #expect(report.errorCodes.isEmpty, "\(transcript)")
+
+        // 5.13c — the Session's reference clock is the HOST's, and this device
+        // does not own it. ⛔ If this ever reads as this device's capture
+        // timebase, every assertion below is measuring the identity.
+        #expect(report.timebaseRefId == "tb:host",
+                "Session.timebase_ref should be the host's clock\n\(transcript)")
+
+        // I19 — what this device declared, and what it did NOT.
+        #expect(report.declaredSourceKinds.contains("camera") == report.declaredCamera,
+                "a camera Source is declared exactly when one was enumerated\n\(transcript)")
+        // ⛔ Not `start`, ever, on this hardware. Empty on a simulator, which is
+        // the honest zero rather than a borrowed value.
+        #expect(report.declaredConventions.contains("start") == false,
+                "this device must not adopt the host's convention\n\(transcript)")
+
+        // I21 / 6.1d — the host declares three timebases and publishes a relation
+        // for each; a device that saw none cannot express anything at all.
+        #expect(report.relationUpdates > 0,
+                "no relation_update arrived from a three-clock host\n\(transcript)")
+
+        // 7.1d / 5.12c — both nominations, on the device's own clock.
+        #expect(report.candidatesNominated == 2, "\(transcript)")
+
+        // ⛔ **The row.** A Shot issued by the host, its `t0` on the host's clock,
+        // converted here onto this device's.
+        #expect(report.shotsReceived.isEmpty == false,
+                """
+                the host issued no Shot in 16 s; issue_hold was \
+                \(report.issueHoldNs.map(String.init) ?? "unknown") ns
+                \(transcript)
+                """)
+        for arrival in report.shotsReceived {
+            #expect(arrival.t0TimebaseId == report.timebaseRefId,
+                    "Shot.t0 must be in Session.timebase_ref (5.13c)\n\(transcript)")
+            #expect(arrival.authority == "host",
+                    "a Shot from a role: host peer carries authority: host (8.3d)\n\(transcript)")
+            #expect(arrival.convertedToCaptureNs != nil,
+                    """
+                    8.2i1: t0 could not be expressed on this device's capture \
+                    clock, so no interval could be asked for
+                    \(transcript)
+                    """)
+            #expect(arrival.convertedToCaptureNs != arrival.t0Ns,
+                    """
+                    the conversion returned its input — the two clocks are not \
+                    the same clock and a reading that did not move was not converted
+                    \(transcript)
+                    """)
+        }
+    }
+
+    /// **IOP-1** — this device against the reference host, end to end, including a
+    /// **session offer of a stored Session and its replay**.
+    ///
+    /// ⛔ **The device offers; the host chooses.** That is the user's decision of
+    /// 22 August 2026 and `MSG` §9.1's shape: there is no file picker anywhere in
+    /// this application. Two hostless Sessions are recorded first — one with a
+    /// single minted Shot, one with two — through the same
+    /// `CaptureSessionRecorder` a range session uses, and then offered.
+    ///
+    /// ⚠ **Every Capture in them is `absent` / `outside_buffer`, and that is a
+    /// result rather than a failure** (I10, 8.4b). A simulator has no camera and
+    /// no ring; the manifest asserts `partial` and means it.
+    ///
+    ///     make conform SCENARIO=reference-host ROW=iop1 \
+    ///          EXPECT=violations=0,offers_rx=2,accepts_rx=0
+    @Test("IOP-1 — the reference host, plus an offer of a stored Session",
+          .timeLimit(.minutes(2)))
+    func iop1OffersAStoredSession() async throws {
+        guard Self.row == "iop1" else { return }
+        guard let port = Self.port else {
+            withKnownIssue("no ppcp-sim port in the environment — run `make conform`",
+                           isIntermittent: true) {
+                Issue.record("skipped")
+            }
+            return
+        }
+
+        // A clean library each run: `makeBundle` is idempotent on the ids (I34),
+        // so a stale directory from a previous run would be re-offered and the
+        // count assertion would be about history rather than about this run.
+        let root = Self.bundleRoot
+        try? FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = SessionStore(root: root)
+        let device = CaptureDeviceFactory.create()
+        let distance = MicToBallDistance()
+
+        let one = try InteropBundleFixture.record(
+            shots: 1, into: store, device: device, distance: distance,
+            sessionId: "ses:interop:one-shot")
+        let two = try InteropBundleFixture.record(
+            shots: 2, into: store, device: device, distance: distance,
+            sessionId: "ses:interop:two-shots")
+
+        // IOP-3 / IOP-10 — what PinPointStudio is asked to import. Asserted here
+        // rather than only over the wire, because a bundle with no Shot in it is
+        // a bundle that says nothing about minting.
+        #expect(one.shotIds.count == 1, "the one-shot bundle minted \(one.shotIds.count)")
+        #expect(two.shotIds.count == 2, "the two-shot bundle minted \(two.shotIds.count)")
+        #expect(try store.bundles().count == 2)
+
+        // ⛔ And they read back through the library's own reader before anything
+        // is offered: a bundle this device cannot read is not one to hand over.
+        for bundle in [one.bundle, two.bundle] {
+            let bytes = try Data(contentsOf: bundle.bundleFile)
+            #expect(SessionStore.hasBundleMagic(bytes), "ENC §7 — PPCPBNDL")
+            let reader = try SessionBundleReader()
+            var offset = 0
+            while offset < bytes.count {
+                let end = min(offset + 4096, bytes.count)
+                try reader.feed(bytes[offset..<end])
+                offset = end
+            }
+            #expect(reader.manifestOrdered, "ENC 7c — the manifest precedes every payload")
+            // ⛔ `partial` is what was asserted, and a reader that answered
+            // `complete` would be inferring from what it found (I10).
+            #expect(try reader.finish() == .partial)
+        }
+
+        let harness = ConformanceHarness(device: device, distance: distance,
+                                         offering: store)
+        let report = try await harness.run(
+            against: PeerEndpoint(host: "127.0.0.1", port: port),
+            seconds: 16, injectSwings: 1)
+        let transcript = report.transcript.joined(separator: "\n")
+
+        #expect(report.sessionId != nil, "\(transcript)")
+        #expect(report.errorCodes.isEmpty, "\(transcript)")
+        #expect(report.counterpartPeerId == "sim:host", "\(transcript)")
+
+        // `MSG` 9.1 — both Sessions offered, exactly once each.
+        #expect(Set(report.offersSent) == Set([one.bundle.sessionId, two.bundle.sessionId]),
+                "offered \(report.offersSent)\n\(transcript)")
+
+        // `MSG` 9.1 / `ENC` 7a — the host accepted, and the stored bundle's own
+        // frames went back onto the live link renumbered into its sequence.
+        #expect(report.offerVerdicts.isEmpty == false,
+                "the host answered no offer\n\(transcript)")
+        for (sessionId, verdict) in report.offerVerdicts {
+            #expect(verdict == "accept", "\(sessionId) → \(verdict)\n\(transcript)")
+        }
+        #expect(report.replayCompleted,
+                "an accepted Session did not finish replaying\n\(transcript)")
     }
 }

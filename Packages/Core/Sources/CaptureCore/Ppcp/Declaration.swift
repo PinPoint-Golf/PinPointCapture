@@ -404,6 +404,19 @@ public final class PpcpDeclaration: @unchecked Sendable {
     /// all one with `from == to`. A count is the cheapest thing to assert.
     public var declaredRelationCount: Int { descStorage.pointee.relation_count }
 
+    /// The profiles this peer declares, read back off the `ppcp_peer_desc` that
+    /// is about to go on the wire.
+    ///
+    /// ⚠ **Off the declaration, not off the input.** I24 is asserted by a
+    /// counterpart against what it *received*, so evidence that this peer
+    /// declared a profile has to come from the same place the bytes do — the
+    /// input struct is what was asked for and this is what was built.
+    public var declaredProfiles: [String] {
+        let desc = descStorage.pointee
+        guard let base = desc.profiles else { return [] }
+        return (0..<desc.profile_count).map { ppcpString(base[$0]) }
+    }
+
     /// Every profile on every Source, flattened — what CT-I22, CT-I31 and CT-S7
     /// assertions 1 and 2 walk.
     public var allProfiles: [ProfileView] { sources.flatMap(\.profiles) }
