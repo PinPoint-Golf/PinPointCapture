@@ -14,6 +14,73 @@
 
 ---
 
+## 0. Work in progress — S4 wave 2
+
+*Delete this section when the D9 claim below is complete. It exists so the next
+session resumes from facts rather than from a reconstruction.*
+
+**Done and green**
+
+| | |
+|---|---|
+| `make test-core` | **166/166** at `6727d6b` |
+| `make conform SCENARIO=reference-host` | **green** — CT-S5 (device) `pass (simulator half)` |
+| `make conform SCENARIO=silent-host` | **green** — CT-S4 (6) **`pass`** |
+| L15/L16 adoption | F-D5-1, F-D6-1, F-D6-2 closed; erratum E2 API added |
+| Erratum E4 | F-D9-1 closed; 2c1's three conditions held structurally |
+
+**The silent-host result, in full** (this is the row's evidence):
+
+```
+sim report: declares 1  candidates rx 2  shots rx 2  max shot candidates 1
+            issued 0  minted 0  retained 2  relations rx/tx 87/52
+            captures rx/unique/dup 3/3/0  errors 0
+```
+
+`issued 0` with `shots rx 2` is the row: the host issued nothing and the device
+minted on its own 8.2i deadline. It took three runs; **all three causes were
+ours** and the third was the missing 6.1f `publishRelations()` — see the CT-S4 (6)
+entry in §3.
+
+**Next, in order**
+
+1. ⛔ **`make conform` is broken right now.** The dispatch routes the default case
+   to a `conform-tool` target that **has not been written**. `make conform
+   SCENARIO=<name>` works and routes to `conform-sim`. Writing that recipe is the
+   next action.
+2. Run it, check the JSON and Markdown into `docs/conformance/`.
+3. Fill §1's profile set, the reproducing command and the tool's row table
+   verbatim — pass, fail, `n/a`. A failing row is a **finding** with an owner
+   named (ours / `libppcp` / spec), never edited out.
+
+**The exact command**
+
+```sh
+ppcp-conform --profiles core,capture,detect,mint,live,offline,markup \
+             --role capture --listen PORT --column PinPointCapture \
+             --json docs/conformance/ppcp-conform.json \
+             --markdown docs/conformance/ppcp-conform.md
+```
+
+⚠ **`--listen`, not `--connect`.** The device **dials** and has no plaintext
+listener — which is also how `RV` 2c1's "nothing to accept on" stays easy to
+hold. `ppcp-conform` spawns one `ppcp-sim` per row *sequentially on that one
+port*, so the device must dial **once per row**; `ConformanceHarnessTests
+.ppcpConformDrivesTheDevice()` is the loop that does it, reading
+`TEST_RUNNER_PPCP_CONFORM_TOOL_PORT`. It has **never been compiled**.
+
+⚠ Rows `ppcp-conform --list` gives for `--role capture`: CT-S4, CT-I35, CT-I18
+positive; CT-I6, CT-I20n, CT-I26, CT-I25 negative (`n/a` when they pass, for
+profiles this claim does not name — of those only `arbitrate` is undeclared).
+
+**Blocked**
+
+Nothing on `libppcp`. `xcodebuild test-without-building` wedges at 0 % CPU with
+another build in flight on this 16 GB machine — kill and re-run **once**, never
+loop.
+
+---
+
 ## 1. Profile set
 
 `CORE` §2.2.3, "full mobile capture device".
