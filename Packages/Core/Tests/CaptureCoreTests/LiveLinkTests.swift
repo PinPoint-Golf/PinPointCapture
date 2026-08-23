@@ -222,41 +222,46 @@ struct LiveLinkTests {
         #expect(peer.isLinkLost == false)
         #expect(peer.missedHeartbeats == 0)
 
-        // ⛔ **F-D6-3 reproduced.** A hostless `session_open` this peer
-        // ORIGINATES leaves the engine with no Session at all: `has_session` and
-        // `has_session_params` are set only on the receive path, so
-        // `ppcp_peer_session_id`, `ppcp_peer_timebase_ref`,
-        // `ppcp_peer_session_params` and `ppcp_peer_zero_host` all still say
-        // "none". `CORE` 4.1b is exactly this case — the frame a capture peer
-        // records in its own bundle — and it is the entry-level product's normal
-        // mode, so 8.3g's first entry condition is unreachable for the peer that
+        // ✅ **F-D6-3 closed, 23 August 2026** (`libppcp` 42a690a). A hostless
+        // `session_open` this peer ORIGINATES is now adopted into its own state:
+        // `ppcp_peer_session_open` sets `session_params` as well as `has_session`,
+        // so `CORE` 4.1b's case — the frame a capture peer records in its own
+        // bundle, and the entry-level product's normal mode — reads back its own
+        // parameters, and 8.3g's first entry condition is true for the peer that
         // is in it.
         try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
                                                timebaseRef: Self.timebase))
-        #expect(peer.sessionParameters == nil,
-                "F-D6-3 — remove this expectation when libppcp adopts an originated session")
-        #expect(peer.isZeroHost == false, "F-D6-3")
+        let parameters = try #require(peer.sessionParameters)
+        #expect(parameters.sessionId == Self.sessionId)
+        #expect(parameters.timebaseRefId == Self.timebase)
+        // I16 / 5.10e — a hostless Session carries **no** arbitration parameters,
+        // and the two that are conditional are the two that are absent.
+        #expect(parameters.hasArbitration == false)
+        #expect(parameters.coincidenceWindowNs == 0)
+        #expect(parameters.issueHoldNs == 0)
+        // 8.3a's first entry condition: a Session with no host in its roster.
+        #expect(peer.isZeroHost)
     }
 
-    /// **F-D6-3, and what saves it from being fatal.** `ppcp_mint_pump` reads
-    /// `ppcp_peer_timebase_ref` and `ppcp_peer_session_id`, which the originator
-    /// *does* set — so minting works. What it does not set is
-    /// `has_session_params`, so `ppcp_peer_zero_host()` is **false** for the very
-    /// Session 8.3a's first entry condition describes, and the hostless branch is
-    /// taken only because `issue_hold_ns` and the heartbeat margin both default to
-    /// zero when there are no parameters to read.
+    /// **F-D6-3, and what it used to cost.** Before `libppcp` 42a690a,
+    /// `ppcp_mint_pump` took the hostless branch only because `issue_hold_ns` and
+    /// the heartbeat margin both read as zero when there were no parameters to
+    /// read — a coincidence, not a design. A hostless `session_open` carrying a
+    /// `heartbeat_interval_ms`, which 5.10e permits since only the two
+    /// *arbitration* parameters are conditional, would have taken the **hosted**
+    /// branch and held every Candidate for a deadline no host will ever answer.
     ///
-    /// ⚠ That is a coincidence, not a design: a Session with `has_arbitration`
-    /// false but a heartbeat interval declared would take the *hosted* branch and
-    /// hold every Candidate for a deadline no host will ever answer.
-    @Test("F-D6-3 — a self-opened hostless Session mints, but zero_host says otherwise")
-    func hostlessMintWorksForTheWrongReason() throws {
+    /// ⚠ The test is kept and inverted rather than deleted: it now asserts that
+    /// minting works **for the right reason** — `zero_host` is true, so 8.3a–c is
+    /// the branch taken because the predicate says so.
+    @Test("8.3a — a self-opened hostless Session mints because zero_host says so")
+    func hostlessMintTakesTheHostlessBranch() throws {
         let peer = try Self.peer()
         try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
                                                timebaseRef: Self.timebase))
         let mint = try DeviceMint(peer: peer, promotion: { _ in true })
         #expect(throws: Never.self) { _ = try mint.pump(nowRefNs: 10_000_000_000) }
-        #expect(peer.isZeroHost == false, "F-D6-3 — 8.3g's predicate is false here")
+        #expect(peer.isZeroHost)
     }
 
     // MARK: CT-I21 / 6.1d — one estimator per timebase, and no composition

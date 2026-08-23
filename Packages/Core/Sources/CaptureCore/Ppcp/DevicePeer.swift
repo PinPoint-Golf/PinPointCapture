@@ -741,20 +741,22 @@ public final class DevicePeer: @unchecked Sendable {
     /// caller's buffer, so a trailing partial frame is re-presented with more
     /// bytes after it. A caller that discarded the tail would desynchronise the
     /// stream and the symptom would appear frames later.
-    /// ⛔ **One frame per call into the engine, and the events harvested between
-    /// each — F-L13-1.** `ppcp_peer_feed` consumes as many whole frames as the
-    /// buffer holds, the engine's event ring is four deep, and an overflow drops
-    /// the **oldest** event silently. A socket read of 64 KiB is comfortably more
-    /// than four control frames, so handing the whole buffer over loses the first
-    /// events of a burst — the `declare`, the `session_open` — and keeps the last,
-    /// which is the worst possible half to keep.
+    /// ⛔ **The events are harvested between feeds — F-L13-1, and the library's
+    /// fix rather than this application's workaround.** `ppcp_peer_feed` used to
+    /// consume unboundedly many whole frames per call over a four-deep event
+    /// ring, dropping the **oldest** event on overflow: a 64 KiB socket read is
+    /// comfortably more than four control frames, so the first events of a burst
+    /// — the `declare`, the `session_open` — were the half that was lost.
     ///
-    /// So this walks the buffer with the library's own framing
-    /// (`ppcp_frame_read`), feeds exactly one frame, and moves whatever the engine
-    /// raised into a Swift-side queue before the next frame goes in. `nextEvent`
-    /// reads that queue. The library fix is L15's; until it lands, a caller that
-    /// used `ppcp_peer_feed` directly would still lose events, which is why
-    /// nothing in this application does.
+    /// L15 changed the engine to **stop** when the event queue is full and
+    /// report what it consumed, so the loop `peer.h` documents is the one below:
+    /// feed, drain the events, re-present the remainder. `ppcp_peer_feed_stalled`
+    /// is what tells "no room for events" apart from "not a whole frame yet",
+    /// which are the only two reasons a feed returns short.
+    ///
+    /// ⚠ This replaced a hand-written frame walk that fed exactly one frame at a
+    /// time — correct, and one more place framing was re-implemented outside the
+    /// library. The walk went when the reason for it did.
     @discardableResult
     public func feed(_ bytes: Data, on channel: PpcpChannel) throws -> Int {
         guard bytes.isEmpty == false else { return 0 }
@@ -762,34 +764,29 @@ public final class DevicePeer: @unchecked Sendable {
         var offset = 0
 
         while offset < bytes.count {
-            let frameLength: Int? = bytes.withUnsafeBytes { raw -> Int? in
-                guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
-                var header = ppcp_frame_header()
-                var payload: UnsafePointer<UInt8>?
-                var consumed = 0
-                let result = ppcp_frame_read(base + offset, raw.count - offset,
-                                             &header, &payload, &consumed)
-                // ⚠ A malformed or oversized frame is NOT decided here: it is fed
-                // to the engine, which answers `error`/`malformed` (ENC 5d) or
-                // closes on ENC 8a. Deciding it in the embedding would be a second
-                // implementation of the framing rules.
-                return result == PPCP_ERR_TRUNCATED ? nil : consumed
-            }
-            // A trailing partial frame is left for the caller to re-present.
-            guard let frameLength, frameLength > 0 else { break }
-
             var consumed = 0
             let result: ppcp_result = bytes.withUnsafeBytes { raw in
                 ppcp_peer_feed(peer, channel.rawValue,
                                raw.bindMemory(to: UInt8.self).baseAddress! + offset,
-                               min(frameLength, raw.count - offset), &consumed)
+                               raw.count - offset, &consumed)
             }
             offset += consumed
+            // ⚠ Before `check`, so a frame the engine refused still yields the
+            // events it raised on the way to refusing it.
             harvestEvents()
             try check(result)
-            guard consumed > 0 else { break }
+            // A trailing partial frame is left for the caller to re-present; a
+            // stall means the ring filled and there is more in this buffer.
+            if consumed == 0, ppcp_peer_feed_stalled(peer) == false { break }
         }
         return offset
+    }
+
+    /// F-L13-1 — how many events the engine dropped because nothing harvested
+    /// them in time. ⛔ Non-zero is a defect in this embedding's loop, not a
+    /// statistic: it means a `session_open` or a `declare` went missing.
+    public var droppedEventCount: UInt64 {
+        peer.map(ppcp_peer_events_dropped) ?? 0
     }
 
     /// Moves whatever the engine raised out of its four-deep ring and into a
