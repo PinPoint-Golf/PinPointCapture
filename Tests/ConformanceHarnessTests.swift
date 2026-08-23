@@ -86,6 +86,18 @@ struct ConformanceHarnessTests {
             ?? "d9"
     }
 
+    /// The ports the two `CONF` §5 rows dial. ⚠ **Two counterparts, one
+    /// simulator launch**: `make conform-iop` starts a `ppcp-sim` per row on its
+    /// own port and runs this suite once, because booting, installing and
+    /// launching a simulator costs tens of seconds and the rows cost sixteen.
+    static func iopPort(_ name: String) -> UInt16? {
+        let environment = ProcessInfo.processInfo.environment
+        let raw = environment["PPCP_\(name)_PORT"]
+            ?? environment["TEST_RUNNER_PPCP_\(name)_PORT"]
+        guard let raw, let value = UInt16(raw), value > 0 else { return nil }
+        return value
+    }
+
     /// Where the IOP-1 / IOP-3 bundles are written inside the app container, so
     /// `make pull-bundles` knows where to find them.
     static var bundleRoot: URL {
@@ -285,8 +297,7 @@ struct ConformanceHarnessTests {
     @Test("IOP-2 — a host with foreign camera conventions and three clocks",
           .timeLimit(.minutes(2)))
     func iop2AgainstAForeignHost() async throws {
-        guard Self.row == "iop2" else { return }
-        guard let port = Self.port else {
+        guard let port = Self.iopPort("IOP2") ?? (Self.row == "iop2" ? Self.port : nil) else {
             withKnownIssue("no ppcp-sim port in the environment — run `make conform`",
                            isIntermittent: true) {
                 Issue.record("skipped")
@@ -303,7 +314,7 @@ struct ConformanceHarnessTests {
         // report "no Shot arrived" about the clock rather than about the device.
         let report = try await harness.run(
             against: PeerEndpoint(host: "127.0.0.1", port: port),
-            seconds: 16, injectSwings: 1)
+            seconds: 20, injectSwings: 1, nominateOnlyOnceConvertible: true)
         let transcript = report.transcript.joined(separator: "\n")
 
         #expect(report.sessionId != nil, "\(transcript)")
@@ -377,8 +388,7 @@ struct ConformanceHarnessTests {
     @Test("IOP-1 — the reference host, plus an offer of a stored Session",
           .timeLimit(.minutes(2)))
     func iop1OffersAStoredSession() async throws {
-        guard Self.row == "iop1" else { return }
-        guard let port = Self.port else {
+        guard let port = Self.iopPort("IOP1") ?? (Self.row == "iop1" ? Self.port : nil) else {
             withKnownIssue("no ppcp-sim port in the environment — run `make conform`",
                            isIntermittent: true) {
                 Issue.record("skipped")
@@ -432,7 +442,7 @@ struct ConformanceHarnessTests {
                                          offering: store)
         let report = try await harness.run(
             against: PeerEndpoint(host: "127.0.0.1", port: port),
-            seconds: 16, injectSwings: 1)
+            seconds: 20, injectSwings: 1, nominateOnlyOnceConvertible: true)
         let transcript = report.transcript.joined(separator: "\n")
 
         #expect(report.sessionId != nil, "\(transcript)")

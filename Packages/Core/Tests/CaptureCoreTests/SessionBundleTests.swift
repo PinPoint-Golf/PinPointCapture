@@ -275,6 +275,9 @@ struct SessionBundleTests {
         let peer = try Self.peer()
         let sink = Self.Sink()
         let writer = try SessionBundleWriter(peer: peer) { sink.append($0) }
+        // ⛔ `ENC` 7h (erratum E9) — `declare` precedes every frame naming a
+        // Stream, a Capture, a Shot or a Candidate.
+        try writer.record(declaration: try Self.declaration())
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
                                                    timebaseRef: Self.timebase))
         #expect(writer.isHostless)
@@ -300,6 +303,8 @@ struct SessionBundleTests {
     func payloadBeforeManifestIsRefused() throws {
         let sink = Self.Sink()
         let writer = try SessionBundleWriter(peer: try Self.peer()) { sink.append($0) }
+        // ⛔ `ENC` 7h (erratum E9).
+        try writer.record(declaration: try Self.declaration())
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
                                                    timebaseRef: Self.timebase))
         try writer.open(stream: Self.videoStream)

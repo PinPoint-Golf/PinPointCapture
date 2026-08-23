@@ -347,6 +347,10 @@ struct CapturePathTests {
         let writer = try SessionBundleWriter(peer: try DevicePeer(peerId: Self.peerId)) {
             sink.append($0)
         }
+        // ⛔ `ENC` 7h (erratum E9) — the declaration comes first, because 8.5c
+        // scopes Capture identity by the minting peer and a bundle states that
+        // nowhere else. The writer refuses a `stream_open` before it.
+        try writer.record(declaration: try Self.declaration())
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
                                                    timebaseRef: Self.timebase))
         try writer.open(stream: Self.previewStream)

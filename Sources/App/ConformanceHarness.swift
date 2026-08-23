@@ -168,9 +168,26 @@ public actor ConformanceHarness {
     /// - Parameter injectSwings: how many synthetic swings to put through the
     ///   real detector. ⛔ Zero is a legitimate run: the handshake, the Session
     ///   and the sync exchange are the part CT-S5 asks for.
+    /// - Parameter nominateOnlyOnceConvertible: hold the injected swing until an
+    ///   instant on this device's clock can be expressed in `Session.timebase_ref`.
+    ///
+    ///   ⛔ **Measured, not guessed** (S5, IOP-2): with this off, the swing goes
+    ///   in on the first loop iteration after `session_open` — hundreds of
+    ///   milliseconds before the first `relation_update` has crossed — and the
+    ///   host cannot convert the Candidate's instant into `timebase_ref`. 8.2d
+    ///   says it excludes and **retains** it, which is what `ppcp-sim` did:
+    ///   `arbiter observed 2, retained 2, issued 0`. So no Shot was ever issued,
+    ///   and the row that exists to watch a device convert an issued `t0` had
+    ///   nothing to convert.
+    ///
+    ///   ⚠ **A parameter and not a change of default**, because D9's claim was
+    ///   measured with the old sequencing and changing it here would silently
+    ///   invalidate a run nobody re-made. It is also the honest order: a golfer
+    ///   swings seconds after the bay's host has appeared, not 250 ms after.
     public func run(against endpoint: PeerEndpoint,
                     seconds: Double = 6,
-                    injectSwings: Int = 1) async throws -> Report {
+                    injectSwings: Int = 1,
+                    nominateOnlyOnceConvertible: Bool = false) async throws -> Report {
 
         let peerId = PeerIdentity.current
         report.peerId = peerId
@@ -332,7 +349,13 @@ public actor ConformanceHarness {
             // acknowledged is a Candidate naming a Stream the counterpart has not
             // seen.
             if let detect {
-                if pendingSwings > 0, report.sessionId != nil {
+                // ⚠ Read BEFORE the swing rather than after it: whether "now" can
+                // be expressed in `Session.timebase_ref` is what gates the
+                // nomination, and reading it afterwards would gate the second
+                // swing on the first swing's answer.
+                let convertible = await referenceInstantIsAvailable(pump: pump)
+                let mayNominate = nominateOnlyOnceConvertible == false || convertible
+                if pendingSwings > 0, report.sessionId != nil, mayNominate {
                     pendingSwings -= 1
                     try await observe(detect, pump: pump)
                 }
@@ -561,6 +584,23 @@ public actor ConformanceHarness {
         let detections = try await pump.perform { _ in try detect.observe(window) }
         report.candidatesNominated += detections.count
         report.transcript.append("nominated \(detections.count) candidate(s)")
+    }
+
+    /// Whether an instant on this device's capture clock can be expressed in
+    /// `Session.timebase_ref` at all (5.4b, 8.2i1).
+    ///
+    /// ⛔ `false` is a **fact about the relation set**, not a failure: before
+    /// 6.3a's burst has produced an offset and a rate there is nothing to convert
+    /// with, and a peer in that state does not mint and — see the parameter above
+    /// — should not expect a host to arbitrate for it either.
+    private func referenceInstantIsAvailable(pump: PeerLinkPump) async -> Bool {
+        let reference = referenceTimebaseId
+        let now: Int64? = try? await pump.perform { peer in
+            try peer.instant(MachClock.hostTimeNs, on: PpcpTimebases.captureId,
+                             expressedIn: reference)
+        }
+        if now != nil { report.referenceInstantAvailable = true }
+        return now != nil
     }
 
     /// 8.2i's deadline, read in `Session.timebase_ref`.

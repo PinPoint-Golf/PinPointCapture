@@ -68,7 +68,7 @@ CONFORM_WARMUP_S ?= 75
 
 COMMA := ,
 
-.PHONY: all gen build build-device _udid test test-core test-app conform conform-sim conform-tool interop pull-bundles device deploy lint clean help
+.PHONY: all gen build build-device _udid test test-core test-app conform conform-sim conform-tool conform-iop interop read-bundle pull-bundles device deploy lint clean help
 
 # ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
 # what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
@@ -91,6 +91,7 @@ help:
 	@echo "conform       ppcp-conform drives the device (D9); SCENARIO=<n> for one ppcp-sim row"
 	@echo "              CONF §5 rows:  make conform ROW=iop1|iop2 SCENARIO=... DECL=..."
 	@echo "pull-bundles  copy the bundles an IOP-1 run wrote out of the simulator container"
+	@echo "read-bundle   read a bundle another implementation wrote: FILE=<path.ppcpbndl>"
 	@echo "interop       wave 2: dial the REAL PinPointStudio TLS listener (HOST=, PSK=, IDENTITY=)"
 	@echo "device        list connected devices"
 	@echo "deploy        gen + build-device + install + launch on a connected device"
@@ -338,6 +339,103 @@ conform-tool: gen
 	esac; \
 	exit $$rc
 
+# ─────────────────────────────────────────────────────────────────────────────
+# `CONF` §5 wave 1 — the two rows where this device is a real party, in ONE
+# simulator launch.
+#
+#     make conform-iop
+#
+# ⛔ **Two counterparts, one launch, and that is not thrift.** Booting,
+# installing and launching a simulator costs tens of seconds; a row costs twenty.
+# So `ppcp-sim` is started twice — IOP-2's foreign, three-clock host on one port
+# and IOP-1's reference host on another — and the suite runs once, dialling each
+# in turn. Every port is bound by the tool with `--listen 0`, so nothing collides
+# with another agent's run.
+#
+#   IOP-2  three-timebase-host.json + reference-host  — two machine-vision
+#          cameras, each on its own clock, both `convention: start` /
+#          `geometry: global`. Proves I19 (this device declares what it is) and
+#          I22 (an issued `t0` on the host's clock is CONVERTED here, not
+#          adopted).
+#   IOP-1  reference-host.json + reference-host — the full session, plus a
+#          `session_offer` of two stored Sessions and their replay (`MSG` §9.1,
+#          `ENC` 7a). `offers_rx=2` is the far end's half of the assertion.
+#
+# ⛔ **`--run-ms` outlives the test, deliberately.** A counterpart that exits
+# first closes the link mid-row and the failure reads as a refusal.
+IOP_RUN_MS ?= 200000
+
+conform-iop: gen
+	@if [ ! -x "$(PPCP_SIM)" ]; then \
+		echo "make conform-iop: no ppcp-sim at $(PPCP_SIM)"; exit 1; \
+	fi
+	@if [ -z "$(SIM_NAME)" ]; then \
+		echo "make conform-iop: no available iPhone simulator found."; exit 1; \
+	fi
+	set -o pipefail && xcodebuild build-for-testing \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		| $(XCB)
+	@set -e; \
+	p2=$$(mktemp -t ppcp-iop2-port); l2=$$(mktemp -t ppcp-iop2-log); \
+	p1=$$(mktemp -t ppcp-iop1-port); l1=$$(mktemp -t ppcp-iop1-log); \
+	"$(PPCP_SIM)" --role host --listen 0 --port-file "$$p2" --log-prefix iop2 \
+		--declaration $(LIBPPCP)/tools/scenarios/three-timebase-host.json \
+		--scenario reference-host --expect violations=0 \
+		--run-ms $(IOP_RUN_MS) >"$$l2" 2>&1 & \
+	sim2=$$!; \
+	"$(PPCP_SIM)" --role host --listen 0 --port-file "$$p1" --log-prefix iop1 \
+		--declaration $(LIBPPCP)/tools/scenarios/reference-host.json \
+		--scenario reference-host --expect violations=0 --expect offers_rx=2 \
+		--run-ms $(IOP_RUN_MS) >"$$l1" 2>&1 & \
+	sim1=$$!; \
+	trap 'kill $$sim1 $$sim2 2>/dev/null || true' EXIT; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		[ -s "$$p2" ] && [ -s "$$p1" ] && break; sleep 0.3; \
+	done; \
+	port2=$$(cat "$$p2" 2>/dev/null); port1=$$(cat "$$p1" 2>/dev/null); \
+	if [ -z "$$port2" ] || [ -z "$$port1" ]; then \
+		echo "make conform-iop: a ppcp-sim never reported a port"; \
+		cat "$$l2" "$$l1"; exit 1; fi; \
+	echo "IOP-2 (three-timebase-host) on $$port2, IOP-1 (reference-host) on $$port1"; \
+	rc=0; \
+	set -o pipefail; \
+	TEST_RUNNER_PPCP_IOP2_PORT=$$port2 TEST_RUNNER_PPCP_IOP1_PORT=$$port1 \
+	TEST_RUNNER_PPCP_CONFORM_ROW=iop xcodebuild test-without-building \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-only-testing:PinPointCaptureTests/ConformanceHarnessTests \
+		-default-test-execution-time-allowance 300 \
+		-maximum-test-execution-time-allowance 600 \
+		2>&1 | grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || rc=$$?; \
+	echo "--- ppcp-sim, IOP-2 (three-timebase-host) ---"; tail -3 "$$l2"; \
+	echo "--- ppcp-sim, IOP-1 (reference-host) ---";      tail -3 "$$l1"; \
+	kill $$sim1 $$sim2 2>/dev/null || true; \
+	if [ $$rc != 0 ]; then \
+		echo "make conform-iop: A ROW FAILED — see the transcript above"; exit $$rc; fi; \
+	echo "make conform-iop: both rows passed on the device side"; \
+	$(MAKE) --no-print-directory pull-bundles
+
+# IOP-3 / IOP-10, the receiving half — read a bundle another implementation
+# wrote, through `SessionBundleReader`.
+#
+#     make read-bundle FILE=../PinPointStudio/docs/conformance/bundles/x.ppcpbndl
+#
+# ⚠ Native, no simulator: the reader is `CaptureCore` and `CaptureCore` is
+# platform-free by construction (REQ-PORT-3).
+read-bundle:
+	@if [ -z "$(FILE)" ]; then echo "make read-bundle: FILE=<path.ppcpbndl> is required"; exit 1; fi
+	@if [ ! -f "$(FILE)" ]; then echo "make read-bundle: no such file: $(FILE)"; exit 1; fi
+	@cd Packages/Core && PPCP_BUNDLE_IN="$(abspath $(FILE))" swift test -j $(JOBS) \
+		--filter ImportedBundleTests 2>&1 | grep -E '^(◇|✔|✘|↳)|imported |error:|Test run'
+
 # The bundles an IOP-1 / `make interop` run wrote, copied out of the simulator's
 # app container into the repository.
 #
@@ -360,7 +458,11 @@ pull-bundles:
 	found=0; \
 	for b in "$$src"/*/*.ppcpbndl; do \
 		[ -e "$$b" ] || continue; \
-		name=$$(basename $$(dirname "$$b")); \
+		dir=$$(basename $$(dirname "$$b")); \
+		: '⚠ The directory is `<peer>~<session>` and a `peer:` is a fresh UUID per'; \
+		: 'install, so the checked-in name is the SESSION half with the two bytes'; \
+		: 'a path cannot carry replaced. 5.1a — nothing is parsed back out of it.'; \
+		name=$$(printf '%s' "$${dir#*~}" | tr ':/' '--'); \
 		cp "$$b" "$(BUNDLE_OUT)/$$name.ppcpbndl"; \
 		found=$$((found+1)); \
 		echo "  $(BUNDLE_OUT)/$$name.ppcpbndl  $$(wc -c <"$$b" | tr -d ' ') bytes"; \
