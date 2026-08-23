@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PPCP-RV §6 — network join. `NEHotspotConfigurationManager` needs this and
+	     returns an error without it, so the app degrades to "could not join that
+	     network" rather than crashing. 6a's consent alert is the system's; this
+	     entitlement is what lets it be shown at all.
+
+	     ⚠ A DEVICE build needs the Hotspot Configuration capability enabled on
+	     the App ID. Automatic signing with `-allowProvisioningUpdates` normally
+	     adds it; if `make deploy` complains that the provisioning profile does
+	     not include this entitlement, that is the fix, and it is an account
+	     setting rather than a code change. -->
+	<key>com.apple.developer.networking.HotspotConfiguration</key>
+	<true/>
+</dict>
+</plist>

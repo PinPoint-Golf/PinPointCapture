@@ -53,6 +53,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: org.pinpointstudio.capture
         PRODUCT_NAME: PinPointCapture
         INFOPLIST_FILE: Support/Info.plist
+        # PPCP-RV §6. ⚠ A device build needs the Hotspot Configuration capability
+        # on the App ID; see the comment in the file.
+        CODE_SIGN_ENTITLEMENTS: Support/PinPointCapture.entitlements
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad
         MARKETING_VERSION: "0.1.0"

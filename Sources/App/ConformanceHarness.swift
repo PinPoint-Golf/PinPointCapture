@@ -55,6 +55,9 @@ public actor ConformanceHarness {
         public var errorCodes: [String] = []
         /// F-L13-1 — ⛔ non-zero is a defect in this application's feed loop.
         public var droppedEvents: UInt64 = 0
+        /// 5.13c — the timebase `Shot.t0` is expressed in. ⚠ The **Session's**,
+        /// which with a host is the host's clock and not this device's.
+        public var timebaseRefId: String?
         /// Whether the hardware enumerated a camera. ⛔ `false` on a simulator,
         /// and the row says what that costs.
         public var declaredCamera = true
@@ -76,6 +79,8 @@ public actor ConformanceHarness {
     private let device: any CaptureDevice
     private let distance: MicToBallDistance
     private var report = Report()
+    /// `Session.timebase_ref`, once a Session exists.
+    private var referenceTimebaseId = PpcpTimebases.captureId
 
     public init(device: any CaptureDevice, distance: MicToBallDistance) {
         self.device = device
@@ -318,6 +323,15 @@ public actor ConformanceHarness {
         }
         report.streamsOpened = streams.map(\.id)
 
+        // ⛔ **`Session.timebase_ref` is the SESSION's, not this device's.** 5.13c
+        // puts `Shot.t0` in `Session.timebase_ref`, and with a host that is the
+        // host's clock. Taking this peer's own capture timebase instead is the
+        // identity only in the hostless case (I4) — with a host it is a different
+        // clock, and a `t0` stamped on it is wrong by the offset nobody measured.
+        let timebaseRef = peer.sessionParameters?.timebaseRefId ?? PpcpTimebases.captureId
+        report.timebaseRefId = timebaseRef
+        referenceTimebaseId = timebaseRef
+
         let audio = streams.first { $0.kind == PpcpStreamKind.audio }
         let video = streams.first { $0.kind == PpcpStreamKind.video } ?? audio
         guard let audio, let video else {
@@ -359,9 +373,24 @@ public actor ConformanceHarness {
         report.transcript.append("nominated \(detections.count) candidate(s)")
     }
 
+    /// 8.2i's deadline, read in `Session.timebase_ref`.
+    ///
+    /// ⛔ **The instant is converted, not substituted.** 8.2i1 and 5.4b: a peer
+    /// that cannot express "now" in the reference timebase does not mint, and it
+    /// certainly does not pass its own clock reading off as the reference one. A
+    /// relation exists only once 6.3a's burst has produced offset **and** rate,
+    /// so before that this returns nothing and the Candidates stay retained —
+    /// which is exactly 8.2i's "held until the deadline" rather than a failure.
     private func mint(_ detect: DetectAndMint, pump: PeerLinkPump) async {
+        let reference = referenceTimebaseId
+        let nowRef: Int64? = try? await pump.perform { peer in
+            try peer.instant(MachClock.hostTimeNs,
+                             on: PpcpTimebases.captureId,
+                             expressedIn: reference)
+        }
+        guard let nowRef else { return }
         let minted = try? await pump.perform { _ in
-            try detect.pump(nowRefNs: MachClock.hostTimeNs)
+            try detect.pump(nowRefNs: nowRef)
         }
         guard let minted, minted.isEmpty == false else { return }
         report.shotsMinted += minted.count

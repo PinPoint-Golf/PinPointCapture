@@ -30,11 +30,19 @@ JOBS        := 3
 LIBPPCP     ?= ../libppcp
 PPCP_SIM    ?= $(LIBPPCP)/build/dev/tools/ppcp-sim/ppcp-sim
 PPCP_CONFORM ?= $(LIBPPCP)/build/dev/tools/ppcp-conform/ppcp-conform
+# ⚠ **Two axes, and keeping them apart is the point of `tools/scenarios`.** What
+# the peer IS is a declaration file; what it DOES is a named scenario. "A host
+# that never answers a Candidate" is `SCENARIO=silent-host` over the *reference*
+# host declaration — deriving the file name from the scenario looked tidy and
+# broke the moment the two differed.
 SCENARIO    ?= reference-host
-SCENARIO_DECL ?= $(LIBPPCP)/tools/scenarios/$(SCENARIO).json
-# ⚠ Long enough for a simulator to boot, install and run. The device side's own
-# deadline is `ConformanceHarness.run(seconds:)`, which is much shorter.
-CONFORM_RUN_MS ?= 120000
+DECL        ?= reference-host
+SCENARIO_DECL ?= $(LIBPPCP)/tools/scenarios/$(DECL).json
+# ⚠ Long enough for a simulator to install and run, and no longer — the target
+# `wait`s for ppcp-sim so it can read the exit code its `--expect` produces, so
+# this number is also how long `make conform` takes after the test has passed.
+# The device side's own deadline is `ConformanceHarness.run(seconds:)`.
+CONFORM_RUN_MS ?= 45000
 
 .PHONY: all gen build build-device _udid test test-core test-app conform device deploy lint clean help
 
@@ -189,7 +197,8 @@ conform: gen
 		cat "$$log"; exit 1; fi; \
 	echo "ppcp-sim listening on $$port, scenario $(SCENARIO)"; \
 	set -o pipefail; \
-	TEST_RUNNER_PPCP_CONFORM_PORT=$$port xcodebuild test-without-building \
+	TEST_RUNNER_PPCP_CONFORM_PORT=$$port \
+	TEST_RUNNER_PPCP_CONFORM_SCENARIO=$(SCENARIO) xcodebuild test-without-building \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \

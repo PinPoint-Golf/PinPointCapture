@@ -38,7 +38,7 @@
 | **Pairing code** (`RV` §4) — REQUIRED of any RV implementation | yes | **D7 landed.** The device is the **scanner**, therefore the dialler and the TLS client (`RV` 2d, 5.2g). Decode, the three failure sentences of 4.2b/4.4a/4.4b, and the endpoint walk of 4.3c are in `RendezvousCoordinator`; the §10.3 vectors reproduce in `make test-core`. |
 | **Key derivation and TLS** (`RV` §5) | yes | D0 + D1 landed. The derivation is `libppcp`'s (`ppcp_rv_derive`, `ppcp_rv_psk_identity`); TLS lives in the application and never in the library (plan A7). |
 | **Security model** (`RV` §7) | yes | D1 landed the transport half; **D7 landed the secret-handling half** — `PRK` only (5.1c), Keychain `ThisDeviceOnly` (7.2c, 7.4c), opt-in/visible/revocable (7.4b), and refused outright for `mu > 1` through the library's own predicate (7.4f). |
-| **Service discovery** (`RV` §3) | **intended, and now in doubt** | See the finding in §4. The device can advertise, but a Network.framework listener cannot accept a conformant rotating PSK identity, and on the discovery path the advertiser listens. |
+| **Service discovery** (`RV` §3) | **advertise yes, accept no** | D7 landed the advertisement: `_ppcp._tcp`, `PPCP-<rid[0..3]>`, 3.3a's five keys, `rn` rotated on registration and within 15 minutes, and 3.4b/c's resolver for the browsing direction 3.5c permits. ⛔ The listener still **refuses every connection**, because F-D1-1 stands: a `Network.framework` listener cannot resolve a rotating PSK identity, so a peer that found this device must still dial the pairing-code path. Advertising is reconnection convenience, which is what §3's own preamble calls it. |
 | **Network join** (`RV` §6) | **yes, with 6b's second branch** | D7. `NEHotspotConfiguration` names the network in a system alert (6a) and the join precedes the endpoint walk (4.3f, 6e). ⛔ On session end the configuration is **removed** and the user is told; iOS cannot reassociate a previously-used network, which is the case 6b's disjunction was written for and which it calls conformant. |
 | **Direct path** (`RV` §2, §9a) | **debug builds only** | D9's conformance harness. Plaintext TCP so `ppcp-sim` can drive this peer; see F-D9-1 for why that is a finding as well as a capability. |
 
@@ -51,6 +51,12 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | Test | Method | Asserts | Work packages | `libppcp` | PinPointStudio | PinPointCapture |
 |---|---|---|---|---|---|---|
 | RT-1 | static | §10.1 derivation vectors | L12 | — | — | pass |
+| RT-3 | static | §10.3 pairing-code vectors; `v` first; unknown `v` reported as newer | D7 | — | — | pass |
+| RT-6 | static | §10.2 `rid`, the TXT record and the instance name | D7 | — | — | pass |
+| RT-7 | static | the TXT record carries 3.3a's five keys and nothing 3.3b forbids | D7 | — | — | pass |
+| RT-8 | static | `rn` rotates on registration and within 15 minutes | D7 | — | — | pass |
+| RT-9 | static | an unresolvable `rid` is not connected to (3.4c) | D7 | — | — | pass |
+| RT-15 | static | `PRK` only, protected storage, opt-in and revocable; never from `mu > 1` | D7 | — | — | impl (the 7.4f refusal is asserted; the Keychain half needs a device) |
 | RT-4 | injected | strongest mode negotiated, never plaintext, outcome surfaced | H1, D1 | n/a | — | impl |
 | RT-10 | injected | `session_resume` refused without a completed handshake | H1, D1 | n/a | — | impl |
 | RT-14 | static | §10.2 PSK identity; differs per connection; empty hint at TLS 1.2 | L12, H1, D1 | — | — | impl |
@@ -75,7 +81,7 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | CT-S7 (1) | injected | every emitted timing constant carries a provenance; unmeasured is `assumed` | D2 | — | — | pass |
 | CT-S7 (2) | injected | a device-profile entry with no rig measurement cannot emit `measured` | D2 | — | — | pass |
 | CT-S7 (3) | injected | `exposure_provenance` honest: `per_frame` only where the platform attaches it | D4 | — | — | pass |
-| CT-S7 (4) | injected | converted instants differ by exactly a synthetic peer's declared offset | D4 | — | — | blocked: `ppcp-sim` (L13) |
+| CT-S7 (4) | injected | converted instants differ by exactly a synthetic peer's declared offset | D4, D9 | — | — | blocked: **a phone** (no camera Source on a simulator) |
 | CT-I6 | static | a Candidate carries `source_id`, a canonical `at`, a confidence and its corrections | D5 | — | — | pass |
 | CT-I8 | injected | every nomination is emitted and retained, winners and losers | D5 | — | — | pass (own half) |
 | CT-I18 | static | no relation is ever composed; A→C is measured, never derived | D6 | — | — | pass (own half) |
@@ -88,9 +94,9 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | CT-I37 | static | no path from an Annotation to a Shot, a Candidate or a relation | D8 | — | — | pass (device) |
 | CT-I38 | paired | nothing unconfirmed is evicted, whatever the retention policy | D6 | — | — | pass (owner half) |
 | CT-S4 (2, 3, 5) | injected | the zero-host path: nominate, promote, mint, extract, bundle | D5, D6 | — | — | pass |
-| CT-S4 (6) | injected | a host that answers nothing, and the 8.2i deadline that fires | D5 | — | — | blocked: the `direct` path (D9) |
+| CT-S4 (6) | injected | a host that answers nothing, and the 8.2i deadline that fires | D5, D9 | — | — | impl (the run was made and the deadline did **not** fire — see below) |
 | CT-S4 (7) | injected | link loss, local mint, `session_resume`, sync burst, then payload | D6 | — | — | impl (the sequence is asserted; the live half is blocked, §5) |
-| CT-S5 (device) | injected | a full session against a synthetic host | D6, D9 | — | — | blocked: the `direct` path (D9) |
+| CT-S5 (device) | injected | a full session against a synthetic host | D6, D9 | — | — | **pass (simulator half)** |
 
 ### What each state rests on
 
@@ -383,6 +389,118 @@ after the first `already_held` would strand every session on the first host it m
 The round trip of `session_offer`/`session_accept` passes; the replay half needs a
 counterpart that answers.
 
+### D7 and D9 — rendezvous, and the first counterpart this repository did not write
+
+**CT-S5 (device) — `pass (simulator half)` — `make conform`.**
+`ppcp-sim --role host --scenario reference-host` over `RV` §2's `direct` path.
+The device peer completes `ENC` §2.1's bind on **both** channels, `MSG` §3's
+handshake, joins the Session the host opens, opens a Stream per declared Source,
+answers the sync burst and nominates. The simulator's own report:
+
+```
+sim RX ch0 link_bind / ch1 link_bind / hello / declare
+sim TX ch0 hello_accept / declare_ack / declare / session_open
+sim RX ch0 session_joined / heartbeat_ack ×2 / stream_open ×2
+sim RX ch0 capture_announce / candidate / capture_announce / candidate
+sim report: declares 1  candidates rx 2  captures rx/unique/dup 2/2/0
+            relations tx 52  probe timebases 1  replies 18  errors 0
+```
+
+and `--expect violations=0` held. ⛔ **This is the first row in this file whose
+counterpart this repository did not write.** `ppcp-sim` refuses a `shot` naming a
+Shot already seen with a different `t0` (I7), a message no declared profile
+confers (I24), a first frame that is not `link_bind` and a frame whose channel
+disagrees with its header (2.1c) — none of which is reachable from a loopback
+against ourselves, which is `CONF` §2c's whole point.
+
+⚠ **The half a simulator cannot be.** It has no camera, so this peer declares no
+camera Source, opens no `video` Stream and transfers no payload. That is the
+honest declaration — `CORE` §5.2 lets a Peer own no Source — and it is why the
+cell says *simulator half*. What still needs a phone: a camera `CaptureProfile` on
+the wire, a Capture with `achieved_frames`, the payload path, and CT-S7 (4)'s
+conversion against `measured-capture.json`.
+
+⚠ **CT-I8 travelled with it.** The injected swing is an impact and a
+ball-into-screen 9 ms behind it, through the **real** detector and the real
+`CandidateFactory` with the user's microphone-to-ball distance applied — and two
+Candidates crossed the wire. `CONF` §2a's *injected* method is exactly this: a
+synthetic input, real everything else. A harness that posted a hand-built
+`candidate` would look identical from the far end and would assert nothing about
+the detector, the time of flight, the classifier bytes or the canonical instant.
+
+**CT-S4 (6) — `impl`, and what the run found.**
+`make conform SCENARIO=silent-host` reaches the counterpart, completes the
+session and nominates — and the device mints **nothing** in eight seconds.
+`report.shotsMinted == 0`.
+
+⛔ **The cause is a real defect in the harness's composition and it is worth
+writing down, because it is the shape of the mistake `CORE` 5.13c exists to
+prevent.** `Shot.t0` is in `Session.timebase_ref`, and with a host present that is
+the **host's** clock. The harness was pumping `DeviceMint` with a reading of this
+device's own `tb:hosttime`, passed as though it were the reference timebase — an
+identity that is true in the hostless case (I4) and false the moment a host opens
+the Session. 8.2i's deadline is therefore compared against an instant on the wrong
+clock.
+
+The fix is in and is **not** a conversion at the call site: `DevicePeer.instant(_:on:expressedIn:)`
+converts through `ppcp_relations_convert`, which applies **at most one** relation
+and refuses when it holds none (I18, 5.4c). ⛔ So before 6.3a's burst has produced
+offset *and* rate there is no reading of `timebase_ref` at all, the pump does not
+run, and the Candidates stay retained — which is 8.2i's "held until the deadline"
+rather than a failure, and is the opposite of substituting a zero (5.4b, 8.2i1).
+
+⚠ **The row stays `impl` because the re-run has not completed.** `xcodebuild
+test-without-building` wedged twice on this machine with two builds in flight,
+which is a local resource problem and not a conformance result; the fix is
+committed and the command is above. **The `reference-host` row is unaffected** —
+it asserts the handshake, the Session, the Streams, the sync and the nomination,
+and none of those reads `timebase_ref`.
+
+**RT-3 — `pass — make test-core`.**
+`Packages/Core/Tests/CaptureCoreTests/RendezvousCodeTests.swift`. The `RV` §10.3
+minimal vector decodes to `v = 1`, one endpoint `192.168.1.20:7788`, `mu = 1` and
+`Session.id` `3f2504e0-4f89-41d3-9a0c-0305e82c3301` (4.3e's canonical text, from
+the library); the every-optional-field vector decodes `dn = "Bay 3"`,
+`exp = 1787832000` and the `wifi` block. ⛔ **Not one byte of CBOR is parsed by
+this application**: `ppcp_rv_uri_decode` does the base64url, the deterministic
+decode, 4.2a's `v`-first check and 4.2c's unknown-key skip.
+
+- 4.2b: a payload with `v = 2` returns `requiresNewerApplication` and ⛔ **nothing
+  else in it is read** (4.2d).
+- 4.4b / 4.1c: an undecodable payload and an `https` code are two different
+  failures with two different sentences.
+- 4.4d: a display name carrying `U+202E` has the override stripped — it is shown
+  before anything is authenticated, next to a "connect?" button.
+
+**RT-6, RT-7, RT-8, RT-9 — `pass — make test-core`.**
+The §10.2 advertisement reproduces exactly: `rid = 9b1d2df94b2cfa84`, instance
+name `PPCP-9B1D2DF9`, and the TXT record is `txtvers=1 pv=1.0 role=capture
+rn=… rid=…`. The assertion that matters is the **negative** one — the key set is
+exactly those five (3.3a) and nothing in the record or the name contains `peer:`
+(3.3b, 7.6a). `rn` rotation is checked against the library's own
+`PPCP_RV_RN_MAX_AGE_NS` rather than against 900 written down again, and an
+unresolvable `rid` returns `nil` (3.4c) rather than a warning a screen could
+ignore.
+
+**RT-15 — `impl`.**
+7.4's three conditions are structural: `PairingSecretStore.save` takes a `consent`
+parameter with no default, `pairings()` is what a settings screen lists, and
+`revoke(_:)` deletes the item. 7.4f is the library's predicate — `save` refuses a
+code whose `mu` exceeded 1 rather than re-reading `mu` — and that refusal is
+asserted in `make test-core`. ⛔ What is **not** asserted is the Keychain itself:
+`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` behaves differently on a simulator
+and the property that matters (a pairing does not ride a backup onto a second
+phone) is not observable from a test at all.
+
+**The microphone-to-ball distance — `pass — make test-core`.**
+`AcousticTimeOfFlight` has existed since D5 with nothing supplying a distance, so
+every device Candidate went out with **no** `tof_correction`. At 2 m the
+correction is 5.83 ms — most of a frame at 150 fps, all of one at 120, and a bias
+in one direction rather than a spread. The setting is persisted, feeds
+`CandidateFactory`, and carries a sigma that says what it is: 20 % of the
+distance, floored at 100 mm, `provenance: estimated` (A12). ⛔ A surveyed distance
+is a *different case*, not a smaller number.
+
 ## 4. Findings against the specification
 
 Raised from D1, reported rather than worked around (`libppcp` implementation plan ground rule 3).
@@ -674,12 +792,15 @@ change with no new assertion behind it, so it is queued rather than rushed. F-D3
 
 | Work | Waiting on | Where it sits |
 |---|---|---|
-| CT-S7 (4) — a converted instant against a peer that declares a **non-zero** measured offset | this repository's **D9** | `ppcp-sim` exists and runs (L13 landed). ⛔ The block moved: it is now the **transport**, not the counterpart — see F-D6-4. |
-| CT-I19's consumer half (CT-S3) | this repository's **D9** | The engine and the counterpart both exist; a transport they share does not (F-D6-4). |
-| CT-S1 assertions 1–5 — the conversion against a peer declaring a different convention | this repository's **D9** | Assertion 6 (scalar and constant array agree) passes today; the rest need `ppcp-sim` over the `direct` path (F-D6-4). |
-| CT-I30's third assertion — `capture_update` carries `achieved_frames` only for `transfer: failed` | this repository's **D9** | D6 landed; it still needs a peer on the other end. |
+| CT-S7 (4) — a converted instant against a peer that declares a **non-zero** measured offset | **a phone** | ⛔ The block moved twice. It was the counterpart (L13 closed it), then the transport (D9 closed it), and it is now the **camera**: a simulator declares no camera Source, so there is no `CaptureProfile` whose convention a conversion could differ from. `make conform SCENARIO=…` against `measured-capture.json` is the command, on a device. |
+| CT-I19's consumer half (CT-S3) | **a phone** | The transport exists and the handshake completes; what a simulator cannot present is a camera declaration to meet a foreign one. |
+| CT-S1 assertions 1–5 — the conversion against a peer declaring a different convention | **a phone** | Assertion 6 passes today; the rest need a camera Source at both ends. |
+| CT-I30's third assertion — `capture_update` carries `achieved_frames` only for `transfer: failed` | **a phone** | The peer on the other end exists now; the payload path needs frames, and a simulator has none. |
 | CT-I36a under **induced contention** | **a phone and a host** | `PreviewProducer` sheds by announcing rather than falling silent, and that is asserted; a live preview Stream degrading under real load is not. |
-| `RingBufferRecorder`'s segment delivery | **a phone** | The simulator has no 150 fps camera. The ring's index and every protocol-constrained decision around it are covered; the `AVAssetWriter` segment path is wiring that has not run. |
+| `RingBufferRecorder`'s segment delivery | **a phone**, and it is **not wired** | ⛔ Worse than untested: the live capture session's `AVCaptureVideoDataOutput` drives only the self-test's rate probe, so nothing appends fragments and `CaptureDevice.extractClip` answers `absent` / `outside_buffer` on every device. That is 8.4b's own answer for a ring that does not hold the interval and it is the truth — but the wire from the sample callback into the ring is the next piece of device work, and no Capture carries bytes until it exists. |
+| The **microphone** path end to end | **a phone** | `MicrophoneOnsetSource` has never run on a real microphone. `AppModel` starts it on `arm` and the detector, the factory and the Mint engine are exercised by injected audio in `make conform`; what has not happened is a real transient at a real sample rate with a real `AVAudioTime`. |
+| `NEHotspotConfiguration` | **a phone**, and an App ID capability | The entitlement is in `Support/PinPointCapture.entitlements`; a device build needs Hotspot Configuration enabled on the App ID. The simulator returns an error, which the app reports as "could not join that network". |
+| The Keychain's `ThisDeviceOnly` behaviour (7.4c) | **a phone and a backup** | The property that matters — a pairing does not ride a backup onto a second device — is not observable from a test at any layer. |
 | Interop "device, no host → bundle" | **PinPointStudio** | This side now writes a bundle carrying Shots, Candidates, their evidence and their clips, and re-reads it; only the other application reading it closes the row. |
 | The acoustic detector's **accuracy** | nothing — it is out of scope | `CONF` §6 puts "which candidates a Mint peer promotes" outside conformance, and 8.3c keeps promotion policy out of the specification. What is in scope is that every nomination is emitted, and that is asserted. |
 | A **measured** time of flight | **a rig** | `AcousticTimeOfFlight` takes a surveyed or estimated distance and its sigma; nothing has measured either on this device, so a shipping session declares no `tof_correction` rather than an assumed one (plan A12). |
@@ -707,10 +828,17 @@ device dialled and the failure read as a refused connection. `build-for-testing`
 then `test-without-building` is what makes the window the test's rather than the
 compiler's.
 
-⚠ **`make test-core` is green: 145 tests, 17 suites.** Every `pass` in §3 is one of
+⚠ **`make test-core` is green: 165 tests, 21 suites.** Every `pass` in §3 is one of
 them and none needs a simulator.
 
-⚠ **`make test-app` is green: 23 tests, 4 suites**, on an iPhone 17 Pro simulator.
+⚠ **`make conform` is green** against `ppcp-sim --scenario reference-host`, with
+`--expect violations=0` held and `errors 0` in the simulator's own report. See
+CT-S5 (device) in §3 for the transcript.
+
+⚠ **`make test-app` is green: 24 tests, 5 suites**, on an iPhone 17 Pro simulator.
+The 24th is `ConformanceHarnessTests`, which **skips** without a `ppcp-sim` port
+in the environment — a suite that failed for a missing tool would be a red run
+saying nothing about conformance.
 Its four `link_bind` tests now run over `PpcpLinkBinder` on a real TLS link, which
 is F-D3-3 closed end to end rather than only in the neutral layer. It hung for one
 session; see the finding below.

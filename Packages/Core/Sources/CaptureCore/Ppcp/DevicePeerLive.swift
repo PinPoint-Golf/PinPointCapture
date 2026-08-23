@@ -243,6 +243,28 @@ public extension DevicePeer {
         return try body(relations)
     }
 
+    /// An instant on one of this peer's clocks, expressed in another.
+    ///
+    /// ⛔ **The call a Mint pump needs, and the reason it exists here rather than
+    /// in the app layer.** 5.13c puts `Shot.t0` in `Session.timebase_ref`, which
+    /// with a host is the *host's* clock; 8.2i's deadline is therefore read in a
+    /// timebase this device does not own. Doing the conversion at the call site
+    /// would need `ppcp_instant` above `CaptureCore`, and the `import CPPCP` fence
+    /// is worth more than the two lines it saves.
+    ///
+    /// - Returns: `nil` where the instant cannot be expressed — no relation, or an
+    ///   `unrelated` one. ⛔ **Never a zero offset substituted to make it
+    ///   expressible** (5.4b, 8.2i1): a peer that cannot say when now is does not
+    ///   mint, and the Candidates stay retained.
+    func instant(_ nowNs: Int64, on from: String, expressedIn to: String) throws -> Int64? {
+        // I4 — the identity is a shared id, not a relation, so it needs no
+        // conversion and asserts none.
+        guard from != to else { return nowNs }
+        var instant = ppcp_instant()
+        try check(ppcp_instant_make_z(&instant, from, nowNs))
+        return try convert(instant, to: to)?.ns
+    }
+
     /// 8.2i1's test, one call. `nil` where the instant cannot be expressed in
     /// `to` — no relation, or an `unrelated` one — and ⛔ **never a zero offset
     /// substituted to make it expressible** (5.4b).

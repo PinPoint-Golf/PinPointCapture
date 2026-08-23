@@ -88,7 +88,7 @@ package (product `CPPCP`, plan A5). During co-development that is a sibling
 `../libppcp` checkout; the git URL is recorded in `Package.swift` for when it is
 tagged.
 
-⛔ `import CPPCP` lives in **nine** files and nowhere else, and each is a place
+⛔ `import CPPCP` lives in **twelve** files and nowhere else, and each is a place
 where the library owns a rule this application must not re-decide:
 
 | File | What is the library's |
@@ -102,6 +102,9 @@ where the library owns a rule this application must not re-decide:
 | `Capture/StreamCoverage.swift` | the Stream `kind` spellings of §5.11 |
 | `Capture/ReadinessMeasurement.swift` | §5.15's two constructors, which are the whole Readiness API |
 | `Store/SessionStore.swift` | `ENC` §7 — the container, the writer's ordering refusals, and I34's capture index |
+| `Rendezvous/PairingCode.swift` | `PPCP-RV` §4 — the base64url, the deterministic-CBOR decode, 4.2a's `v`-first check, 4.4a's expiry decision and 7.4f's persistence predicate |
+| `Rendezvous/DiscoveryAdvertisement.swift` | `RV` §3.4 — `rid`, the instance name, the 15-minute rotation interval, and 3.4b's constant-time resolver |
+| `Live/PeerLinkPump.swift` | `peer.h`'s feed/drain contract — the event ring's backpressure (`ppcp_peer_feed_stalled`), and the union access F-D3-1 is about |
 
 ⚠ Four of those nine import the library only for **spellings** — `PPCP_ABSENT_*`,
 `PPCP_STREAM_KIND_*`, `ppcp_readiness`. That is the point rather than a

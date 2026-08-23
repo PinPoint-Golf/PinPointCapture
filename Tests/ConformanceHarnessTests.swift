@@ -48,6 +48,16 @@ struct ConformanceHarnessTests {
         return value
     }
 
+    /// Which `ppcp-sim` scenario is on the other end, so an assertion can depend
+    /// on what that scenario *does*. ⚠ `reference-host` when unset, which is what
+    /// `make conform` starts by default.
+    static var scenario: String {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["PPCP_CONFORM_SCENARIO"]
+            ?? environment["TEST_RUNNER_PPCP_CONFORM_SCENARIO"]
+            ?? "reference-host"
+    }
+
     /// CT-S5 (device), first half: the device peer completes `ENC` §2.1's bind on
     /// both channels, the `MSG` §3 handshake, joins the Session the host opens,
     /// opens a Stream per declared Source, and answers the host's sync and `arm` —
@@ -106,5 +116,16 @@ struct ConformanceHarnessTests {
         // Candidates: suppressing the second is what Draft 1 forced and what
         // 5.12c now forbids.
         #expect(report.candidatesNominated == 2, "\(transcript)")
+
+        // CT-S4 (6) / 8.2i — **a host that answers nothing**. The deadline that
+        // fires is the device's own and it fires whether or not a host is there,
+        // so the Shot is minted locally with `authority: device` (8.3a–c, I23).
+        // ⛔ Asserted only against the scenario that produces it: `reference-host`
+        // arbitrates, and a device that minted under one would be minting Shots a
+        // host had not issued, which is the defect 8.2i exists to close.
+        if Self.scenario == "silent-host" {
+            #expect(report.shotsMinted >= 1,
+                    "8.2i's deadline did not fire against a silent host\n\(transcript)")
+        }
     }
 }
