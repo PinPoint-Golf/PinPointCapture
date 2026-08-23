@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Status | Draft — generated against the tree on 23 August 2026 |
+| Status | Draft — generated against the tree on 23 August 2026, amended for E3.1 (`94f185b`) |
 | Rows | 173 requirements (172 in the PRD, plus REQ-CAP-6 added by this pass) |
 | Links | [PRD](../design/capture-companion-requirements.md) · [Delivery scope](delivery-scope.md) · [Conformance claim](../conformance/ppcp-conformance.md) |
 | Rule | A row's status is a claim about **this repository**. Where the obligation is `libppcp`'s or PinPointStudio's, the row says so rather than claiming credit. |
@@ -27,9 +27,9 @@ Counted from the table below, by **primary** status.
 
 | Status | Count | Share |
 |---|---|---|
-| ✅ Delivered | 85 | 49% |
+| ✅ Delivered | 86 | 50% |
 | ○ Not built | 37 | 21% |
-| ◐ Built, not composed | 19 | 11% |
+| ◐ Built, not composed | 18 | 10% |
 | ▨ Fixture | 13 | 8% |
 | ⏳ Deferred to v2/v3 | 10 | 6% |
 | ⊘ Not this repository | 8 | 5% |
@@ -39,7 +39,7 @@ A further **27 rows carry ⛔ as a secondary mark** — satisfied in code, unpro
 
 **Three things this table says that the headline number does not.**
 
-1. **49% delivered is real, and it is the unglamorous half.** Timebases, declaration, the bundle, purity, rendezvous, TLS — the parts that are expensive to retrofit and invisible when they work.
+1. **50% delivered is real, and it is the unglamorous half.** Timebases, declaration, the bundle, purity, rendezvous, TLS, and now the live link — the parts that are expensive to retrofit and invisible when they work.
 2. **The ◐ column is not a backlog, it is a composition list.** Nineteen requirements are satisfied by tested code that nothing calls. They will close far faster than their count suggests.
 3. **The ▨ column is the one to watch.** Thirteen requirements the app currently *appears* to satisfy and does not — every one of them behind a screen that looks finished. REQ-LIGHT-1 is the sharpest example: the PRD calls achievable exposure "the binding constraint on how useful the video is", and A6 currently displays an invented number for it.
 
@@ -79,8 +79,8 @@ A further **27 rows carry ⛔ as a secondary mark** — satisfied in code, unpro
 |---|---|---|---|---|---|
 | REQ-TIME-1 | M | Every sample declares its timebase by identity | ✅ | — | `Ppcp/Declaration.swift`; CT-I4, CT-I19 |
 | REQ-TIME-2 | M | Pairwise timebase relations declared, three-valued | ✅ | — | CT-I4 — and the **negative** half is asserted: zero relations on iOS, because none is needed |
-| REQ-TIME-3 | M | Host may refuse a device on declared uncertainty | ⊘ ◐ | E3.1 | Host policy. The device's obligation is to accept the refusal — `ingest_policy` `out_reason` is wired, uncomposed |
-| REQ-TIME-4 | M | `mach_continuous_time` semantics; discontinuity as an explicit observation | ✅ ◐ | E3.1 | `Platform/PpcpTimebases.swift` carries the observation type with magnitude and cause. Emission needs a live link |
+| REQ-TIME-3 | M | Host may refuse a device on declared uncertainty | ⊘ ✅ | E3.1 | Host policy. The device's half — accepting the refusal — is composed: a rejecting counterpart surfaces through `HostLinkSession.protocolError` |
+| REQ-TIME-4 | M | `mach_continuous_time` semantics; discontinuity as an explicit observation | ✅ | E3.1 | `Platform/PpcpTimebases.swift` carries the observation type with magnitude and cause, and a live link now exists to emit it over |
 | REQ-TIME-5 | M | Time never inferred from frame index | ✅ | — | CT-I2 passes; `FrameTimeline` carries per-frame stamps |
 
 ## §5.2 — Exposure convention
@@ -96,7 +96,7 @@ A further **27 rows carry ⛔ as a secondary mark** — satisfied in code, unpro
 
 | Req | | Requirement | Status | Epic · level | Evidence / note |
 |---|---|---|---|---|---|
-| REQ-SYNC-1 | M | Two-way exchange, min-RTT filtered, offset **and** rate | ◐ | E3.2 | `libppcp`'s engine, driven by `PeerLinkPump`. Never run against a live host from the app |
+| REQ-SYNC-1 | M | Two-way exchange, min-RTT filtered, offset **and** rate | ◐ | E3.2 | `libppcp`'s engine. ⚠ The pump's tick now answers a counterpart's probes on a live link, but nothing **triggers** a burst — `addSyncTimebase` and `syncTrigger(.connect)` are E3.2's |
 | REQ-SYNC-1a | M | One exchange per timebase; relations declared, never composed | ◐ | E3.2 | CT-I21, CT-I18 pass on this peer's own half |
 | REQ-SYNC-2 | M | Burst 10–20 on connect, network change, thermal event | ◐ | E3.2 | Composition only |
 | REQ-SYNC-3 | M | Filtered, never stepped | ◐ | E3.2 | Library-held |
@@ -125,7 +125,7 @@ A further **27 rows carry ⛔ as a secondary mark** — satisfied in code, unpro
 
 | Req | | Requirement | Status | Epic · level | Evidence / note |
 |---|---|---|---|---|---|
-| REQ-VER-1 | M | Capability and version negotiation from the first message | ◐ | E3.1 | `ppcp_peer_config` carries `versions` and `min_version`; uncomposed in the app |
+| REQ-VER-1 | M | Capability and version negotiation from the first message | ✅ | E3.1 | `HostLinkSession` sends `hello` then `declare` (`MSG` 3.1/3.3) and reads `negotiatedVersion` **through `perform`** on `.connected` — never off the payload, which is always `nil` (F-S5-4) |
 | REQ-VER-2 | M | Unknown fields ignored, never fatal, both ends | ⊘ | — | The codec is `libppcp`'s. Exercised by IOP-1/IOP-2 |
 | REQ-VER-3 | M | Written support-window policy and unknown-dialect behaviour | ○ | E14.4 | **Waits on OPEN-5.** Nothing written, nothing implemented |
 
@@ -397,7 +397,7 @@ For the board: what each capability level closes.
 | **E2.1** | REQ-MIC-1 · REQ-MIC-2 |
 | **E2.2** | REQ-MIC-5 |
 | **E2.3** | REQ-MIC-3 · REQ-MIC-4 |
-| **E3.1** | REQ-VER-1 · REQ-TIME-3 · REQ-TIME-4 (emission) |
+| **E3.1** ✅ | REQ-VER-1 · REQ-TIME-3 · REQ-TIME-4 (emission) — all closed, `94f185b` |
 | **E3.2** | REQ-SYNC-1/1a/2/3 |
 | **E3.3** | REQ-STATE-1 · REQ-STATE-3 |
 | **E3.4** | REQ-SESS-5/6 · REQ-SHOT-1 |

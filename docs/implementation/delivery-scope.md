@@ -57,7 +57,7 @@ These are the spine of the remaining work. Each is a subsystem that exists, is t
 |---|---|---|---|
 | **The ring buffer never receives a frame** | `Platform/Capture/RingBufferRecorder.swift` (segmented `AVAssetWriter`, 0.5 s fragments, 20-deep), `Core/Capture/FragmentRing.swift`, `CaptureAssembly` | The live `AVCaptureVideoDataOutput` drives only the self-test's rate probe. Nothing appends a fragment. | `CaptureDevice.extractClip` answers `absent` / `outside_buffer` on every device. **There is no video anywhere in the product.** No clip, no thumbnail, no replay, no payload to transfer, no bundle with bytes in it. |
 | **The microphone has never run** | `Platform/Capture/MicrophoneOnsetSource.swift`, `Core/Detect/*` — detector with a transient taxonomy, confidence, candidate factory, Mint engine, candidate-attached audio retention with an enforced cap | `AppModel` starts the source on `arm`, but it has only ever been fed injected audio. No real transient, at a real sample rate, with a real `AVAudioTime`. | Detection is unproven on hardware. Every shot in the app today is a fixture. |
-| **There is no live host link** | `Core/Ppcp/DevicePeerLive`, `Live/PeerLinkPump`, `Live/HostLinkDriver`, `Live/SessionOfferService`, `Live/PreviewProducer`, `Live/TransferQueue`, `Live/SessionResume`, `Live/LiveDetectionSink`, `Platform/Network/PpcpTransport` (TLS-PSK, measured) | `AppModel.hostLink` is `HostLink(state: .none)` and is only ever replaced by a `PreviewFixtures` value from the reviewer's state switcher. Nothing composes the peer, the pump and the transport into the running app. | B2 and B3 show fixture telemetry. No sync, no arm-from-host, no transfer, no per-shot residual. The entire host half of the product is drawn and not connected. |
+| ~~**There is no live host link**~~ ✅ **closed by E3.1** | as before, plus `App/HostLinkSession` | ~~Nothing composes the peer, the pump and the transport into the running app.~~ **`AppModel.connect` now does**, over the transport `RendezvousCoordinator.takeEstablishedLink()` hands over. Pairing succeeds against PinPointStudio. | What remains is per-level: sync (E3.2), arm-from-host (E3.3), transfer (E3.4), resume (E3.5). `HostLinkDriver`, `SessionOfferService`, `PreviewProducer`, `TransferQueue` and `SessionResume` still have no caller. |
 
 The conformance claim is candid about all three (§5, "What is deferred, and on what"). That candour is worth preserving: the code does not pretend, and neither should the board.
 
@@ -65,7 +65,11 @@ The conformance claim is candid about all three (§5, "What is deferred, and on 
 
 Work that is done and only needs composing. It is cheap relative to its apparent size, and it should be scheduled as such.
 
-`SessionOfferService` · `PreviewProducer` · `HostLinkDriver` · `TransferQueue` · `SessionResume` · `LiveDetectionSink` · `PeerLinkPump` · `DevicePeerLive` · `AnnotationStore` · `SessionMatch` · `SessionStore` (writes bundles; nothing reads them into the UI) · `MotionMetadataSource` · `ThermalTimeline` · `InterruptionMonitor` (records the gap; nobody re-arms or reports it) · `RingBufferRecorder`
+`SessionOfferService` · `PreviewProducer` · `HostLinkDriver` · `TransferQueue` · `SessionResume` · `LiveDetectionSink` · `AnnotationStore` · `SessionMatch` · `MotionMetadataSource` · `RingBufferRecorder`
+
+✅ **Composed since this list was written:** `PeerLinkPump` and `DevicePeer`'s live extensions (E3.1) · `SessionStore.bundles()`, `ThermalTimeline` via `DeviceHealthService`, and `InterruptionMonitor`'s record (#92).
+
+⚠ `HostLinkDriver` is the one to read before using: zero call sites, **no test**, it double-pumps liveness and sync against `PeerLinkPump.tickOnce`, and its `public private(set)` state is written on the pump's executor and read on the MainActor. E3.1 deliberately derived `HostLink` from pump events instead.
 
 ### 1.5 What the PRD asks for that has no code at all (○)
 
@@ -200,11 +204,11 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 ### E3 — The live host link in the app
 
-**Why it clusters.** Every piece exists and is exercised by the conformance harness. What does not exist is the composition. The levels below are ordered so each one is separately demonstrable against `ppcp-sim`.
+**Why it clusters.** Every piece exists and is exercised by the conformance harness. What did not exist is the composition. The levels below are ordered so each one is separately demonstrable against `ppcp-sim` — and E3.1 proved that ordering works: `make conform SCENARIO=reference-host ROW=e31` drives the app's own path against the simulator, which `make conform` alone never did (it only ever proved the `#if DEBUG` harness).
 
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
-| **E3.1** | **Connected, and honest about it** | Compose transport + `DevicePeerLive` + `PeerLinkPump` in `AppModel` ○ · connect/disconnect lifecycle ○ · version and capability negotiation from the first message ◐ · `HostLink` state derived from telemetry, not fixtures ○ | v1 | B2's four progress rows are driven by a real handshake |
+| **E3.1** ✅ | **Connected, and honest about it** | Compose transport + peer + `PeerLinkPump` in `AppModel` ✅ · connect/disconnect lifecycle ✅ · version negotiation from the first message ✅ · `HostLink` derived from telemetry, not fixtures ✅ | v1 | **Done** (#24, `94f185b`). ⚠ Exit criterion narrowed to **three** of B2's four rows: the clock row is E3.2's and renders `.pending` |
 | **E3.2** | **Synchronised** | Sync burst 10–20 on connect, network change and thermal event ◐ · per-timebase, filtered never stepped ◐ · settle to heartbeat ◐ · real offset, uncertainty and drift on B3 ▨ | v1 | B3 *Connected* shows a measured offset and drift; **CT-I21** and **CT-I18** hold live |
 | **E3.3** | **Under host control** | Arm/disarm from the host ◐ · readiness measurement on the wire, state names never ◐ · keepalive lapse → cold ○ | v1 | The host arms the device; **RT-10's message half** closes |
 | **E3.4** | **Shots crossing** | `capture_announce` on control immediately ◐ · payload queued on bulk, backpressure-aware ◐ · per-shot and per-session progress ▨ · confirmation → `In Studio` ◐ · `SessionOfferService` and `PreviewProducer` composed ◐ | v1 | A swing announces in milliseconds and its video follows minutes later; **CT-I19's consumer half (CT-S3)** closes |
