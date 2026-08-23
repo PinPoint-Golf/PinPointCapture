@@ -960,8 +960,8 @@ them and none needs a simulator.
 `--expect violations=0` held and `errors 0` in the simulator's own report. See
 CT-S5 (device) in §3 for the transcript.
 
-⚠ **`make test-app` is green: 24 tests, 5 suites**, on an iPhone 17 Pro simulator.
-The 24th is `ConformanceHarnessTests`, which **skips** without a `ppcp-sim` port
+⚠ **`make test-app` is green: 25 tests, 5 suites**, on an iPhone 17 Pro simulator.
+Two of them are `ConformanceHarnessTests`, which **skip** without a port
 in the environment — a suite that failed for a missing tool would be a red run
 saying nothing about conformance.
 Its four `link_bind` tests now run over `PpcpLinkBinder` on a real TLS link, which
