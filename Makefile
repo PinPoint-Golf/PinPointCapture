@@ -71,7 +71,7 @@ help:
 	@echo "build         build for the simulator"
 	@echo "build-device  build for a physical device (needs signing)"
 	@echo "test          run the unit tests"
-	@echo "conform       run the device peer against libppcp's ppcp-sim (D9)"
+	@echo "conform       ppcp-conform drives the device (D9); SCENARIO=<n> for one ppcp-sim row"
 	@echo "device        list connected devices"
 	@echo "deploy        gen + build-device + install + launch on a connected device"
 	@echo "lint          run swiftlint"
@@ -235,6 +235,73 @@ conform-sim: gen
 		echo "make conform: ppcp-sim exited non-zero — a violation or an unmet expectation"; \
 		exit 1; }; \
 	echo "--- ppcp-sim ---"; cat "$$log"
+
+# D9's claim — `ppcp-conform` drives this device through every applicable row of
+# `PPCP-CONF` §3 and §4 and emits the matrix fragment.
+#
+# ⚠ **`--listen`, not `--connect`.** The device DIALS: `PpcpDirectConnector` is a
+# connector and there is no plaintext listener anywhere in the app, which is also
+# how `RV` 2c1's "nothing to accept on" stays easy to hold. The tool spawns one
+# `ppcp-sim` per row, sequentially, on that one port — so the device dials once
+# per row, which is what `ConformanceHarnessTests.ppcpConformDrivesTheDevice()`
+# does.
+#
+# ⛔ **The verdict is the tool's exit code, not the test's.** 0 every applicable
+# row passed, 1 a row failed, 2 a bad invocation, 3 NO ROW APPLIED — and 3 is not
+# success: a claim naming profiles the tool has no row for has not been measured.
+conform-tool: gen
+	@if [ ! -x "$(PPCP_CONFORM)" ]; then \
+		echo "make conform: no ppcp-conform at $(PPCP_CONFORM)"; \
+		echo "  Build it:  cmake --build --preset dev -j3 --target ppcp-conform ppcp-sim"; \
+		echo "  (in $(LIBPPCP))"; \
+		exit 1; \
+	fi
+	@if [ -z "$(SIM_NAME)" ]; then \
+		echo "make conform: no available iPhone simulator found."; exit 1; \
+	fi
+	@mkdir -p $(CONFORM_OUT)
+	set -o pipefail && xcodebuild build-for-testing \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		| $(XCB)
+	@set -e; \
+	log=$$(mktemp -t ppcp-conform-log); \
+	port=$$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'); \
+	echo "ppcp-conform listening on $$port, profiles $(CONFORM_PROFILES)"; \
+	"$(PPCP_CONFORM)" --profiles $(CONFORM_PROFILES) --role capture \
+		--listen $$port --column PinPointCapture \
+		--json $(CONFORM_OUT)/ppcp-conform.json \
+		--markdown $(CONFORM_OUT)/ppcp-conform.md \
+		--sim $(PPCP_SIM) --scenarios $(LIBPPCP)/tools/scenarios \
+		>"$$log" 2>&1 & \
+	toolpid=$$!; \
+	trap 'kill $$toolpid 2>/dev/null || true' EXIT; \
+	set -o pipefail; \
+	TEST_RUNNER_PPCP_CONFORM_TOOL_PORT=$$port xcodebuild test-without-building \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-only-testing:PinPointCaptureTests/ConformanceHarnessTests \
+		-default-test-execution-time-allowance 300 \
+		-maximum-test-execution-time-allowance 600 \
+		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' \
+		|| { echo "--- ppcp-conform ---"; cat "$$log"; exit 1; }; \
+	rc=0; wait $$toolpid || rc=$$?; \
+	echo "--- ppcp-conform ---"; cat "$$log"; \
+	case $$rc in \
+	  0) echo "make conform: every applicable row passed";; \
+	  1) echo "make conform: A ROW FAILED — see the table above and $(CONFORM_OUT)/ppcp-conform.md";; \
+	  2) echo "make conform: bad invocation";; \
+	  3) echo "make conform: NO ROW APPLIED to this claim and role — not a pass";; \
+	  *) echo "make conform: ppcp-conform exited $$rc";; \
+	esac; \
+	exit $$rc
 
 device:
 	@xcrun devicectl list devices
