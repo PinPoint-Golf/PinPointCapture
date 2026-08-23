@@ -178,10 +178,18 @@ public struct NegotiatedSecurity: Sendable, Equatable, Hashable {
     public enum Version: Sendable, Equatable, Hashable {
         case tls12
         case tls13
+        /// ⛔ **No handshake at all** — `RV` §2's `direct` path, where the
+        /// transport is a tunnel or a socket handed in by an embedding. It is a
+        /// case rather than `other(0)` because a link with no TLS must not read
+        /// as a link whose version could not be determined: `RV` 5.2i's "the
+        /// platform did not expose it" and "there was nothing to expose" are
+        /// different facts, and only one of them is safe.
+        case plaintext
         case other(UInt16)
 
         public init(code: UInt16) {
             switch code {
+            case 0: self = .plaintext
             case 0x0303: self = .tls12
             case 0x0304: self = .tls13
             default: self = .other(code)
@@ -192,6 +200,7 @@ public struct NegotiatedSecurity: Sendable, Equatable, Hashable {
             switch self {
             case .tls12: "TLS 1.2"
             case .tls13: "TLS 1.3"
+            case .plaintext: "no TLS"
             case .other(let code): String(format: "TLS 0x%04X", code)
             }
         }
@@ -209,6 +218,10 @@ public struct NegotiatedSecurity: Sendable, Equatable, Hashable {
         /// expected and that conformance is then demonstrated by observed
         /// handshake rather than by an API assertion.
         case unknown
+        /// ⛔ There was no key exchange, because there was no handshake. Only
+        /// `RV` §2's `direct` path reaches this, and `forwardSecrecy` is
+        /// **`false`** rather than `nil`: nothing is unknown here.
+        case plaintext
     }
 
     public let version: Version
@@ -223,6 +236,7 @@ public struct NegotiatedSecurity: Sendable, Equatable, Hashable {
         switch keyExchange {
         case .psk: false
         case .pskEphemeral: true
+        case .plaintext: false
         case .unknown: nil
         }
     }
@@ -238,6 +252,18 @@ public struct NegotiatedSecurity: Sendable, Equatable, Hashable {
     public init(versionCode: UInt16, cipherSuite: UInt16) {
         self.init(version: Version(code: versionCode), cipherSuite: cipherSuite)
     }
+
+    /// `RV` §2's `direct` path: no rendezvous, no handshake, no negotiated mode.
+    ///
+    /// ⛔ **Not reachable from a shipping build.** It exists for D9's conformance
+    /// harness, which runs this device's peer over plaintext loopback sockets so
+    /// `ppcp-conform` and `ppcp-sim` can drive it — 9a makes a peer handed an
+    /// established socket fully PPCP-conformant with no rendezvous
+    /// implementation, and a simulator that spoke TLS would be testing OpenSSL
+    /// rather than PPCP. The application's own rendezvous path has no plaintext
+    /// branch by construction (5.2f).
+    public static let directPathPlaintext =
+        NegotiatedSecurity(version: .plaintext, cipherSuite: 0)
 
     /// The one line the About box and the diagnostic export carry (`RV` 5.4k).
     public var summary: String {
@@ -275,7 +301,11 @@ public struct NegotiatedSecurity: Sendable, Equatable, Hashable {
         // reports which was used, so the mode stays `.unknown` (`RV` 5.2i).
         0x1301: ("TLS_AES_128_GCM_SHA256", .unknown),
         0x1302: ("TLS_AES_256_GCM_SHA384", .unknown),
-        0x1303: ("TLS_CHACHA20_POLY1305_SHA256", .unknown)
+        0x1303: ("TLS_CHACHA20_POLY1305_SHA256", .unknown),
+        // ⛔ Not a ciphersuite. `RV` §2's `direct` path, named so its summary
+        // reads "no TLS, none — no forward secrecy" rather than a hexadecimal
+        // zero that looks like a failed lookup.
+        0x0000: ("none", .plaintext)
     ]
 }
 

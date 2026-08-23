@@ -28,6 +28,9 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     private let sampleQueue = DispatchQueue(label: "org.pinpointstudio.capture.samples",
                                             qos: .userInitiated)
     private var activeDevice: AVCaptureDevice?
+    /// REQ-BUF-1's ring, held here because the sample path that must eventually
+    /// feed it is here. ⛔ `nil` until something retains — see `extractClip`.
+    private var recorder: RingBufferRecorder?
 
     public init() {}
 
@@ -370,6 +373,29 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
             viewpoint: viewpoint,
             product: ("Apple", DeviceProfiles.profile(for: identifier).marketingName,
                       ProcessInfo.processInfo.operatingSystemVersionString))
+    }
+
+    // MARK: - The retained window (CORE 8.4b)
+
+    /// ⛔ **`outside_buffer`, honestly, until the ring is fed by a real camera.**
+    ///
+    /// `RingBufferRecorder` is written, unit-tested and not connected: the live
+    /// capture session's `AVCaptureVideoDataOutput` currently drives only the
+    /// self-test's `FrameRateProbe`, so nothing appends fragments and the ring is
+    /// empty on every device including a phone. Answering `absent` with
+    /// `outside_buffer` is what 8.4b says a peer whose ring does not hold the
+    /// interval must answer, and it is the truth here — an implementation that
+    /// returned a `present` extraction over no fragments would be the one thing
+    /// I10 exists to prevent.
+    ///
+    /// ⚠ Recorded in `docs/ppcp-conformance.md` under what needs a phone. The
+    /// seam is what D-compose owed; the wire from the sample callback into the
+    /// ring is device work that cannot be verified on a simulator.
+    public func extractClip(_ requestedNs: Range<Int64>) -> ClipExtraction {
+        if let recorder, recorder.isRetaining {
+            return recorder.ring.extract(requestedNs)
+        }
+        return ClipExtraction.nothingRetained(requestedNs)
     }
 
     /// `CORE` 5.7 `format.codec` — what a Capture from these profiles is encoded

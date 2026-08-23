@@ -20,7 +20,23 @@ DEV_DEST    ?= generic/platform=iOS
 XCB         := xcbeautify --quieter
 DEVICE_APP  := $(DERIVED)/Build/Products/$(CONFIG)-iphoneos/$(APP)
 
-.PHONY: all gen build build-device _udid test test-core test-app device deploy lint clean help
+# ⚠ **Every build is capped at three jobs, and it is not a preference.** This is
+# a 16 GB machine and an unbounded `xcodebuild` alongside a `swift build` took it
+# down on 22 August 2026. `-jobs`/`-j` here rather than in each recipe so a new
+# target cannot forget.
+JOBS        := 3
+
+# `libppcp`'s conformance tools. A sibling checkout during co-development.
+LIBPPCP     ?= ../libppcp
+PPCP_SIM    ?= $(LIBPPCP)/build/dev/tools/ppcp-sim/ppcp-sim
+PPCP_CONFORM ?= $(LIBPPCP)/build/dev/tools/ppcp-conform/ppcp-conform
+SCENARIO    ?= reference-host
+SCENARIO_DECL ?= $(LIBPPCP)/tools/scenarios/$(SCENARIO).json
+# ⚠ Long enough for a simulator to boot, install and run. The device side's own
+# deadline is `ConformanceHarness.run(seconds:)`, which is much shorter.
+CONFORM_RUN_MS ?= 120000
+
+.PHONY: all gen build build-device _udid test test-core test-app conform device deploy lint clean help
 
 all: build
 
@@ -29,6 +45,7 @@ help:
 	@echo "build         build for the simulator"
 	@echo "build-device  build for a physical device (needs signing)"
 	@echo "test          run the unit tests"
+	@echo "conform       run the device peer against libppcp's ppcp-sim (D9)"
 	@echo "device        list connected devices"
 	@echo "deploy        gen + build-device + install + launch on a connected device"
 	@echo "lint          run swiftlint"
@@ -52,6 +69,7 @@ build: gen
 		-configuration $(CONFIG) \
 		-destination '$(SIM_DEST)' \
 		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
 		| $(XCB)
 
 # ⚠ Builds against the CONNECTED device by UDID, not against a generic iOS
@@ -73,6 +91,7 @@ build-device: gen
 		-configuration $(CONFIG) \
 		-destination "id=$$udid" \
 		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
 		-allowProvisioningUpdates \
 		| $(XCB)
 
@@ -94,7 +113,7 @@ test: test-core test-app
 # simulator, no runtime download, no Xcode. Includes the layer purity gate that
 # fails the build if Core imports a platform framework (REQ-PORT-3).
 test-core:
-	@cd Packages/Core && swift test
+	@cd Packages/Core && swift test -j $(JOBS)
 
 test-app: gen
 	@if ! xcrun simctl list runtimes 2>/dev/null | grep -q 'iOS'; then \
@@ -116,8 +135,75 @@ test-app: gen
 		-configuration $(CONFIG) \
 		-destination '$(TEST_DEST)' \
 		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		-default-test-execution-time-allowance 120 \
+		-maximum-test-execution-time-allowance 300 \
 		| grep -E '^(◇|✔|✘)|error:|Test run|\*\* TEST' || \
 		(echo "make test-app: no test output — see the xcresult bundle"; exit 1)
+
+# D9 — the device peer driven by a counterpart this repository did not write.
+#
+# ⚠ `ppcp-conform` (libppcp L14) is what this will call once it exists; until
+# then it drives `ppcp-sim` directly, which is the same transport and the same
+# refusals. The target switches on its own when the binary appears.
+#
+# ⛔ The simulator peer is started BEFORE the test and killed after, whatever
+# happens: a listener left bound holds the port and the next run fails for a
+# reason that has nothing to do with conformance.
+conform: gen
+	@if [ ! -x "$(PPCP_SIM)" ]; then \
+		echo "make conform: no ppcp-sim at $(PPCP_SIM)"; \
+		echo "  Build it:  cmake --build $(LIBPPCP)/build/dev --target ppcp-sim"; \
+		exit 1; \
+	fi
+	@if [ -z "$(SIM_NAME)" ]; then \
+		echo "make conform: no available iPhone simulator found."; exit 1; \
+	fi
+	@# ⛔ **Build first, then start the counterpart.** The first version started
+	@# ppcp-sim and then ran `xcodebuild test`, which builds — and a compile is
+	@# minutes while `--run-ms` is seconds, so the simulator peer had exited before
+	@# the device dialled and the failure looked like a refused connection.
+	@# `build-for-testing` / `test-without-building` is what makes the window the
+	@# test's rather than the compiler's.
+	set -o pipefail && xcodebuild build-for-testing \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		| $(XCB)
+	@set -e; \
+	portfile=$$(mktemp -t ppcp-conform-port); \
+	log=$$(mktemp -t ppcp-conform-log); \
+	"$(PPCP_SIM)" --role host --listen 0 --port-file "$$portfile" \
+		--declaration "$(SCENARIO_DECL)" --scenario $(SCENARIO) \
+		--expect violations=0 --run-ms $(CONFORM_RUN_MS) >"$$log" 2>&1 & \
+	simpid=$$!; \
+	trap 'kill $$simpid 2>/dev/null || true' EXIT; \
+	for i in 1 2 3 4 5 6 7 8 9 10; do \
+		[ -s "$$portfile" ] && break; sleep 0.2; \
+	done; \
+	port=$$(cat "$$portfile" 2>/dev/null); \
+	if [ -z "$$port" ]; then echo "make conform: ppcp-sim never reported a port"; \
+		cat "$$log"; exit 1; fi; \
+	echo "ppcp-sim listening on $$port, scenario $(SCENARIO)"; \
+	set -o pipefail; \
+	TEST_RUNNER_PPCP_CONFORM_PORT=$$port xcodebuild test-without-building \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-only-testing:PinPointCaptureTests/ConformanceHarnessTests \
+		-default-test-execution-time-allowance 120 \
+		-maximum-test-execution-time-allowance 300 \
+		| grep -E '^(◇|✔|✘)|error:|Test run|\*\* TEST' \
+		|| { echo "--- ppcp-sim ---"; cat "$$log"; exit 1; }; \
+	wait $$simpid || { echo "--- ppcp-sim ---"; cat "$$log"; \
+		echo "make conform: ppcp-sim exited non-zero — a violation or an unmet expectation"; \
+		exit 1; }; \
+	echo "--- ppcp-sim ---"; cat "$$log"
 
 device:
 	@xcrun devicectl list devices

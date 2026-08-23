@@ -26,6 +26,12 @@ enum DebugLaunch {
         UserDefaults.standard.string(forKey: "ppcpScreen")?.uppercased()
     }
 
+    /// `-ppcpConformPort 51423`, for the D9 harness screen.
+    static var conformPort: UInt16? {
+        let value = UserDefaults.standard.integer(forKey: "ppcpConformPort")
+        return value > 0 && value <= Int(UInt16.max) ? UInt16(value) : nil
+    }
+
     /// `-ppcpHostState lost`, for the four B3 states and C1's host chip.
     static var hostState: HostLinkState {
         switch UserDefaults.standard.string(forKey: "ppcpHostState")?.lowercased() {
@@ -178,11 +184,17 @@ struct DebugScreenGallery: View {
                                         onSelectShot: { _ in }, onPauseTransfer: {},
                                         onExportSession: {})
 
+        // ⛔ Not a designed screen. D9's conformance harness, which runs this
+        // device's peer over a plaintext loopback socket against `ppcp-sim`.
+        case "D9": ConformanceHarnessView(device: model.captureDevice,
+                                          distance: model.micToBallDistance,
+                                          port: DebugLaunch.conformPort)
+
         default:
             ContentUnavailableView(
                 "Unknown screen \"\(screenID)\"",
                 systemImage: "questionmark.square.dashed",
-                description: Text("Try A1–A7, B1–B6 or C1–C3.")
+                description: Text("Try A1–A7, B1–B6, C1–C3 or D9.")
             )
         }
     }

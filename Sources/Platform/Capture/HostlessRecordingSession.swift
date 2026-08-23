@@ -63,17 +63,33 @@ public final class HostlessRecordingSession {
     private let recorder: CaptureSessionRecorder
     private var isClosed = false
 
+    /// D5's pipeline, composed here rather than in a test for the first time.
+    /// ⛔ `nil` only where the device declared no microphone — a Session with no
+    /// nominator is a legitimate record and not a failure.
+    public private(set) var detect: DetectAndMint?
+    /// The declaration this Session was opened with, kept because
+    /// `CandidateFactory` and the Streams both name things inside it.
+    public let declaration: PpcpDeclaration
+    /// 8.1d — what every Candidate's raw instant is corrected by.
+    public let micToBall: MicToBallDistance
+
     /// - Parameters:
     ///   - device: asked for its declaration. ⛔ Through the port, so the
     ///     declaration comes from the capability the hardware actually enumerated
     ///     (REQ-FPS-1) and never from a spec sheet.
     ///   - videoProfileId: which declared `CaptureProfile` the video Stream
     ///     activates. `nil` takes the first the camera Source offers.
+    ///   - micToBall: 8.1d — the microphone-to-ball distance and its dispersion.
+    ///     ⛔ It reaches every Candidate through `CandidateFactory`; before S4
+    ///     nothing supplied one and every device Candidate went out with no
+    ///     `tof_correction` at all.
     public init(store: SessionStore,
                 device: any CaptureDevice,
                 sessionId: String,
                 peerId: String = PeerIdentity.current,
-                videoProfileId: String? = nil) throws {
+                videoProfileId: String? = nil,
+                micToBall: MicToBallDistance = MicToBallDistanceStore.load()) throws {
+        self.micToBall = micToBall
         self.sessionId = sessionId
         self.peerId = peerId
         self.bundle = try store.makeBundle(sessionId: sessionId, mintingPeerId: peerId)
@@ -91,6 +107,7 @@ public final class HostlessRecordingSession {
         }
         let declaration = try PpcpDeclaration(
             device.ppcpDeclarationInput(peerId: peerId, viewpoint: nil))
+        self.declaration = declaration
 
         recorder = try CaptureSessionRecorder(
             writer: writer,
@@ -113,6 +130,69 @@ public final class HostlessRecordingSession {
                                videoProfileId: videoProfileId,
                                openedAtNs: MachClock.hostTimeNs)
         for stream in streams { try recorder.open(stream: stream) }
+
+        // ⚠ **The composition D5 wrote and nothing performed.** `DetectAndMint`
+        // existed with a full test suite and no caller: the application recorded
+        // Streams and a `readiness` and never a Candidate. This is where the
+        // detector, the Mint engine, the time-of-flight correction and the ring
+        // meet, and it is the whole of D-compose's device half.
+        if let audio = streams.first(where: { $0.kind == PpcpStreamKind.audio }),
+           let video = streams.first(where: { $0.kind == PpcpStreamKind.video }) ?? streams
+               .first(where: { $0.kind == PpcpStreamKind.audio }) {
+            let factory = CandidateFactory(
+                declaration: declaration,
+                sourceId: audio.sourceId,
+                // 6.1d — no `format`, therefore no profile and no canonical
+                // conversion to apply.
+                profileId: nil,
+                timeOfFlight: micToBall.timeOfFlight)
+            let mint = try DeviceMint(peer: peer,
+                                      promotion: DetectAndMint.defaultPromotion())
+            detect = DetectAndMint(
+                peer: peer, sink: recorder, mint: mint, factory: factory,
+                configuration: DetectAndMint.Configuration(
+                    sessionId: sessionId, peerId: peerId,
+                    // 5.13c — in a hostless Session `timebase_ref` is this
+                    // device's own capture timebase, so the conversion is the
+                    // identity (I4) and **no relation is asserted for it**.
+                    timebaseRefId: PpcpTimebases.captureId,
+                    audioStream: audio, videoStream: video),
+                promotion: DetectAndMint.defaultPromotion(),
+                // ⛔ Through the port, so the answer is the capture stack's and
+                // not this file's. A ring that is not retaining answers
+                // `outside_buffer`, which 8.4b makes a result rather than a
+                // failure (I10).
+                extractAudio: { [device] requested in device.extractClip(requested) },
+                extractVideo: { [device] requested in device.extractClip(requested) },
+                // 5.8h / CT-S7 (3) — `per_frame` is not reachable on this
+                // platform, and under the session lock the honest answer is a
+                // locked constant.
+                videoExposure: { _ in .lockedConstant(0) })
+        }
+    }
+
+    // MARK: Detect (CORE §5.12, §8.2i–j, §8.3)
+
+    /// One window of microphone audio, all the way to nomination.
+    ///
+    /// ⛔ **Every onset is emitted** (5.12c, 8.3b, I8), including the ones this
+    /// peer does not believe. The promotion decision is the Mint engine's and
+    /// happens in `pumpMint`.
+    @discardableResult
+    public func observe(_ window: AudioWindow) throws -> [DetectAndMint.Detection] {
+        guard let detect else { return [] }
+        let detections = try detect.observe(window)
+        for _ in detections { recorder.countCandidate() }
+        return detections
+    }
+
+    /// 8.2i–j / 8.3a — mint what is due, extract a clip for each Shot.
+    @discardableResult
+    public func pumpMint(nowRefNs: Int64) throws -> [PpcpShot] {
+        guard let detect else { return [] }
+        let minted = try detect.pump(nowRefNs: nowRefNs)
+        for _ in minted { recorder.countShot() }
+        return minted
     }
 
     /// The Streams a hostless capture session opens, from what was declared.
@@ -131,6 +211,26 @@ public final class HostlessRecordingSession {
                 id: "str:video:\(camera.id)", sessionId: sessionId,
                 sourceId: camera.id, kind: PpcpStreamKind.video,
                 profileId: profile, timebaseId: camera.timebaseId,
+                continuity: .shotWindowed, openedAtNs: openedAtNs))
+        }
+        // ⛔ **A separate `audio` Stream, and it was missing.** 5.12.1a puts the
+        // window that explains why detection fired on its own Stream, and D5's
+        // `DetectAndMint` requires one — but this composition opened only video
+        // and metadata, so nothing in the application could nominate. Muxing it
+        // into the video clip is the alternative 5.12.1a rules out: it would
+        // retain the full video window of room audio per shot for no diagnostic
+        // benefit, a privacy cost taken by accident.
+        if let microphone = declaration.sources.first(where: { $0.kind == "microphone" }) {
+            built.append(PpcpStreamRecord(
+                id: "str:audio:\(microphone.id)", sessionId: sessionId,
+                sourceId: microphone.id, kind: PpcpStreamKind.audio,
+                // ⚠ 6.1d — a microphone declares no `format`, so it has no
+                // `CaptureProfile` to activate and the Stream names the Source's
+                // own id in its place. `PpcpStreamRecord.profileId` is not
+                // optional in the library, and this is the honest filler: a
+                // profile id that names nothing would be worse.
+                profileId: microphone.profileIds.first ?? microphone.id,
+                timebaseId: microphone.timebaseId,
                 continuity: .shotWindowed, openedAtNs: openedAtNs))
         }
         if let imu = declaration.sources.first(where: { $0.kind == "imu" }),

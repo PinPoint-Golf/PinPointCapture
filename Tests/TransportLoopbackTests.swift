@@ -93,6 +93,12 @@ struct TransportLoopbackTests {
                 Re-run the §5.4.1 measurement and tell the protocol owner before \
                 changing anything.
                 """)
+        case .plaintext:
+            // ⛔ Unreachable on this path and asserted rather than defaulted.
+            // `NegotiatedSecurity.Version.plaintext` exists for D9's direct-path
+            // harness; a TLS-PSK loopback reporting it would mean 5.2f had been
+            // breached, which is the one outcome this suite must not pass over.
+            Issue.record("a rendezvous link reported no TLS — RV 5.2f")
         case .other(let code):
             Issue.record("negotiated an unexpected TLS version 0x\(String(code, radix: 16))")
         }

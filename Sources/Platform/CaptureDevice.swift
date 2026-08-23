@@ -77,6 +77,21 @@ public protocol CaptureDevice: AnyObject, Sendable {
     func ppcpDeclarationInput(peerId: String,
                               viewpoint: PpcpViewpoint?) throws -> PpcpDeclarationInput
 
+    /// `CORE` 8.4b — the retained window around an interval, as a Core value.
+    ///
+    /// ⚠ **Adding this to the port surface was a decision** (REQ-PORT-2). The
+    /// ring lives in `Sources/Platform/Capture/RingBufferRecorder.swift` and was
+    /// reachable only from that concrete class, so the one thing D5's pipeline
+    /// needs from the capture stack — "give me the frames around this `t0`" —
+    /// could not be asked for through the port. `ClipExtraction` is a Core type
+    /// in and a Core type out; an Android port replaces this method and nothing
+    /// else.
+    ///
+    /// ⛔ **`absent` is a result, not a failure** (I10, 8.4b). An implementation
+    /// that is not retaining answers `outside_buffer` and the Shot still exists.
+    /// It never invents frames and it never throws.
+    func extractClip(_ requestedNs: Range<Int64>) -> ClipExtraction
+
     /// `CORE` 7.3d — platform interruptions, reported as **completed** gaps.
     ///
     /// ⛔ The handler is called when an interruption *ends*, because the gap is

@@ -106,24 +106,47 @@ public actor PeerLinkPump {
     private let nowNs: @Sendable () -> Int64
 
     private var tasks: [Task<Void, Never>] = []
-    private var continuation: AsyncStream<PeerLinkEvent>.Continuation?
+    /// ⚠ **Unbounded, and deliberately.** A dropped event is a `session_open`
+    /// nobody acted on, which is F-L13-1 arriving one layer higher; the engine
+    /// now applies backpressure rather than dropping (L15) and this must not
+    /// undo that by dropping instead.
+    private var pending: [PeerLinkEvent] = []
     private var isFlushing = false
     private var flushAgain = false
     private var stopped = false
-
-    /// Everything that arrived, in arrival order.
-    public nonisolated let events: AsyncStream<PeerLinkEvent>
 
     public init(peer: DevicePeer, transport: any PeerTransport,
                 nowNs: @escaping @Sendable () -> Int64) {
         self.peer = peer
         self.transport = transport
         self.nowNs = nowNs
-        var held: AsyncStream<PeerLinkEvent>.Continuation?
-        // ⚠ `.unbounded`: a dropped event is a `session_open` nobody acted on,
-        // which is the failure F-L13-1 is about arriving one layer higher.
-        events = AsyncStream(bufferingPolicy: .unbounded) { held = $0 }
-        continuation = held
+    }
+
+    /// Everything that has arrived since the last call, in arrival order.
+    ///
+    /// ⚠ **A drained queue rather than an `AsyncStream`**, because the consumer
+    /// has to be able to call back into the peer between two events — answer an
+    /// `arm`, open a Stream on a `session_open` — and an iterator that cannot
+    /// cross an isolation boundary makes that awkward at exactly the point it
+    /// matters. Taking a batch and acting on it is the shape the caller wants.
+    public func takeEvents() -> [PeerLinkEvent] {
+        harvest()
+        let taken = pending
+        pending.removeAll(keepingCapacity: true)
+        return taken
+    }
+
+    /// Waits until an event is available or `seconds` elapse, then takes what
+    /// there is. ⛔ An empty result is normal: a counterpart that says nothing is
+    /// a scenario (`silent-host`), and a local deadline is the only thing that
+    /// fires in it.
+    public func takeEvents(waitingUpTo seconds: Double) async -> [PeerLinkEvent] {
+        let deadline = Date().addingTimeInterval(seconds)
+        while pending.isEmpty, stopped == false, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+            harvest()
+        }
+        return takeEvents()
     }
 
     /// What this link negotiated (`RV` 5.4k).
@@ -171,9 +194,7 @@ public actor PeerLinkPump {
         for task in tasks { task.cancel() }
         tasks.removeAll()
         await transport.close(reason)
-        continuation?.yield(.transportClosed(reason))
-        continuation?.finish()
-        continuation = nil
+        pending.append(.transportClosed(reason))
     }
 
     // MARK: The peer
@@ -236,7 +257,7 @@ public actor PeerLinkPump {
                 if consumed > 0 { residue.removeFirst(consumed) }
             } catch {
                 harvest()
-                continuation?.yield(.protocolError(code: "malformed"))
+                pending.append(.protocolError(code: "malformed"))
                 await stop(.protocolViolation("feed refused"))
                 return
             }
@@ -277,9 +298,11 @@ public actor PeerLinkPump {
 
     /// Moves the engine's events into the stream, translating the few this
     /// application acts on.
+    public var hasPendingEvents: Bool { pending.isEmpty == false }
+
     private func harvest() {
         while let event = peer.nextEvent({ kind, msg in Self.translate(kind, msg) }) {
-            continuation?.yield(event)
+            pending.append(event)
         }
     }
 

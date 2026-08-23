@@ -47,6 +47,25 @@ public final class AppModel {
     public var audioRetention: AudioRetention = .aroundImpactOnly
     public var captureContext: CaptureContext = .standalone
 
+    // MARK: The microphone-to-ball distance (D7)
+
+    /// `CORE` 8.1d — what every Candidate's raw instant is corrected by, and the
+    /// setting Mark asked for on 23 August 2026.
+    ///
+    /// ⚠ **It takes effect on the next arm, not on the open Session.** A Session
+    /// whose Candidates were corrected by two different distances would be a
+    /// record nobody can reason about: `tof_correction` travels per Candidate, so
+    /// the two would be individually honest and collectively incomparable. The
+    /// setting screen says so.
+    public var micToBallDistance: MicToBallDistance = MicToBallDistanceStore.load() {
+        didSet { MicToBallDistanceStore.save(micToBallDistance) }
+    }
+
+    /// Whether the user has ever chosen one. ⛔ A screen shows a default
+    /// differently from a choice — "1.5 m (assumed)" is not "1.5 m" — because a
+    /// default that reads as a measurement is A12's failure mode.
+    public var micToBallDistanceWasChosen: Bool { MicToBallDistanceStore.hasBeenSet() }
+
     public var hasCompletedOnboarding = false
 
     private let device: any CaptureDevice
@@ -63,6 +82,14 @@ public final class AppModel {
     public private(set) var recordingError: String?
 
     private let store: SessionStore
+
+    /// D5's microphone, feeding D5's detector. ⛔ Started on `arm` and stopped on
+    /// `disarm`: `REQ-PRIV-4` and 7.2 make a microphone that runs outside a
+    /// session a thing this application must not have.
+    private var microphone: MicrophoneOnsetSource?
+    /// The mint pump. 8.2i's deadline is a *local* deadline, so something has to
+    /// tick it even when nothing is heard.
+    private var mintTicker: Task<Void, Never>?
 
     public init(device: any CaptureDevice = CaptureDeviceFactory.create(),
                 store: SessionStore = SessionStore(
@@ -167,11 +194,14 @@ public final class AppModel {
         warmUp()
         guard captureStatus.state == .warm else { return }
         startRecording()
+        guard recording != nil else { return }
+        startDetecting()
         captureStatus.state = .armed
     }
 
     /// The local override of a host-controlled state (REQ-STATE-1).
     public func disarm() {
+        stopDetecting()
         stopRecording()
         device.goCold()
         captureStatus.state = .cold
@@ -186,7 +216,8 @@ public final class AppModel {
             let session = try HostlessRecordingSession(
                 store: store, device: device,
                 sessionId: "ses:\(UUID().uuidString.lowercased())",
-                videoProfileId: capability.bestMode?.id)
+                videoProfileId: capability.bestMode?.id,
+                micToBall: micToBallDistance)
             recording = session
             recordingError = nil
 
@@ -206,9 +237,89 @@ public final class AppModel {
         }
     }
 
+    // MARK: Detect (D5, composed here for the first time)
+
+    /// Starts the microphone and the mint pump.
+    ///
+    /// ⛔ **`DetectAndMint` had no caller before S4.** D5 built the detector, the
+    /// Candidate factory and the Mint engine with a full test suite, and nothing
+    /// in `Sources/` ever fed one a sample — so a shipping session recorded its
+    /// Streams and its `readiness` and never a Candidate. This is the wire.
+    private func startDetecting() {
+        guard permissions.microphone == .allowed else { return }
+        let source = MicrophoneOnsetSource(timebaseId: PpcpTimebases.captureId) {
+            [weak self] window in
+            // ⚠ Called on the **audio render thread**. Nothing here does more
+            // than hop: 7.4d makes capture the thing that must not degrade, and a
+            // Swift allocation on that thread is how a dropout gets caused
+            // somewhere else.
+            Task { @MainActor [weak self] in self?.observe(window) }
+        }
+        do {
+            try source.start()
+            microphone = source
+        } catch {
+            // ⛔ Surfaced. A session detecting nothing is a session whose swings
+            // are not being timed, and §9.2 makes that the one thing the UI must
+            // not be quiet about.
+            recordingError = String(describing: error)
+            return
+        }
+        mintTicker = Task { @MainActor [weak self] in
+            while Task.isCancelled == false, self?.recording != nil {
+                self?.pumpMint()
+                // 8.2i's deadline is a local one and fires whether or not a host
+                // answers, so the pump runs on its own clock rather than on the
+                // arrival of audio.
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    private func stopDetecting() {
+        mintTicker?.cancel()
+        mintTicker = nil
+        microphone?.stop()
+        microphone = nil
+    }
+
+    /// One window of audio, all the way to nomination.
+    ///
+    /// ⚠ `internal` rather than private so a test can inject a window: a
+    /// simulator has no microphone worth timing, and `CONF` §2a's *injected*
+    /// method is what that case is for.
+    func observe(_ window: AudioWindow) {
+        guard let recording else { return }
+        do {
+            let detections = try recording.observe(window)
+            candidateCount += detections.count
+        } catch {
+            recordingError = String(describing: error)
+        }
+    }
+
+    func pumpMint() {
+        guard let recording else { return }
+        do {
+            let minted = try recording.pumpMint(nowRefNs: MachClock.hostTimeNs)
+            guard minted.isEmpty == false else { return }
+            shotCount += minted.count
+        } catch {
+            recordingError = String(describing: error)
+        }
+    }
+
+    /// What the open Session has produced. ⚠ Counts rather than a shot list: the
+    /// records are the bundle's, and a second copy in a view model is a second
+    /// copy to disagree.
+    public private(set) var candidateCount = 0
+    public private(set) var shotCount = 0
+
     private func stopRecording() {
         guard let session = recording else { return }
         recording = nil
+        candidateCount = 0
+        shotCount = 0
         do {
             // ⛔ `partial`, asserted (I10). This session ended because a user
             // disarmed it, and nothing here knows whether every swing was caught.
@@ -235,7 +346,7 @@ public final class AppModel {
     /// (REQ-STATE-2), and "roughly" is the whole problem: this figure has not been
     /// through a rig. It is a peer's own estimate, which is what §5.15 asks for,
     /// and it must be replaced by a measurement before anyone reads it as one.
-    static let assumedSettleMs: UInt32 = 1_200
+    nonisolated static let assumedSettleMs: UInt32 = 1_200
 
     /// Exposed so the preview view can attach. It hands over the *device*, not the
     /// session — `AVCaptureSession` never becomes reachable from a view model.

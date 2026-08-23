@@ -102,6 +102,18 @@ public struct ClipExtraction: Sendable, Hashable {
         case absent(reason: String)
     }
 
+    /// ⛔ 8.4b / I10 — "an absent capture is a result, not a failure". The one
+    /// public way to build an extraction that found nothing, so a caller outside
+    /// this package cannot assemble a *present* one over no fragments.
+    public static func nothingRetained(
+        _ requestedNs: Range<Int64>,
+        reason: String = PpcpAbsentReason.outsideBuffer) -> ClipExtraction {
+        ClipExtraction(requestedNs: requestedNs, outcome: .absent(reason: reason),
+                       fragments: [], realisedNs: nil, holesNs: [],
+                       frameTimestampsNs: [], exposureNs: [], iso: [],
+                       droppedFrames: 0, byteCount: 0)
+    }
+
     /// What was asked for — `[t0 − pre, t0 + post)`.
     public var requestedNs: Range<Int64>
     public var outcome: Outcome
