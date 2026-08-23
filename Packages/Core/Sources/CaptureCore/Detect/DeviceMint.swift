@@ -48,10 +48,6 @@ public final class DeviceMint: @unchecked Sendable {
     private var observed: [String: PpcpCandidate] = [:]
     /// Shot ids in the order the engine asked for them. ⚠ **This is how the
     /// embedding learns what was minted**, and it is a workaround: see F-D5-1.
-    private var mintedIds: [String] = []
-    /// Shots already reported out of `pump`, so a second pump does not re-report
-    /// what is still sitting in the peer's outbound queue.
-    private var reported: Set<String> = []
 
     /// - Parameters:
     ///   - mintId: 8.3e — Shot ids are unique within the Session and SHOULD be
@@ -80,9 +76,7 @@ public final class DeviceMint: @unchecked Sendable {
             try check(ppcp_mint_new(storage, size, try peer.handleForLive(), { ctx, out in
                 guard let ctx, let out else { return PPCP_ERR_INVALID }
                 let mint = Unmanaged<DeviceMint>.fromOpaque(ctx).takeUnretainedValue()
-                let id = mint.mintId()
-                mint.mintedIds.append(id)
-                return ppcp_id_set_z(out, id)
+                return ppcp_id_set_z(out, mint.mintId())
             }, context, &handle))
             try check(ppcp_mint_set_promotion_policy(handle, { ctx, candidate in
                 guard let ctx, let candidate else { return false }
@@ -142,18 +136,37 @@ public final class DeviceMint: @unchecked Sendable {
     /// - Returns: the Shots minted by **this** call, so the caller can extract a
     ///   clip around each `t0`.
     ///
-    /// ⚠ **The return value is reconstructed by decoding the frames the engine
-    /// queued, and that is a workaround for a missing accessor** (F-D5-1): the
-    /// host side has `ppcp_arbiter_shot_at`, and Mint has only
-    /// `ppcp_mint_minted_count`. Decoding is done with `libppcp`'s own decoder
-    /// over the peer's own bytes — never with a parser of our own — and the peek
-    /// does not disturb the drain path.
+    /// ✅ **F-D5-1 closed** (`libppcp` `e52647e`). This used to reconstruct its
+    /// answer by decoding the frames the engine had queued — `libppcp`'s own
+    /// decoder over the peer's own bytes, through `drain_peek`, because Mint
+    /// reported only *how many* it had minted while the host side had
+    /// `ppcp_arbiter_shot_at`. `ppcp_mint_shot_at` is now the twin of that, so
+    /// the peek, the frame walk, the `reported` set and the `mintedIds` list are
+    /// all gone.
+    ///
+    /// ⚠ The window is `[countBefore, countBefore + minted)` — mint order, which
+    /// `shot.h` fixes — and the pointers are valid only until the next pump, so
+    /// each is copied out here.
     @discardableResult
     public func pump(nowRefNs: Int64) throws -> [PpcpShot] {
+        let handle = try handle()
+        let before = mintedCount
         var minted = 0
-        try check(ppcp_mint_pump(try handle(), nowRefNs, &minted))
+        try check(ppcp_mint_pump(handle, nowRefNs, &minted))
         guard minted > 0 else { return [] }
-        return try harvest()
+        return (before..<(before + minted)).compactMap { index in
+            ppcp_mint_shot_at(handle, index).map { PpcpShot($0.pointee) }
+        }
+    }
+
+    /// 8.2i / I32 — the Shot a Candidate of this peer's became, or `nil` where it
+    /// has not been minted: answered by a host, declined by the promotion policy,
+    /// or still inside its deadline. ⛔ Three different reasons and one answer,
+    /// which is why `retainedCount` exists beside it.
+    public func shot(forCandidate candidateId: String) throws -> PpcpShot? {
+        var id = ppcp_id()
+        try check(ppcp_id_set_z(&id, candidateId))
+        return ppcp_mint_shot_for(try handle(), &id).map { PpcpShot($0.pointee) }
     }
 
     /// Candidates held with no Shot referencing them — declined by policy,
@@ -164,48 +177,4 @@ public final class DeviceMint: @unchecked Sendable {
     public var pendingCount: Int { mint.map(ppcp_mint_pending_count) ?? 0 }
     public var mintedCount: Int { mint.map(ppcp_mint_minted_count) ?? 0 }
 
-    /// Reads back the `shot` frames the engine queued but the socket has not yet
-    /// taken. Frames whose Shot has already been reported are skipped.
-    private func harvest() throws -> [PpcpShot] {
-        let queued = try peer.drainPeek(.control)
-        guard queued.isEmpty == false else { return [] }
-        var shots: [PpcpShot] = []
-
-        queued.withUnsafeBytes { raw in
-            guard var cursor = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-            var remaining = raw.count
-            let messageBytes = MemoryLayout<ppcp_msg>.stride
-            let scratch = UnsafeMutableRawPointer.allocate(
-                byteCount: messageBytes, alignment: MemoryLayout<ppcp_msg>.alignment)
-            defer { scratch.deallocate() }
-
-            while remaining > 0 {
-                var header = ppcp_frame_header()
-                var payload: UnsafePointer<UInt8>?
-                var consumed = 0
-                guard ppcp_frame_read(cursor, remaining, &header, &payload,
-                                      &consumed) == PPCP_OK, let payload else { break }
-                scratch.initializeMemory(as: UInt8.self, repeating: 0, count: messageBytes)
-                let message = scratch.assumingMemoryBound(to: ppcp_msg.self)
-                let limits = ppcp_cbor_limits_for_channel(header.channel)
-                if ppcp_msg_decode(payload, Int(header.payload_len), limits, nil,
-                                   message) == PPCP_OK,
-                   message.pointee.type == PPCP_MT_SHOT {
-                    withUnsafeMutablePointer(to: &message.pointee.body) { body in
-                        body.withMemoryRebound(to: ppcp_body_shot.self, capacity: 1) { shot in
-                            let value = PpcpShot(shot.pointee.shot)
-                            if reported.contains(value.id) == false,
-                               mintedIds.contains(value.id) {
-                                reported.insert(value.id)
-                                shots.append(value)
-                            }
-                        }
-                    }
-                }
-                cursor += consumed
-                remaining -= consumed
-            }
-        }
-        return shots
-    }
 }

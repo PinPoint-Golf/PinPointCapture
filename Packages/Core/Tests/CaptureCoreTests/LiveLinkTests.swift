@@ -176,11 +176,23 @@ struct LiveLinkTests {
     // MARK: MSG 4.3 — session_resume
 
     /// 4.3a — a reconnecting peer sends `session_resume` and **not**
-    /// `session_open`. ⚠ F-D6-1: `libppcp` has no originator for it, so this is
+    /// `session_open`.
+    ///
+    /// ✅ F-D6-1 closed: `ppcp_peer_session_resume` exists, so this is no longer
     /// the one message assembled as a `ppcp_msg` by hand.
+    ///
+    /// ⛔ **The Session is opened first, and that is the clause rather than test
+    /// setup.** 4.3a is about a peer "reconnecting to a Session it was previously
+    /// joined to": there is no such thing as resuming a Session this peer never
+    /// held, and the resume now refuses one rather than inventing a
+    /// `timebase_ref` for it (5.1 — absence never means zero, applied to an
+    /// identifier).
     @Test("session_resume is queued as a session_resume, with its shots and pendings")
     func sessionResumeIsWellFormed() throws {
         let peer = try Self.peer()
+        try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
+                                               timebaseRef: Self.timebase))
+        _ = try peer.drain(.control)   // the `session_open` itself
         try peer.sendSessionResume(sessionId: Self.sessionId, peerId: Self.peerId,
                                    mintedShots: ["sht:a", "sht:b"],
                                    pendingCaptures: [
@@ -199,6 +211,19 @@ struct LiveLinkTests {
         #expect(decoded.mintedShots == ["sht:a", "sht:b"])
         #expect(decoded.pendingCount == 1)
         #expect(decoded.firstAckedIndex == 3)
+    }
+
+    /// 4.3a — a Session this peer never joined cannot be resumed. ⛔ The refusal
+    /// is the point: the alternative is a `session_resume` carrying a
+    /// `timebase_ref` nobody set, which is the silent zero I16 and 5.1 exist to
+    /// prevent.
+    @Test("A Session that was never opened cannot be resumed")
+    func resumeWithoutASessionIsRefused() throws {
+        let peer = try Self.peer()
+        #expect(throws: PpcpLibraryError.self) {
+            try peer.sendSessionResume(sessionId: Self.sessionId, peerId: Self.peerId,
+                                       mintedShots: [], pendingCaptures: [])
+        }
     }
 
     // MARK: CORE 8.3g — an unreachable host is not no host

@@ -715,30 +715,28 @@ recorded because the replay path of `MSG` 9.1 is the case where it would be.
 
 ### Raised from D-compose, D7 and D9
 
-**F-D9-1 — `RV` 2c forbids the transport `CONF` §2c's own test infrastructure
-requires.**
-2c is a MUST: "Whichever path is used, the resulting connection completes the
-handshake of §5 before any PPCP message crosses it. There is no unauthenticated
-path." 9a is equally clear the other way: "Implementing `PPCP-RV` is OPTIONAL. A
-peer connecting only over a tunnel, or handed an established socket, is fully
-PPCP-conformant with no rendezvous implementation." `CONF` 2c requires a software
-peer simulator both sides develop against, and `libppcp`'s `ppcp-sim` speaks
-**plaintext TCP** deliberately — its own README says "a simulator that spoke TLS
-would be testing OpenSSL rather than PPCP".
+**F-D9-1 — ✅ closed by erratum E4, 23 August 2026** (`libppcp` `484ddb9`).
 
-So an implementation that *claims* `PPCP-RV` conformance — which this one does,
-and which 9b then binds to §5 and §7 in full — has no conformant way to reach the
-simulator the conformance document requires it to develop against. The two clauses
-are individually right and jointly unsatisfiable for the case the suite is built
-around.
+The finding was that `RV` 2c ("there is no unauthenticated path") and 9a ("a peer
+handed an established socket is fully PPCP-conformant") are jointly unsatisfiable
+for a peer that both claims RV and is testable, because `CONF` §2c's **required**
+test infrastructure speaks plaintext deliberately.
 
-⛔ **Not worked around: fenced.** `PpcpDirectTransport` and `ConformanceHarness`
-are `#if DEBUG` in their entirety and a release build contains neither; the
-rendezvous path still has no plaintext branch by construction (5.2f). The claim
-this implementation makes is that its **RV paths** meet 2c, and that its debug
-harness is 9a's case rather than an RV path. **Suggested:** one sentence in §2
-saying that the `direct` path is outside 2c's scope where no rendezvous is
-claimed on it, or in §9 saying a conformance harness is not a deployment.
+`RV` 2c1 scopes 2c to the connections that document establishes — the three paths
+of §2 — and states three conditions on a peer claiming RV that uses a
+handed-in connection. This implementation meets each **structurally**, not by
+care:
+
+| 2c1 requires | Held by |
+|---|---|
+| no pairing-code key material, no persisted `PRK`, no `PRK`-derived key and no resolvable identifier crosses it (§7.7) | `PpcpDirectConnector` **has no credentials parameter**. It deliberately does not conform to `PeerTransportConnector`, whose `connect` takes `any PpcpCredentials` — an overload that accepted them and ignored them would meet the letter and invite the breach. |
+| the peer does not present it to the user as a paired connection | It is reachable only from `DebugScreenGallery` (`-ppcpScreen D9`), and the screen says "Plaintext loopback — debug builds only" on its face. No rendezvous flow, no host chip and no saved pairing reaches it. |
+| a shipping configuration does not offer one — a harness path is a build-time facility, not a runtime setting | `PpcpDirectTransport.swift`, `ConformanceHarness.swift` and `ConformanceHarnessView.swift` are `#if DEBUG` **in their entirety**. There is no flag, no default and no entitlement that turns it on; a release build does not contain the code. |
+
+⚠ Worth recording that the erratum went further than the report asked. The
+suggestion was one sentence scoping 2c; what landed also **enumerates what a
+harness connection may not carry**, which is the half that keeps the relaxation
+from becoming a plaintext fallback by degrees.
 
 **F-D7-1 — `RV` 4.4a1's first reason for distrusting the clock is not readable on
 iOS.**

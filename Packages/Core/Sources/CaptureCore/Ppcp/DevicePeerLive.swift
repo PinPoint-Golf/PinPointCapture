@@ -141,6 +141,62 @@ public extension DevicePeer {
                                          t1, t2, t3, t4))
     }
 
+    /// Erratum E2 — a probe **aimed at a named responder clock**.
+    ///
+    /// ⚠ `sync_probe.timebase_id` names the responder's clock, and a responder
+    /// that declares it answers on it. Sequences are keyed on the **pair**, so a
+    /// local clock probing two remote ones is two sequences, two estimators and
+    /// two directly-declared relations — I21 and 5.4.1a, with nothing composed
+    /// (I18). ⛔ The single-remote `addSyncTimebase` remains correct for this
+    /// device, which has one clock and meets hosts that have one.
+    func addSyncTarget(_ localTimebaseId: String, remote remoteTimebaseId: String) throws {
+        try check(ppcp_peer_sync_add_target(try handleForLive(), localTimebaseId,
+                                            remoteTimebaseId))
+    }
+
+    func syncProbe(_ localTimebaseId: String, to remoteTimebaseId: String) throws {
+        try check(ppcp_peer_sync_probe_to(try handleForLive(), localTimebaseId,
+                                          remoteTimebaseId))
+    }
+
+    func syncObserve(_ localTimebaseId: String, to remoteTimebaseId: String,
+                     t1: Int64, t2: Int64, t3: Int64, t4: Int64) throws {
+        try check(ppcp_peer_sync_observe_to(try handleForLive(), localTimebaseId,
+                                            remoteTimebaseId, t1, t2, t3, t4))
+    }
+
+    /// ✅ **F-D6-2 closed** (`libppcp` `e52647e`) — 6.1c on the **responder**
+    /// side.
+    ///
+    /// The prober has always had `ppcp_peer_sync_observe`; the responder had
+    /// nothing, so the engine read its clock while *decoding* the probe — later
+    /// than reception by however long the bytes sat in a buffer — and again while
+    /// building the reply, earlier than transmission. The residence time this
+    /// device could have removed was folded into the measurement instead.
+    ///
+    /// ⚠ **Call this immediately before the `feed` carrying the probe.** The
+    /// stamps apply to the next probe answered and are then forgotten, so a call
+    /// that turns out to carry no probe costs nothing — which is what makes it
+    /// safe to stamp every socket read.
+    func syncReplyStamps(t2Ns: Int64, t3Ns: Int64) throws {
+        try check(ppcp_peer_sync_reply_stamps(try handleForLive(), t2Ns, t3Ns))
+    }
+
+    /// 6.1c's escape, **made expressible**: a responder that cannot distinguish
+    /// reception from transmission sets `t3 == t2` and *by doing so declares* that
+    /// residence time is included rather than removed.
+    ///
+    /// ⛔ A **setting**, not two clock reads that happened to agree — that is the
+    /// distinction the finding was about, and it is why this is a property of the
+    /// implementation rather than a value passed per probe.
+    func setZeroResidence(_ on: Bool) throws {
+        try check(ppcp_peer_sync_set_zero_residence(try handleForLive(), on))
+    }
+
+    var zeroResidence: Bool {
+        peerHandle.map(ppcp_peer_sync_zero_residence) ?? false
+    }
+
     /// 6.3c — a burst of 10–20 exchanges on connect, after a network change, and
     /// after a thermal event. A thermal event restarts the estimator's window as
     /// well: oscillator frequency shifts with temperature, so the **fit** is stale

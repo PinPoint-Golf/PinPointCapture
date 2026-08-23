@@ -167,19 +167,19 @@ final class PpcpDirectChannel: ByteChannel, @unchecked Sendable {
 /// and the counterpart — `ppcp-sim` — refuses a first frame that is not one. That
 /// is the point: the harness exercises the same bind the TLS path does, over a
 /// transport a simulator can speak.
-struct PpcpDirectConnector: PeerTransportConnector {
+struct PpcpDirectConnector {
 
     private let queue = DispatchQueue(label: "org.pinpointstudio.capture.ppcp.direct")
 
-    /// ⛔ `credentials` is ignored, and the parameter stays because the protocol
-    /// is the port surface. Passing a key to a plaintext dial and having it used
-    /// would be worse than passing one and having it visibly not be.
-    func connect(to endpoint: PeerEndpoint,
-                 credentials: any PpcpCredentials,
-                 channels: [PpcpChannel] = PpcpChannel.required) async throws
-        -> any PeerTransport {
-        try await connect(to: endpoint, channels: channels)
-    }
+    // ⛔ **It deliberately does NOT conform to `PeerTransportConnector`.** That
+    // protocol's `connect` takes `any PpcpCredentials`, and `RV` 2c1's first
+    // condition is that no pairing-code key material, no persisted `PRK`, no
+    // `PRK`-derived key and no resolvable identifier ever crosses a harness
+    // connection. An overload that accepted credentials and quietly ignored them
+    // would meet the letter of that and invite the breach; having no parameter to
+    // pass them through is the structural form. The earlier version conformed and
+    // documented the ignoring in a comment, which is exactly the "held by care"
+    // shape this file argues against elsewhere.
 
     func connect(to endpoint: PeerEndpoint,
                  channels: [PpcpChannel] = PpcpChannel.required) async throws

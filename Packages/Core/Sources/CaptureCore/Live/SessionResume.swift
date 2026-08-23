@@ -52,6 +52,19 @@ public extension DevicePeer {
 
     /// `MSG` 4.3 — `session_resume`.
     ///
+    /// ✅ **F-D6-1 closed** (`libppcp` `e52647e`). This was the **one** message in
+    /// this application assembled as a raw `ppcp_msg`, for a clause `MSG` 4.3a
+    /// makes a MUST — and `ppcp_body_session_resume` is one of the large arms
+    /// (64 Shot ids, 64 pending Captures), which is exactly the Swift hazard
+    /// F-D3-1 is about. `ppcp_peer_session_resume` is the originator that was
+    /// missing, so the union access, the 48 KB heap allocation and the two
+    /// `withMemoryRebound` walks are all gone.
+    ///
+    /// ⚠ **The engine arms 4.3b's burst itself.** `peer.h`: a synchronisation
+    /// burst runs *before* any queued payload resumes, because the relation
+    /// drifted while the link was down — about 1.2 ms per minute at 20 ppm. The
+    /// embedding still has to pump, which `HostLinkDriver.resume` does.
+    ///
     /// - Parameter mintedShots: 8.3f — the Shots minted while the link was down.
     ///   ⛔ Their ids as minted: 4.3c forbids renumbering them, and their
     ///   `authority` stays `device` whatever the host does next.
@@ -64,57 +77,52 @@ public extension DevicePeer {
               pendingCaptures.count <= Int(PPCP_MAX_PENDING) else {
             throw PpcpLibraryError(PPCP_ERR_LIMIT)
         }
+        let peer = try handleForLive()
 
-        let byteCount = MemoryLayout<ppcp_msg>.stride
-        let raw = UnsafeMutableRawPointer.allocate(
-            byteCount: byteCount, alignment: MemoryLayout<ppcp_msg>.alignment)
-        raw.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
-        defer { raw.deallocate() }
-        let message = raw.assumingMemoryBound(to: ppcp_msg.self)
-
-        // ⚠ `1` is a placeholder: `ppcp_peer_send` assigns the real `msg_id` from
-        // the peer's own sequence (`ENC` 5c), and `ppcp_envelope_init` refuses a
-        // zero outright.
-        try check(ppcp_msg_init(message, PPCP_MT_SESSION_RESUME, 1))
-
-        try withUnsafeMutablePointer(to: &message.pointee.body) { body in
-            try body.withMemoryRebound(to: ppcp_body_session_resume.self,
-                                       capacity: 1) { resume in
-                try check(ppcp_id_set_z(&resume.pointee.session_id, sessionId))
-                try check(ppcp_id_set_z(&resume.pointee.peer_id, peerId))
-
-                resume.pointee.minted_shot_count = mintedShots.count
-                withUnsafeMutablePointer(to: &resume.pointee.minted_shots) { tuple in
-                    tuple.withMemoryRebound(to: ppcp_id.self,
-                                            capacity: Int(PPCP_MAX_MINTED_SHOTS)) { out in
-                        for (index, id) in mintedShots.enumerated() {
-                            _ = ppcp_id_set_z(out + index, id)
-                        }
-                    }
-                }
-
-                resume.pointee.pending_count = pendingCaptures.count
-                withUnsafeMutablePointer(to: &resume.pointee.pending) { tuple in
-                    tuple.withMemoryRebound(to: ppcp_pending_capture.self,
-                                            capacity: Int(PPCP_MAX_PENDING)) { out in
-                        for (index, pending) in pendingCaptures.enumerated() {
-                            let slot = out + index
-                            _ = ppcp_id_set_z(&slot.pointee.capture_id, pending.captureId)
-                            var bytes = [UInt8](pending.digest)
-                            if bytes.count == Int(PPCP_SHA256_BYTES) {
-                                _ = ppcp_digest_set(&slot.pointee.digest, &bytes)
-                            }
-                            slot.pointee.bytes = pending.bytes
-                            if let acked = pending.ackedIndex {
-                                slot.pointee.has_acked_index = true
-                                slot.pointee.acked_index = acked
-                            }
-                        }
-                    }
-                }
+        // ⛔ **The Session resumed is the one this peer holds, arbitration
+        // parameters included.** I16 makes them immutable and 5.10e makes them
+        // structural, so rebuilding a *hostless* Session for a resume would
+        // silently drop the two parameters the host set — and 4.3a's whole point
+        // is that the Session did not end.
+        var session = ppcp_session()
+        if let held = sessionParameters, held.hasArbitration {
+            try check(ppcp_session_make_hosted(&session, sessionId, held.timebaseRefId,
+                                               held.coincidenceWindowNs,
+                                               held.issueHoldNs))
+        } else {
+            // ⚠ `CaptureCore` declares no timebase of its own — the ids are the
+            // embedding's (`Sources/Platform/PpcpTimebases.swift`). A resume with
+            // no Session to read one from can only happen for a Session nobody
+            // opened, so it is refused rather than given an invented name: 5.1's
+            // "absence never means zero" applied to an identifier.
+            guard let reference = sessionParameters?.timebaseRefId else {
+                throw PpcpLibraryError(PPCP_ERR_NOT_FOUND)
             }
+            try check(ppcp_session_make_hostless(&session, sessionId, reference))
         }
 
-        try send(message, on: channel)
+        let shotIds = try DevicePeer.ids(mintedShots)
+        var pending = pendingCaptures.map { entry -> ppcp_pending_capture in
+            var slot = ppcp_pending_capture()
+            _ = ppcp_id_set_z(&slot.capture_id, entry.captureId)
+            var digest = [UInt8](entry.digest)
+            if digest.count == Int(PPCP_SHA256_BYTES) {
+                _ = ppcp_digest_set(&slot.digest, &digest)
+            }
+            slot.bytes = entry.bytes
+            if let acked = entry.ackedIndex {
+                slot.has_acked_index = true
+                slot.acked_index = acked
+            }
+            return slot
+        }
+
+        try shotIds.withUnsafeBufferPointer { shots in
+            try pending.withUnsafeMutableBufferPointer { captures in
+                try check(ppcp_peer_session_resume(peer, &session,
+                                                   shots.baseAddress, shots.count,
+                                                   captures.baseAddress, captures.count))
+            }
+        }
     }
 }

@@ -234,8 +234,11 @@ public actor PeerLinkPump {
         var residue = Data()
         while stopped == false, Task.isCancelled == false {
             let arrived: Data?
+            let arrivedAtNs: Int64
             do {
                 arrived = try await channel.receive()
+                // `t2` — the first instant this application can observe.
+                arrivedAtNs = nowNs()
             } catch is CancellationError {
                 return
             } catch {
@@ -248,6 +251,21 @@ public actor PeerLinkPump {
                 return
             }
             residue.append(arrived)
+            // ⛔ **6.1c on the responder side, and this is the earliest point it
+            // can be done** (F-D6-2, closed by `libppcp` `e52647e`). `t2` is "as
+            // close to reception as the implementation allows": on
+            // `Network.framework` that is the receive completion handler, which
+            // is where `arrivedAtNs` was read — everything before it is the
+            // kernel's and unreachable. `t3` is read here, immediately before the
+            // engine builds the reply, so the interval between them is the real
+            // residence rather than an unmeasured one folded into the estimate.
+            //
+            // ⚠ Stamped on **every** read: the stamps apply to the next probe
+            // answered and are forgotten otherwise, so a read carrying no probe
+            // costs nothing. Deciding whether this buffer holds one would mean
+            // parsing it here, which is the framing re-implementation the library
+            // exists to prevent.
+            try? peer.syncReplyStamps(t2Ns: arrivedAtNs, t3Ns: nowNs())
             do {
                 // ⚠ `feed` returns what it consumed and leaves a trailing partial
                 // frame behind: TCP splits wherever it likes, and a caller that
