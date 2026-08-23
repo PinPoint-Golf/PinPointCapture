@@ -224,7 +224,13 @@ public final class SessionBundleWriter: @unchecked Sendable {
         do {
             try check(ppcp_bundle_writer_new(storage, size, &handle))
         } catch {
-            storage.deallocate()
+            // ⛔ **Nothing is deallocated here, and that is the fix for a double
+            // free.** A class initialiser that throws AFTER every stored property
+            // has a value still runs `deinit` — so a `catch` that released the
+            // storage and a `deinit` that released it again freed the same pointer
+            // twice, which libmalloc aborts on. Found by SIGABRT in the one test
+            // that exercises a refused construction (`libppcp` refuses a Mint
+            // engine on a peer that has not declared Mint, 8.3d).
             throw error
         }
         writer = handle
@@ -554,8 +560,13 @@ public final class SessionBundleReader: @unchecked Sendable {
         do {
             try check(sink.withPeerHandle { ppcp_bundle_reader_new(storage, size, $0, &handle) })
         } catch {
-            storage.deallocate()
-            seenIndex.deallocate()
+            // ⛔ **Nothing is deallocated here, and that is the fix for a double
+            // free.** A class initialiser that throws AFTER every stored property
+            // has a value still runs `deinit` — so a `catch` that released the
+            // storage and a `deinit` that released it again freed the same pointer
+            // twice, which libmalloc aborts on. Found by SIGABRT in the one test
+            // that exercises a refused construction (`libppcp` refuses a Mint
+            // engine on a peer that has not declared Mint, 8.3d).
             throw error
         }
         reader = handle

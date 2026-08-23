@@ -128,16 +128,29 @@ struct MarkupTests {
             try good.validatePlacement(in: Self.videoStream, timebaseRef: Self.timebaseRef)
         }
 
-        // A `line` with no `stream_id` is a breach of 5.18j, and the library says
-        // so — ⚠ against a real Stream, because the rule needs one and asserting it
-        // without one would assert nothing.
-        let stray = try PpcpAnnotation(
-            id: "ann:stray", sessionId: Self.sessionId, shotId: Self.shotId,
-            timebaseId: Self.timebaseRef, atNs: 1, authorPeerId: "peer:device",
-            provenance: .user, kind: .line, format: "application/json",
-            body: Data("{}".utf8), createdAtTimebaseId: Self.timebaseRef, createdAtNs: 1)
+        // ⛔ A `line` with no `stream_id` is refused by `ppcp_annotation_validate`
+        // at CONSTRUCTION, which is stronger than 5.18j needs and is the right
+        // place for it: the shape never exists, so it cannot be stored, encoded or
+        // sent. A test that only checked the placement validator would have passed
+        // against an implementation that let the malformed value be built.
         #expect(throws: PpcpLibraryError.self) {
-            try stray.validatePlacement(in: nil, timebaseRef: Self.timebaseRef)
+            _ = try PpcpAnnotation(
+                id: "ann:stray", sessionId: Self.sessionId, shotId: Self.shotId,
+                timebaseId: Self.timebaseRef, atNs: 1, authorPeerId: "peer:device",
+                provenance: .user, kind: .line, format: "application/json",
+                body: Data("{}".utf8), createdAtTimebaseId: Self.timebaseRef,
+                createdAtNs: 1)
+        }
+
+        // And the mirror image: a `nav_anchor` carrying a `stream_id` is equally
+        // refused — 5.18j is an "if and only if".
+        #expect(throws: PpcpLibraryError.self) {
+            _ = try PpcpAnnotation(
+                id: "ann:anchored", sessionId: Self.sessionId, shotId: Self.shotId,
+                streamId: Self.videoStream.id, timebaseId: Self.timebase, atNs: 1,
+                authorPeerId: "peer:device", provenance: .deviceAdvisory,
+                kind: .navAnchor, format: "text/plain", body: Data("impact".utf8),
+                createdAtTimebaseId: Self.timebase, createdAtNs: 1)
         }
     }
 

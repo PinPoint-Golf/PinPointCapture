@@ -205,15 +205,58 @@ struct LiveLinkTests {
 
     /// I16 / 8.3g — `timebase_ref`, `coincidence_window_ns` and `issue_hold_ns` are
     /// **unchanged** when the link goes; what changes is that no arbitration
-    /// occurs. ⚠ Asserted before a Session exists at all, which is the other entry
-    /// condition: a hostless Session has no host in its roster.
-    @Test("A peer with no Session at all is already in the zero-host regime")
-    func zeroHostBeforeAnySession() throws {
+    /// occurs.
+    ///
+    /// ⚠ **The regime is a property of a Session, not of a peer**, and the library
+    /// is right to say so: with no `session_open` at all `ppcp_peer_zero_host` is
+    /// `false`, because there is nothing to mint into and 8.3a's two entry
+    /// conditions are both about a Session — one with no host in its roster, and
+    /// one whose host has stopped answering. This test asserts that reading
+    /// deliberately, because the tempting one ("no session, therefore no host,
+    /// therefore mint") is how a peer ends up minting before it has joined.
+    @Test("The zero-host regime is a property of a Session, not of a peer")
+    func zeroHostNeedsASession() throws {
         let peer = try Self.peer()
-        #expect(peer.isZeroHost)
         #expect(peer.sessionParameters == nil)
+        #expect(peer.isZeroHost == false)
         #expect(peer.isLinkLost == false)
         #expect(peer.missedHeartbeats == 0)
+
+        // ⛔ **F-D6-3 reproduced.** A hostless `session_open` this peer
+        // ORIGINATES leaves the engine with no Session at all: `has_session` and
+        // `has_session_params` are set only on the receive path, so
+        // `ppcp_peer_session_id`, `ppcp_peer_timebase_ref`,
+        // `ppcp_peer_session_params` and `ppcp_peer_zero_host` all still say
+        // "none". `CORE` 4.1b is exactly this case — the frame a capture peer
+        // records in its own bundle — and it is the entry-level product's normal
+        // mode, so 8.3g's first entry condition is unreachable for the peer that
+        // is in it.
+        try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
+                                               timebaseRef: Self.timebase))
+        #expect(peer.sessionParameters == nil,
+                "F-D6-3 — remove this expectation when libppcp adopts an originated session")
+        #expect(peer.isZeroHost == false, "F-D6-3")
+    }
+
+    /// **F-D6-3, and what saves it from being fatal.** `ppcp_mint_pump` reads
+    /// `ppcp_peer_timebase_ref` and `ppcp_peer_session_id`, which the originator
+    /// *does* set — so minting works. What it does not set is
+    /// `has_session_params`, so `ppcp_peer_zero_host()` is **false** for the very
+    /// Session 8.3a's first entry condition describes, and the hostless branch is
+    /// taken only because `issue_hold_ns` and the heartbeat margin both default to
+    /// zero when there are no parameters to read.
+    ///
+    /// ⚠ That is a coincidence, not a design: a Session with `has_arbitration`
+    /// false but a heartbeat interval declared would take the *hosted* branch and
+    /// hold every Candidate for a deadline no host will ever answer.
+    @Test("F-D6-3 — a self-opened hostless Session mints, but zero_host says otherwise")
+    func hostlessMintWorksForTheWrongReason() throws {
+        let peer = try Self.peer()
+        try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
+                                               timebaseRef: Self.timebase))
+        let mint = try DeviceMint(peer: peer, promotion: { _ in true })
+        #expect(throws: Never.self) { _ = try mint.pump(nowRefNs: 10_000_000_000) }
+        #expect(peer.isZeroHost == false, "F-D6-3 — 8.3g's predicate is false here")
     }
 
     // MARK: CT-I21 / 6.1d — one estimator per timebase, and no composition

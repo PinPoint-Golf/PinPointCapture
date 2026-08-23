@@ -254,7 +254,13 @@ public final class PpcpDeclaration: @unchecked Sendable {
     private let sourceStorage: UnsafeMutableBufferPointer<ppcp_source>
     private let descStorage: UnsafeMutablePointer<ppcp_peer_desc>
 
-    public let sources: [SourceView]
+    /// ⚠ **`var` with a default, not `let`, and the reason is memory safety
+    /// rather than mutability.** A class initialiser that throws runs `deinit`
+    /// only once every stored property has a value; with a `let` assigned
+    /// half-way through, whether the storage was released once or twice depended
+    /// on *where* the throw happened. Giving it a value up front makes `deinit`
+    /// the single owner, which is what let the `catch` below stop releasing.
+    public private(set) var sources: [SourceView] = []
 
     public init(_ input: PpcpDeclarationInput) throws {
         // ── Sources, planned before anything is allocated ─────────────────────
@@ -354,8 +360,10 @@ public final class PpcpDeclaration: @unchecked Sendable {
             // CT-I4 tests for.
             try check(ppcp_peer_desc_validate(descStorage))
         } catch {
-            Self.release(timebaseStorage, profileIdStorage, captureProfileStorage,
-                         sourceStorage, descStorage)
+            // ⛔ Nothing is released here: `deinit` owns the storage, and a
+            // `catch` that released it too freed the same pointers twice for any
+            // throw that happened after the last stored property was set. See the
+            // note on `sources`.
             throw error
         }
     }
