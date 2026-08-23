@@ -106,8 +106,14 @@ public final class DetectAndMint: @unchecked Sendable {
     /// 5.8d / I17 — mandatory on a camera Capture that has frames, because the
     /// canonical-instant conversion is impossible without it.
     private let videoExposure: @Sendable (ClipExtraction) -> ExposureObservation
-
-    private var payloads: [String: @Sendable () throws -> Data] = [:]
+    /// Where a minted Shot's clip bytes come from.
+    ///
+    /// ⚠ **A provider keyed on the extraction, not on the Capture id.** The id is
+    /// minted inside `pump`, so a caller could never have registered bytes against
+    /// it beforehand; and the bytes are fetched only when the payload is written,
+    /// because at 1080p150 a session's clips are a gigabyte and `ENC` 7c holds
+    /// them until after the manifest.
+    private let videoPayload: @Sendable (ClipExtraction) -> (@Sendable () throws -> Data)?
 
     public init(peer: DevicePeer,
                 sink: DetectionSink,
@@ -120,7 +126,9 @@ public final class DetectAndMint: @unchecked Sendable {
                     = { UUID().uuidString.lowercased() },
                 extractAudio: @escaping @Sendable (Range<Int64>) -> ClipExtraction,
                 extractVideo: @escaping @Sendable (Range<Int64>) -> ClipExtraction,
-                videoExposure: @escaping @Sendable (ClipExtraction) -> ExposureObservation) {
+                videoExposure: @escaping @Sendable (ClipExtraction) -> ExposureObservation,
+                videoPayload: @escaping @Sendable (ClipExtraction)
+                    -> (@Sendable () throws -> Data)? = { _ in nil }) {
         self.peer = peer
         self.sink = sink
         self.mint = mint
@@ -132,6 +140,7 @@ public final class DetectAndMint: @unchecked Sendable {
         self.extractAudio = extractAudio
         self.extractVideo = extractVideo
         self.videoExposure = videoExposure
+        self.videoPayload = videoPayload
     }
 
     /// One window of microphone audio, all the way to nomination.
@@ -197,7 +206,7 @@ public final class DetectAndMint: @unchecked Sendable {
             // still exists — a Shot with no Capture is a legitimate record.
             let isAbsent = assembly.record.completeness == PpcpCaptureRecord.Completeness.absent
             let clip: CaptureSessionRecorder.ClipProvider? = isAbsent
-                ? nil : payloads[captureId]
+                ? nil : videoPayload(extraction)
             try sink.announce(assembly, clip: clip)
             try shot.add(captureId: captureId)
             try sink.record(shot: shot)
@@ -206,13 +215,6 @@ public final class DetectAndMint: @unchecked Sendable {
         return minted
     }
 
-    /// Registers where a clip's bytes come from, keyed by the Capture id the next
-    /// `pump` will mint. ⚠ Kept as a provider rather than as bytes: at 1080p150 a
-    /// session's clips are a gigabyte.
-    public func provideClip(captureId: String,
-                            _ provider: @escaping @Sendable () throws -> Data) {
-        payloads[captureId] = provider
-    }
 }
 
 // MARK: - The promotion policy this application ships
