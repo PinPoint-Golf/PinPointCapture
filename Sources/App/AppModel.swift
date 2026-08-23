@@ -41,6 +41,11 @@ public final class AppModel {
     /// wrong. Found by the D4 test that asserts arming is not a claim.
     public var captureStatus: CaptureStatus = CaptureStatus(state: .cold)
 
+    /// The live link, when one is up. ⛔ Owned here rather than by `RootView`:
+    /// a link that dies with a view hierarchy is a link that dies on a screen
+    /// rotation.
+    public private(set) var link: HostLinkSession?
+
     /// ⛔ **`none`, and it stays `none` until a host link exists.** It used to be
     /// assigned `PreviewFixtures.connected` the moment anyone tapped the
     /// discovered host on B1 — an app that reported a paired Studio, a measured
@@ -309,6 +314,68 @@ public final class AppModel {
             recordingError = String(describing: error)
         }
     }
+
+    // MARK: The host link (E3.1)
+
+    /// Composes a peer and a pump over a transport the rendezvous walk
+    /// established, and drives `MSG` 3.1/3.3's handshake.
+    ///
+    /// ⚠ **Takes a transport rather than dialling one.** The rendezvous owns
+    /// dialling (`RV` §4's order is normative and lives there); this owns what
+    /// happens *after* a socket exists. It is also the seam a test uses to hand
+    /// in a pipe instead of a network.
+    public func connect(transport: any PeerTransport,
+                        sessionId: String,
+                        hostDisplayName: String?,
+                        declaration: PpcpDeclaration? = nil) async {
+        await disconnect()
+        do {
+            let session = try HostLinkSession(transport: transport,
+                                              sessionId: sessionId,
+                                              hostDisplayName: hostDisplayName,
+                                              device: device,
+                                              declaration: declaration)
+            link = session
+            hostLink = session.hostLink
+            await session.open()
+            hostLink = session.hostLink
+            if case .failed(let message) = session.phase {
+                hostLinkError = message
+            }
+        } catch {
+            hostLinkError = String(describing: error)
+            hostLink = HostLink(state: .lost)
+        }
+    }
+
+    /// ⚠ Idempotent, and safe to call when nothing is up.
+    public func disconnect(_ reason: ChannelCloseReason = .normal) async {
+        guard let link else { return }
+        await link.close(reason)
+        self.link = nil
+        hostLink = HostLink(state: .none)
+        hostLinkError = nil
+    }
+
+    /// ⛔ **Backgrounding drops the socket, so say so.** iOS suspends the
+    /// connection and a link that claimed to be up on return would be exactly the
+    /// dishonesty these screens were just cleared of. Reconnection is E3.5.
+    public func linkDidEnterBackground() async {
+        guard link != nil else { return }
+        await disconnect(.cancelled)
+        hostLink = HostLink(state: .lost)
+    }
+
+    /// Refreshes the observable link state from the session. ⚠ Called on the
+    /// event loop's cadence; `HostLinkSession` is `@Observable` and the app-wide
+    /// `HostLink` is a projection of it.
+    public func refreshHostLink() {
+        guard let link else { return }
+        hostLink = link.hostLink
+    }
+
+    /// A handshake that failed, surfaced rather than swallowed.
+    public private(set) var hostLinkError: String?
 
     // MARK: The session library (C3)
 

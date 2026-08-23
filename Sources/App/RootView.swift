@@ -40,6 +40,8 @@ enum AppSheet: Identifiable {
     case reconcileSession
     /// A8, presented from onboarding — which cannot push an `AppRoute`.
     case micToBallDistance
+    /// B2 — the handshake, while it is happening.
+    case pairing
 
     var id: String {
         switch self {
@@ -50,12 +52,16 @@ enum AppSheet: Identifiable {
         case .localNetworkBlocked: "localNetworkBlocked"
         case .reconcileSession: "reconcileSession"
         case .micToBallDistance: "micToBallDistance"
+        case .pairing: "pairing"
         }
     }
 }
 
 struct RootView: View {
     @State private var model = AppModel()
+    /// ⛔ Backgrounding suspends the socket. E3.5 owns reconnecting; this level
+    /// owns not lying about it in the meantime.
+    @Environment(\.scenePhase) private var scenePhase
     @State private var path: [AppRoute] = []
     @State private var sheet: AppSheet?
     /// 7.4b — persistence is opt-in, so the toggle starts **off**.
@@ -104,6 +110,10 @@ struct RootView: View {
                                         placeholderLabel: caption))
         })
         .preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .background else { return }
+            Task { await model.linkDidEnterBackground() }
+        }
     }
 
     private var onboarding: some View {
@@ -281,6 +291,22 @@ struct RootView: View {
                 )
             }
 
+        case .pairing:
+            NavigationStack {
+                PairingView(
+                    link: model.hostLink,
+                    securitySummary: model.link?.securitySummary,
+                    agreedMode: model.activeMode,
+                    viewpoint: model.framing.viewpoint,
+                    isCameraLocked: model.captureStatus.state != .cold,
+                    failure: model.hostLinkError,
+                    onCancel: {
+                        self.sheet = nil
+                        Task { await model.disconnect(.cancelled) }
+                    })
+            }
+            .interactiveDismissDisabled()
+
         case .micToBallDistance:
             NavigationStack {
                 MicToBallDistanceView(
@@ -315,8 +341,21 @@ struct RootView: View {
         case .connected:
             // 7.4b — persisted only where the user asked and 7.4f permits.
             try? await rendezvous.persistPairing(consent: persistPairing)
-            model.hostLink = HostLink(state: .pairing)
-            sheet = nil
+            // ⛔ **Take the link.** This is where the socket used to be dropped:
+            // the state was set to `.pairing`, the sheet dismissed, and the
+            // handshaken transport left for `endPairing` to close. Ownership now
+            // transfers to the peer engine, which is what the coordinator's own
+            // comment has claimed since D7.
+            guard let established = await rendezvous.takeEstablishedLink() else {
+                sheet = .scanPairingCode(failure: .invalidCode)
+                return
+            }
+            sheet = .pairing
+            await model.connect(transport: established.transport,
+                                sessionId: established.sessionId,
+                                hostDisplayName: established.hostDisplayName)
+            // Settled, or failed in place — B2 shows which.
+            if model.link?.hasSettled == true { sheet = nil }
         case .needsANewerApplication:
             sheet = .scanPairingCode(failure: .needsANewerApplication)
         case .invalidCode:

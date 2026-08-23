@@ -527,4 +527,68 @@ struct ConformanceHarnessTests {
                     """)
         }
     }
+    // MARK: - E3.1, against the same simulator
+
+    /// The app's own live-link path — not the harness's — over a real socket.
+    ///
+    /// ⛔ **`make conform` proved the harness, and the harness is `#if DEBUG` code
+    /// that dials its own socket.** It said nothing about `HostLinkSession`, which
+    /// is the path a shipping build actually takes. This closes that gap: same
+    /// simulator, same port, the composition root's `connect`.
+    ///
+    /// ⚠ It lives in this suite rather than its own because `make conform` filters
+    /// to `-only-testing:PinPointCaptureTests/ConformanceHarnessTests`, and a test
+    /// in a suite the Makefile does not name is a test nobody runs.
+    @Test("E3.1 — the composition root handshakes against a real counterpart")
+    @MainActor
+    func appModelHandshakesAgainstSim() async throws {
+        // ⛔ **A row of its own, because `ppcp-sim` binds exactly one link and
+        // refuses a second dial** — the same constraint F-S5-6 recorded when
+        // IOP-2 tried to re-dial. Sharing a run with the `d9` harness test makes
+        // whichever dials second hang. Run with:
+        //
+        //     make conform SCENARIO=reference-host ROW=e31
+        guard Self.row == "e31" else { return }
+        guard let port = Self.port else {
+            withKnownIssue("no ppcp-sim port in the environment — run `make conform`",
+                           isIntermittent: true) {
+                Issue.record("skipped")
+            }
+            return
+        }
+
+        // ⚠ The plaintext direct path, because `ppcp-sim` speaks TLS 1.3 `psk_ke`
+        // and Network.framework cannot reach TLS 1.3 external PSK on this
+        // platform. The shipping transport is unchanged and still has no
+        // plaintext branch (`RV` 5.2f).
+        let transport = try await PpcpDirectConnector()
+            .connect(to: PeerEndpoint(host: "127.0.0.1", port: port))
+
+        let model = AppModel()
+        let declaration = try PpcpDeclaration(
+            ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
+            allowingNoCameraSource: true)
+
+        await model.connect(transport: transport, sessionId: "ses:e31",
+                            hostDisplayName: "ppcp-sim", declaration: declaration)
+
+        let link = try #require(model.link, "no link was composed")
+        #expect(link.hasSettled, "hello and declare did not cross: \(link.phase)")
+        #expect(model.hostLinkError == nil)
+
+        // Let the counterpart answer `hello_accept`, then check the version came
+        // off the peer rather than off the event payload (F-S5-4).
+        try await Task.sleep(for: .seconds(2))
+        #expect(link.negotiatedVersion != nil,
+                "hello_accept should have set a negotiated version")
+        #expect(link.counterpartPeerId != nil, "the counterpart should have declared")
+
+        // ⛔ Still not connected. A real counterpart, a real handshake, and E3.1
+        // still has no clock estimate — so the honest state remains `pairing`.
+        #expect(model.hostLink.state == .pairing)
+        #expect(model.hostLink.clock == nil)
+
+        await model.disconnect()
+        #expect(model.link == nil)
+    }
 }

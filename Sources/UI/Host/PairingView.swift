@@ -25,19 +25,29 @@ public struct PairingView: View {
     /// True once the camera has warmed and locked focus, exposure, white
     /// balance and stabilisation.
     private let isCameraLocked: Bool
+    /// What the transport actually negotiated. ⛔ `nil` before a link exists —
+    /// this row asserted TLS-PSK unconditionally for its whole life, including on
+    /// a screen no link was behind.
+    private let securitySummary: String?
+    /// A handshake that did not complete, shown in place rather than dismissed.
+    private let failure: String?
     private let onCancel: () -> Void
 
     public init(
         link: HostLink,
+        securitySummary: String? = nil,
         agreedMode: VideoMode? = nil,
         viewpoint: Viewpoint? = nil,
         isCameraLocked: Bool = false,
+        failure: String? = nil,
         onCancel: @escaping () -> Void
     ) {
         self.link = link
+        self.securitySummary = securitySummary
         self.agreedMode = agreedMode
         self.viewpoint = viewpoint
         self.isCameraLocked = isCameraLocked
+        self.failure = failure
         self.onCancel = onCancel
     }
 
@@ -46,6 +56,7 @@ public struct PairingView: View {
             VStack(alignment: .leading, spacing: PPMetrics.groupGap) {
                 header
                 steps
+                failureNotice
                 whyTheWait
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -90,11 +101,19 @@ public struct PairingView: View {
 
     private var steps: some View {
         VStack(alignment: .leading, spacing: PPMetrics.itemGap + 4) {
+            // ⛔ Was `.done` unconditionally with a hardcoded detail string —
+            // a row asserting an encrypted channel on a screen that had no link
+            // behind it at all. The detail is now what the handshake negotiated.
             ProgressRow(
                 "Private channel open",
-                detail: "TLS-PSK from the code you scanned",
-                state: .done
+                detail: securitySummary,
+                state: securitySummary == nil
+                    ? (failure == nil ? .inProgress : .failed) : .done
             )
+            // ⚠ "Agreed" overstates it: nothing consumes a host acceptance
+            // message, so this row reflects the declaration **this device sent**.
+            // It becomes a real agreement when a `hello_accept` capability reply
+            // is read (E3.3's territory).
             ProgressRow(
                 "Capability agreed",
                 detail: capabilityDetail,
@@ -110,6 +129,18 @@ public struct PairingView: View {
                 detail: isCameraLocked ? "Focus, exposure and white balance held" : nil,
                 state: isCameraLocked ? .done : .pending
             )
+        }
+    }
+
+    /// A handshake that failed, said in place. ⛔ B2 does not dismiss on failure:
+    /// the four rows are the diagnosis, and dropping the user back to a scanner
+    /// throws that away.
+    @ViewBuilder
+    private var failureNotice: some View {
+        if let failure {
+            InfoCard("The handshake did not complete. \(failure)",
+                     systemImage: "exclamationmark.triangle.fill",
+                     tone: .error)
         }
     }
 

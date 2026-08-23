@@ -79,8 +79,43 @@ public actor RendezvousCoordinator {
     }
 
     /// The transport, once one is up. ⛔ Handed out rather than held: the peer
-    /// engine and the pump own it from here.
+    /// engine and the pump own it from here — see ``takeEstablishedLink()``.
     public private(set) var transport: (any PeerTransport)?
+
+    /// Everything the peer engine needs from a completed walk, in one value.
+    ///
+    /// ⛔ **`hostDisplayName` has no wire source and never will.** `MSG` §3.3's
+    /// `declare` carries the counterpart's `Peer.id` — a `peer:` UUID — and
+    /// nothing else a person would recognise. The only name in the system is the
+    /// `dn` the publisher put in the code it displayed, so a host name on any
+    /// screen is a claim about the code that was scanned, not about the peer that
+    /// answered.
+    public struct EstablishedLink: Sendable {
+        public let transport: any PeerTransport
+        public let sessionId: String
+        public let security: NegotiatedSecurity
+        public let hostDisplayName: String?
+    }
+
+    /// Takes ownership of a completed link.
+    ///
+    /// ⛔ **A transfer, not a getter.** The comment above this property has said
+    /// "the peer engine and the pump own it from here" since D7 and there was no
+    /// way to make that true: a caller could only *read* `transport`, while this
+    /// actor kept its own reference and ``endPairing(leaveNetwork:)`` would later
+    /// close it — pulling the socket out from under a pump that was using it.
+    /// After this call the coordinator holds no transport and closes nothing.
+    ///
+    /// ⚠ The code itself is still released by `endPairing` (4.4c). Only the
+    /// transport changes hands.
+    public func takeEstablishedLink() -> EstablishedLink? {
+        guard let transport, let code else { return nil }
+        self.transport = nil
+        return EstablishedLink(transport: transport,
+                               sessionId: code.sessionId,
+                               security: transport.security,
+                               hostDisplayName: code.displayName)
+    }
 
     /// Steps 1–4.
     ///
@@ -187,6 +222,8 @@ public actor RendezvousCoordinator {
         joinedSsid = nil
         code = nil
         keys = nil
+        // ⚠ `nil` here where the link was taken — `takeEstablishedLink` transferred
+        // ownership and the pump is responsible for closing it.
         await transport?.close(.normal)
         transport = nil
     }
