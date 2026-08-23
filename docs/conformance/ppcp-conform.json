@@ -1,0 +1,18 @@
+{
+  "tool": "ppcp-conform",
+  "spec": "ppcp/1.0",
+  "conf": "PPCP-CONF 1.0 §1, §3, §4",
+  "generated_unix_s": 1787472593,
+  "column": "PinPointCapture",
+  "role": "capture",
+  "transport": "listened",
+  "profiles": ["core", "capture", "detect", "mint", "live", "offline", "markup"],
+  "rows": [
+    {"id": "CT-S4", "invariant": "I20, I23", "profile": "Mint", "method": "injected", "kind": "positive", "verdict": "fail", "cell": "impl", "exit": 1, "ms": 8005, "declaration": "reference-host.json", "scenario": "silent-host", "expect": "violations=0,issued=0", "asserts": "A host that receives every Candidate and issues no Shot: the only thing that fires is the nominating peer's own 8.2i deadline, and it fires only for a Candidate its promotion policy would have promoted hostless (I32).", "command": "../libppcp/build/dev/tools/ppcp-sim/ppcp-sim --role host --listen 56236 --declaration ../libppcp/tools/scenarios/reference-host.json --scenario silent-host --run-ms 8000 --log-prefix conform --expect violations=0,issued=0", "reason": "ppcp-sim: timed out waiting for two bound channels"},
+    {"id": "CT-I35", "invariant": "I35", "profile": "Arbitrate", "method": "injected", "kind": "positive", "verdict": "fail", "cell": "impl", "exit": 1, "ms": 8008, "declaration": "reference-host.json", "scenario": "late-host", "expect": "violations=0,t0_revisions=0", "asserts": "A host arbitrating only after the device was entitled to mint attaches to the device's Shot rather than issuing a competing one (8.2k), and `t0` does not move.", "command": "../libppcp/build/dev/tools/ppcp-sim/ppcp-sim --role host --listen 56236 --declaration ../libppcp/tools/scenarios/reference-host.json --scenario late-host --run-ms 8000 --log-prefix conform --expect violations=0,t0_revisions=0", "reason": "ppcp-sim: timed out waiting for two bound channels"},
+    {"id": "CT-I18", "invariant": "I18", "profile": "Core", "method": "paired", "kind": "positive", "verdict": "fail", "cell": "impl", "exit": 1, "ms": 8011, "declaration": "three-timebase-host.json", "scenario": "reference-host", "expect": "violations=0,relations_composed=0,probe_timebases>=1", "asserts": "A counterpart with three clocks probes each directly; nothing is composed from two relations (5.4c).", "command": "../libppcp/build/dev/tools/ppcp-sim/ppcp-sim --role host --listen 56236 --declaration ../libppcp/tools/scenarios/three-timebase-host.json --scenario reference-host --run-ms 8000 --log-prefix conform --expect violations=0,relations_composed=0,probe_timebases>=1", "reason": "ppcp-sim: timed out waiting for two bound channels"},
+    {"id": "CT-I20n", "invariant": "I20", "profile": "Arbitrate", "method": "injected", "kind": "negative", "verdict": "fail", "cell": "impl", "exit": 1, "ms": 6009, "declaration": "reference-capture.json", "scenario": "nominating-capture", "expect": "violations=0,shots_rx=0", "asserts": "A peer that does not declare Arbitrate parses `candidate` completely and originates neither a host-authority `shot` nor a `capture_request`.", "command": "../libppcp/build/dev/tools/ppcp-sim/ppcp-sim --role capture --listen 56236 --declaration ../libppcp/tools/scenarios/reference-capture.json --scenario nominating-capture --run-ms 6000 --log-prefix conform --expect violations=0,shots_rx=0", "reason": "ppcp-sim: timed out waiting for two bound channels"}
+  ],
+  "summary": {"pass": 0, "fail": 4, "n/a": 0, "skipped": 0},
+  "exit": 1
+}

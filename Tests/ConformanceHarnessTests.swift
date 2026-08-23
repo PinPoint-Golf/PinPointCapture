@@ -189,14 +189,24 @@ struct ConformanceHarnessTests {
         }
 
         let endpoint = PeerEndpoint(host: "127.0.0.1", port: port)
-        let deadline = Date().addingTimeInterval(240)
+        let deadline = Date().addingTimeInterval(300)
+        // ⛔ **Patient before the first row, impatient after the last**, and the
+        // asymmetry is the whole fix. A simulator takes tens of seconds to boot,
+        // install and launch; `ppcp-conform` gives each row 5–8 s and moves on.
+        // The first version was impatient at both ends, so every row expired
+        // waiting for a device that was still starting up and all four failed
+        // with "timed out waiting for two bound channels" — the same class of
+        // mistake as starting the counterpart before the build.
+        //
+        // ⚠ `make conform` also delays starting the tool until this loop is
+        // running. Both halves are needed: the delay stops rows being burned, and
+        // this patience covers a simulator slower than the delay allowed for.
+        let firstConnection = Date().addingTimeInterval(120)
         var sessions = 0
         var consecutiveRefusals = 0
 
-        // ⛔ Bounded three ways — a row count, a wall-clock deadline and a run of
-        // refusals — because a harness loop that only ends when the far end says
-        // so is a hang waiting for a counterpart that crashed.
-        while sessions < 16, Date() < deadline, consecutiveRefusals < 12 {
+        while sessions < 16, Date() < deadline,
+              sessions == 0 ? Date() < firstConnection : consecutiveRefusals < 12 {
             let harness = ConformanceHarness(device: CaptureDeviceFactory.create(),
                                              distance: MicToBallDistance())
             do {

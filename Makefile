@@ -50,6 +50,11 @@ CONFORM_RUN_MS ?= 45000
 # measuring somebody else.
 CONFORM_PROFILES ?= core,capture,detect,mint,live,offline,markup
 CONFORM_OUT      ?= docs/conformance
+# How long the simulator gets to boot, install and reach the dial loop before
+# `ppcp-conform` starts binding ports. ⚠ Generous on purpose: a row lost to a
+# slow boot is a FAILED row, and there is no way to tell that apart from a real
+# refusal afterwards.
+CONFORM_WARMUP_S ?= 75
 
 .PHONY: all gen build build-device _udid test test-core test-app conform conform-sim conform-tool device deploy lint clean help
 
@@ -246,6 +251,14 @@ conform-sim: gen
 # per row, which is what `ConformanceHarnessTests.ppcpConformDrivesTheDevice()`
 # does.
 #
+# ⛔ **THE SIMULATOR STARTS FIRST, AND THEN THE TOOL.** `ppcp-conform` gives each
+# row 5–8 s and moves on; a simulator takes tens of seconds to boot, install and
+# launch. Starting the tool first burned every row waiting for a device that was
+# still starting up — all four failed "timed out waiting for two bound channels",
+# which is the same mistake as starting the counterpart before the build, one
+# layer further in. So the test is launched, `CONFORM_WARMUP_S` is allowed for it
+# to reach its dial loop, and only then does the tool begin binding ports.
+#
 # ⛔ **The verdict is the tool's exit code, not the test's.** 0 every applicable
 # row passed, 1 a row failed, 2 a bad invocation, 3 NO ROW APPLIED — and 3 is not
 # success: a claim naming profiles the tool has no row for has not been measured.
@@ -270,17 +283,10 @@ conform-tool: gen
 		| $(XCB)
 	@set -e; \
 	log=$$(mktemp -t ppcp-conform-log); \
+	testlog=$$(mktemp -t ppcp-conform-test); \
 	port=$$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'); \
-	echo "ppcp-conform listening on $$port, profiles $(CONFORM_PROFILES)"; \
-	"$(PPCP_CONFORM)" --profiles $(CONFORM_PROFILES) --role capture \
-		--listen $$port --column PinPointCapture \
-		--json $(CONFORM_OUT)/ppcp-conform.json \
-		--markdown $(CONFORM_OUT)/ppcp-conform.md \
-		--sim $(PPCP_SIM) --scenarios $(LIBPPCP)/tools/scenarios \
-		>"$$log" 2>&1 & \
-	toolpid=$$!; \
-	trap 'kill $$toolpid 2>/dev/null || true' EXIT; \
-	set -o pipefail; \
+	echo "ppcp-conform on port $$port, profiles $(CONFORM_PROFILES)"; \
+	echo "starting the simulator first — see the ordering note above"; \
 	TEST_RUNNER_PPCP_CONFORM_TOOL_PORT=$$port xcodebuild test-without-building \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
@@ -288,11 +294,23 @@ conform-tool: gen
 		-destination '$(TEST_DEST)' \
 		-derivedDataPath $(DERIVED) \
 		-only-testing:PinPointCaptureTests/ConformanceHarnessTests \
-		-default-test-execution-time-allowance 300 \
-		-maximum-test-execution-time-allowance 600 \
-		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' \
-		|| { echo "--- ppcp-conform ---"; cat "$$log"; exit 1; }; \
+		-default-test-execution-time-allowance 600 \
+		-maximum-test-execution-time-allowance 900 \
+		>"$$testlog" 2>&1 & \
+	testpid=$$!; \
+	trap 'kill $$testpid $$toolpid 2>/dev/null || true' EXIT; \
+	sleep $(CONFORM_WARMUP_S); \
+	"$(PPCP_CONFORM)" --profiles $(CONFORM_PROFILES) --role capture \
+		--listen $$port --column PinPointCapture \
+		--json $(CONFORM_OUT)/ppcp-conform.json \
+		--markdown $(CONFORM_OUT)/ppcp-conform.md \
+		--sim $(PPCP_SIM) --scenarios $(LIBPPCP)/tools/scenarios \
+		>"$$log" 2>&1 & \
+	toolpid=$$!; \
 	rc=0; wait $$toolpid || rc=$$?; \
+	kill $$testpid 2>/dev/null || true; \
+	wait $$testpid 2>/dev/null || true; \
+	grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' "$$testlog" || true; \
 	echo "--- ppcp-conform ---"; cat "$$log"; \
 	case $$rc in \
 	  0) echo "make conform: every applicable row passed";; \
