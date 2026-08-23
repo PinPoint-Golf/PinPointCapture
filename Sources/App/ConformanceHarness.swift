@@ -240,6 +240,21 @@ public actor ConformanceHarness {
             // 6.3c's burst and 7.4c's liveness are on their own cadences and
             // neither is this loop's; the tick pumps both.
             await pump.tickOnce()
+
+            // ⛔ **6.1f — publish the relation this peer measured.** The harness
+            // did not, and `HostLinkDriver` on the real path always has. It
+            // matters beyond politeness: a peer's own estimate reaches its
+            // relation set only through `ppcp_peer_publish_relations`
+            // (`libppcp` `src/ppcp_peer.c:1942`), and without it
+            // `ppcp_relations_convert` has nothing to convert "now" into
+            // `Session.timebase_ref` with — which is 8.2i1 refusing, correctly,
+            // for a reason the embedding created.
+            //
+            // ⚠ **Not claimed as the fix for CT-S4 (6).** The verifying run has
+            // not been made and the other candidates are not excluded; see the
+            // entry in `docs/ppcp-conformance.md`. It is here because 6.1f asks
+            // for it whether or not it changes that row.
+            _ = try? await pump.perform { try $0.publishRelations() }
         }
 
         // Drain whatever the transfer queue still holds, so a `payload_end`

@@ -134,6 +134,10 @@ test-app: gen
 		echo "make test-app: no available iPhone simulator found."; exit 1; \
 	fi
 	@echo "simulator: $(SIM_NAME)"
+	@# ⚠ `↳` is in the filter because swift-testing prefixes the CONTINUATION
+	@# lines of a multi-line assertion message with it. Without it the failure
+	@# name survives and the transcript attached to it does not — which is
+	@# exactly what was thrown away the one time it was wanted (D9, CT-S4 (6)).
 	@# ⚠ NOT piped through `xcbeautify --quieter`, which swallows swift-testing's
 	@# output entirely and leaves only XCTest's "Executed 0 tests" summary — so a
 	@# passing suite looks like an empty one. Filter to the result lines instead.
@@ -146,7 +150,7 @@ test-app: gen
 		-jobs $(JOBS) \
 		-default-test-execution-time-allowance 120 \
 		-maximum-test-execution-time-allowance 300 \
-		| grep -E '^(◇|✔|✘)|error:|Test run|\*\* TEST' || \
+		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || \
 		(echo "make test-app: no test output — see the xcresult bundle"; exit 1)
 
 # D9 — the device peer driven by a counterpart this repository did not write.
@@ -207,7 +211,7 @@ conform: gen
 		-only-testing:PinPointCaptureTests/ConformanceHarnessTests \
 		-default-test-execution-time-allowance 120 \
 		-maximum-test-execution-time-allowance 300 \
-		| grep -E '^(◇|✔|✘)|error:|Test run|\*\* TEST' \
+		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' \
 		|| { echo "--- ppcp-sim ---"; cat "$$log"; exit 1; }; \
 	wait $$simpid || { echo "--- ppcp-sim ---"; cat "$$log"; \
 		echo "make conform: ppcp-sim exited non-zero — a violation or an unmet expectation"; \

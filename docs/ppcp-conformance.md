@@ -449,30 +449,56 @@ offset *and* rate there is no reading of `timebase_ref` at all, the pump does no
 run, and the Candidates stay retained — which is 8.2i's "held until the deadline"
 rather than a failure, and is the opposite of substituting a zero (5.4b, 8.2i1).
 
-⚠ **The row stays `impl` because the fix did not close it, and that is a
-correction to an earlier revision of this file.** The previous text said the
-re-run had not completed. It had: the post-fix run finished, and
-`shotsMinted` was **still zero**. The claim was written from a wedged
-`xcodebuild` and the log was read too early — which is exactly the discipline this
-file asks for elsewhere, applied to itself.
+⚠ **The row stays `impl`, and the separating run HAS now been made** — which is
+the second correction this entry has needed. An earlier revision said the re-run
+had not completed; it had. A later revision said the *instrumented* run had not
+completed; it had too. Both were written from a wedged `xcodebuild` process list
+rather than from the log on disk, seconds before committing. The lesson is the one
+this file already states about specification text and applies equally to evidence:
+**read the output, not the process table.**
 
-⛔ **So the fix corrected a real defect and did not produce a Shot**, and the two
-remaining explanations are not the same fact:
+**What the instrumented run established** (`make conform SCENARIO=silent-host`):
 
-- 8.2i1 held and the pump *correctly* never ran, because no relation to the host's
-  `timebase_ref` was available to express "now" in. Not minting is then the
-  conformant answer, and the row is blocked on 6.3a rather than on 8.2i.
-- Or the relation exists and `issue_hold_ns` is simply longer than the harness's
-  eight-second window.
+| Reported | Value |
+|---|---|
+| `hasArbitration` | **true** — the silent host does open an arbitrating Session |
+| `referenceInstantAvailable` | **false** — "now" could never be expressed in `Session.timebase_ref` |
+| `shotsMinted` | 0 |
 
-`shotsMinted == 0` looks identical in both. The harness now reports
-`referenceInstantAvailable`, `hasArbitration` and `issueHoldNs`, and the suite
-asserts all three so a failure names which one it is. **Nothing is claimed for
-CT-S4 (6) until that run says.**
+⛔ **So not minting is the conformant answer, and CT-S4 (6) is blocked on 6.3a
+rather than on 8.2i.** 8.2i1 and 5.4b: a peer that cannot express an instant in the
+reference timebase does not mint and does not substitute a zero. The Candidates
+stay retained, which is what 8.2i means by "held". The deadline never got the
+chance to fire, so the run says nothing yet about whether it *would*.
+
+⚠ **The likely cause is this application's, not `libppcp`'s, and it is written as
+a hypothesis because it has not been re-run.** Two things were checked in the
+library's source and both hold:
+
+- a `relation_update` that **arrives** is installed into the peer's relation set
+  (`src/ppcp_peer.c:2746`, `ppcp_relations_put`), so the host's 52 published
+  relations are not being discarded;
+- a peer's **own** estimate reaches that set only through
+  `ppcp_peer_publish_relations` (`src/ppcp_peer.c:1942`), which the harness never
+  called.
+
+6.1f requires a peer to publish the relation it measured, and `HostLinkDriver`
+already does so on the real path; the harness did not. That call is now in the
+tick. ⛔ **It is not claimed as a fix** — the verifying run has not been made, and
+the alternative explanations (a direction `ppcp_relations_convert` will not
+invert, or an id mismatch between the device's `sync_timebase` and what the host
+names) are not excluded.
+
+⚠ **A second thing the run exposed, in the harness rather than the protocol.**
+`make conform` filters `xcodebuild` through `grep -E '^(◇|✔|✘)|error:|…'`, which
+drops the *continuation* lines of a multi-line assertion message — so the
+transcript and `timebaseRefId` attached to every failure were thrown away at
+exactly the moment they were wanted. The three counters above had to be recovered
+from the assertion names alone.
 
 ⚠ **The `reference-host` row is unaffected** — it asserts the handshake, the
 Session, the Streams, the sync burst and the nomination, and none of those reads
-`timebase_ref`. It was re-run green at `5b46d71`, after the fix.
+`timebase_ref`. It was re-run green at `5b46d71`, after the timebase fix.
 
 **RT-3 — `pass — make test-core`.**
 `Packages/Core/Tests/CaptureCoreTests/RendezvousCodeTests.swift`. The `RV` §10.3
