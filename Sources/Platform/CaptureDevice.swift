@@ -144,6 +144,14 @@ public protocol CaptureDevice: AnyObject, Sendable {
     /// Only `RetainedClip.payload` throws, and only where a backing that ought
     /// to have bytes cannot produce them.
     ///
+    /// ⛔ **`RetainedClip.payload` must be consumed while retention is still
+    /// live.** It reads the rolling buffer, so a caller that stops retaining —
+    /// or simply waits ten seconds — gets nothing back. `HostlessRecordingSession`
+    /// closes this by materialising the bytes to `clips/` the moment the clip is
+    /// extracted and handing on a file-backed provider; any other caller must do
+    /// the same or consume immediately. ⚠ Not a defect in the laziness, which
+    /// `ENC` 7c requires — a defect in assuming the ring is a store.
+    ///
     /// ⚠ `RetainedClip` is a Core type in and a Core type out; an Android port
     /// replaces this method and nothing else.
     func retainedClip(aroundNs t0: Int64, preNs: Int64, postNs: Int64) -> RetainedClip

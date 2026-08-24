@@ -216,6 +216,28 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
             throw CaptureDeviceError.modeNotSupported
         }
 
+        // ⛔ **The configuration is a scope of its own, and `startRunning` is
+        // OUTSIDE it.** This used to be a bare `defer` running at the end of the
+        // method while the last statement dispatched `startRunning()`
+        // asynchronously — so the start could reach the session *before* the
+        // defer committed, and AVFoundation throws `NSGenericException`:
+        // "startRunning may not be called between calls to beginConfiguration
+        // and commitConfiguration". ⚠ Unreachable on a simulator, which has no
+        // camera and throws out of this method long before here; it crashed on
+        // the first frame of the first device run (24 Aug 2026).
+        try configure(session: session, device: device, format: format, mode: mode)
+
+        if !session.isRunning {
+            // Capture `self`, which is Sendable, rather than the session, which
+            // is not. startRunning() blocks, so it must not run on the caller.
+            sampleQueue.async { [weak self] in self?.session.startRunning() }
+        }
+    }
+
+    /// Everything between `beginConfiguration` and `commitConfiguration`, and
+    /// **nothing else** — see the note in `warmUp`.
+    private func configure(session: AVCaptureSession, device: AVCaptureDevice,
+                           format: AVCaptureDevice.Format, mode: VideoMode) throws {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
@@ -291,11 +313,6 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         }
 
         activeDevice = device
-        if !session.isRunning {
-            // Capture `self`, which is Sendable, rather than the session, which
-            // is not. startRunning() blocks, so it must not run on the caller.
-            sampleQueue.async { [weak self] in self?.session.startRunning() }
-        }
     }
 
     public func goCold() {

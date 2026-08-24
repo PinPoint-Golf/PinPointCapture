@@ -129,10 +129,10 @@ build-device: gen
 	udid="$(UDID)"; \
 	if [ -z "$$udid" ]; then udid=$$($(MAKE) --no-print-directory _udid); fi; \
 	if [ -z "$$udid" ]; then \
-		echo "make build-device: no connected PHYSICAL device."; \
+		echo "make build-device: no paired PHYSICAL device."; \
 		paired=$$($(MAKE) --no-print-directory _udid_paired); \
 		if [ -n "$$paired" ]; then \
-			echo "  paired but not connected: $$paired"; \
+			echo "  seen but not usable: $$paired"; \
 			echo "  plug it in, unlock it, and trust this Mac."; \
 		fi; \
 		echo "  ⛔ a simulator is NOT a substitute here — see the _udid note."; \
@@ -159,17 +159,22 @@ build-device: gen
 # run" measures a machine with no camera. Found 24 Aug 2026 while setting up
 # E1.1's device run; it had been silently true since this target was written.
 #
-# ⚠ `hardwareProperties.reality == "physical"` is the discriminator. Prefer a
-# connected one; if the only physical device is not connected, print nothing so
-# the caller can say so by name rather than falling through to a simulator.
+# ⚠ **Filter on `reality` and `pairingState`, NOT on `tunnelState`.** The tunnel
+# to a wired device is established per-operation and torn down when idle, so
+# `list devices` reports `tunnelState: disconnected` for a phone that is plugged
+# in, unlocked and perfectly usable — `devicectl device info details` on the same
+# device brings the tunnel up and reports `connected` a second later. Filtering on
+# it rejected the phone all of 24 August, which is the second bug in this one
+# resolver in a day: it first returned a SIMULATOR, and then nothing at all.
 _udid:
 	@tmp=$$(mktemp -t ppcp-devices); \
 	xcrun devicectl list devices --json-output "$$tmp" >/dev/null 2>&1 || true; \
 	python3 -c 'import json,sys;\
 d=json.load(open(sys.argv[1])).get("result",{}).get("devices",[]);\
-p=[x for x in d if x.get("hardwareProperties",{}).get("reality")=="physical"];\
+p=[x for x in d if x.get("hardwareProperties",{}).get("reality")=="physical"\
+   and x.get("connectionProperties",{}).get("pairingState")=="paired"];\
 c=[x for x in p if x.get("connectionProperties",{}).get("tunnelState")=="connected"];\
-print(c[0]["hardwareProperties"]["udid"] if c else "")' "$$tmp" 2>/dev/null || true; \
+print((c or p)[0]["hardwareProperties"]["udid"] if p else "")' "$$tmp" 2>/dev/null || true; \
 	rm -f "$$tmp"
 
 # Physical devices that are paired but NOT connected, for a useful error message.
