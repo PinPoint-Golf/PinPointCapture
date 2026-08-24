@@ -759,6 +759,15 @@ device:
 
 # Resolve the first connected device, or explain plainly why we cannot continue.
 # Set DEVICE=<identifier> to pin a specific one.
+# â  **Filter on `reality == "physical"` — a booted SIMULATOR reports
+# `tunnelState: connected` too.** Selecting on connectedness alone picks a
+# simulator, and the failure is confusing rather than obvious: `build-device`
+# resolves the phone correctly through `_udid` (which does filter), so the
+# build succeeds for iOS-arm64 and only the INSTALL fails, complaining that the
+# executable "does not contain code for any platform ... runnable on this
+# device" â which reads like a signing or architecture fault. Observed
+# 2026-08-24. Mirror `_udid`'s filter here, and fall back to paired-not-
+# connected so the error message below is the one that fires.
 deploy: gen
 	@set -e; \
 	dev="$(DEVICE)"; \
@@ -767,8 +776,10 @@ deploy: gen
 		xcrun devicectl list devices --json-output "$$tmp" >/dev/null 2>&1 || true; \
 		dev=$$(python3 -c 'import json,sys;\
 d=json.load(open(sys.argv[1])).get("result",{}).get("devices",[]);\
-c=[x for x in d if x.get("connectionProperties",{}).get("tunnelState")=="connected"];\
-print(c[0]["identifier"] if c else "")' "$$tmp" 2>/dev/null || echo ""); \
+p=[x for x in d if x.get("hardwareProperties",{}).get("reality")=="physical"\
+   and x.get("connectionProperties",{}).get("pairingState")=="paired"];\
+c=[x for x in p if x.get("connectionProperties",{}).get("tunnelState")=="connected"];\
+print((c or p)[0]["identifier"] if p else "")' "$$tmp" 2>/dev/null || echo ""); \
 		rm -f "$$tmp"; \
 	fi; \
 	if [ -z "$$dev" ]; then \
