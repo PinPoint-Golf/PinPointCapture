@@ -26,6 +26,7 @@ Three folders, one question each.
 |---|---|
 | [`delivery-scope.md`](implementation/delivery-scope.md) | **The scope document.** An audit of the current build by architectural layer, then sixteen epics cut into fifty-two capability levels. This is what seeds the GitHub Project board |
 | [`traceability.md`](implementation/traceability.md) | **The traceability matrix.** Every PRD requirement to its status, owning epic and level, and the evidence — plus a reverse index from level to the requirements it closes |
+| [`mvp-online.md`](implementation/mvp-online.md) | **The delivery plan.** ⚠ The only document that answers *what is being built next, and in what order* — the scope document is organised by capability level, which is the wrong axis for that question. Carries the online MVP's four requirements, the RV-6 work that gates them across three repositories, and the demo that says it is done |
 | [`backlog.py`](implementation/backlog.py) | **The board's source.** Generates the issue manifest behind [the GitHub project](https://github.com/orgs/PinPoint-Golf/projects/1) — 91 issues and 16 labels. Edit it when a capability level changes in `delivery-scope.md`, so the board and the document cannot drift |
 
 ## `conformance/` — whether it does what the protocol says
@@ -43,13 +44,13 @@ Three folders, one question each.
 
 **New to the project:** the PRD's §1–§4, then the design handoff, then `delivery-scope.md` §1.
 
-**Picking up work:** `delivery-scope.md` §3 for the epic, `traceability.md` for the requirements it closes, then the PRD for what those requirements actually say.
+**Picking up work:** `mvp-online.md` for what is next and why, then `delivery-scope.md` §3 for the epic, `traceability.md` for the requirements it closes, then the PRD for what those requirements actually say.
 
 **Wondering whether something is done:** `traceability.md`. It is the only document that answers that question row by row, and its statuses are checked against the tree rather than against intent.
 
 ## Keeping these honest
 
-`delivery-scope.md` and `traceability.md` are audits, not plans — they go stale the moment code lands. Re-check them when a capability level closes. The PRD's §18 summarises their position and should be re-checked at the same time.
+`delivery-scope.md` and `traceability.md` are audits, not plans — they go stale the moment code lands. `mvp-online.md` **is** a plan and goes stale differently: it is wrong when the order changes, not when code lands. Re-check them when a capability level closes. The PRD's §18 summarises their position and should be re-checked at the same time.
 
 When a capability level is added, split or reworded, change `delivery-scope.md` **and** `backlog.py` together. The script asserts its own counts, which is what caught a fifty-one-versus-fifty-two disagreement between them the first time round.
 
