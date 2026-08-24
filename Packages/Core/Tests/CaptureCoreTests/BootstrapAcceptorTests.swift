@@ -749,3 +749,47 @@ struct GuidedPairingPromptTests {
         #expect(p.affirmative == nil)
     }
 }
+
+// MARK: - 11.1a — indistinguishable from a code-established pairing
+
+@Suite("RV 11.1a — what a guided pairing hands on to §5")
+struct GuidedPairingHandoffTests {
+
+    /// ⛔ **11.1a, and it is the reason §11 needs no second shape of §5.** From
+    /// 11.6e onward a guided pairing is *indistinguishable* from one a scanned
+    /// code established. 5.1c says a persisting peer persists `PRK` and never the
+    /// original secret — which is satisfied here by construction, because there
+    /// is no original secret, only an ephemeral one 11.6f has already erased.
+    ///
+    /// So the test is: take what the acceptor handed over, keep **only** the
+    /// `PRK` as a store would, re-derive, and get the same `K_tls` and `K_id`. If
+    /// that ever failed, §5, §7.4 and §7.5 would each need a second shape.
+    @Test("11.6e / 5.1c — keeping only the PRK re-derives the same K_tls and K_id")
+    func onlyThePrkNeedsKeeping() throws {
+        let initiator = TestInitiator(agreement: try CryptoKitTestAgreement())
+        let acceptor = try BootstrapAcceptor(agreement: try CryptoKitTestAgreement(),
+                                             startedAtNs: BS.t0)
+        let accept = try #require(acceptor.feed(initiator.start(), atNs: BS.t0)
+            .compactMap(\.outgoing).first)
+        _ = acceptor.feed(initiator.feed(accept), atNs: BS.t0)
+        _ = acceptor.feed(initiator.affirm(), atNs: BS.t0)
+        let pairing = try #require(acceptor.affirm(on: BS.action(), atNs: BS.t0)
+            .compactMap(\.event?.pairing).first)
+
+        // What a keychain holds: 32 bytes and nothing else.
+        let reloaded = try RendezvousKeys(persistedPrk: pairing.keys.prk)
+        #expect(reloaded.prk == pairing.keys.prk)
+        #expect(reloaded.tlsKey == pairing.keys.tlsKey)      // 5.1a
+        #expect(reloaded.identityKey == pairing.keys.identityKey)   // 5.1b
+
+        // 4.3e — `sid` is the canonical lowercase text form and nothing else, so
+        // two implementations cannot duplicate every Capture in a re-imported
+        // session by choosing different text.
+        #expect(pairing.sessionId.count == 36)
+        #expect(pairing.sessionId == pairing.sessionId.lowercased())
+        #expect(pairing.sessionId.dropFirst(14).first == "4")   // version 4 (11.6d)
+
+        // 7.2b — no member of this reaches a log through `description`.
+        #expect("\(pairing)" == "BootstrapPairing(redacted)")
+    }
+}

@@ -197,6 +197,13 @@ public enum BootstrapAbortAdvice: Sendable, Equatable {
 /// ⛔ 11.5g — an instance of this exists **only** where this side has affirmed
 /// **and** the counterpart's MAC has verified. Until then a peer holds nothing
 /// and MUST NOT persist, advertise, or offer anything derived from the exchange.
+/// ⛔ **There is deliberately NO public initialiser, and that is 11.5g in the
+/// type system.** The only way to obtain one of these is to complete an
+/// exchange: this side affirmed, and the counterpart's MAC verified. A public
+/// memberwise init would let any caller fabricate a pairing that no comparison
+/// ever authenticated, which is the whole of what 11.5g forbids — and it would
+/// do so in a way every test still passes. The cost is that a test outside this
+/// module cannot make one either; that is the guarantee working, not a gap.
 public struct BootstrapPairing: Sendable, CustomStringConvertible {
     /// 11.6d / 4.3e — `sid`, a derived version-4 UUID, in `Session.id`'s
     /// canonical lowercase text form.

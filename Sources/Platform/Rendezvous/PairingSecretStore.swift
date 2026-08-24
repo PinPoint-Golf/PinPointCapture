@@ -102,6 +102,36 @@ public enum PairingSecretStore {
                   counterpartPeerId: nil, networkName: code.network?.ssid)
     }
 
+    /// `RV` 11.6e / 11.5g — a pairing established by **guided pairing** rather
+    /// than by a scanned code.
+    ///
+    /// ⛔ **11.1a is why this is a second entrance and not a second mechanism.**
+    /// From 11.6e onward the pairing is *indistinguishable* from one a code
+    /// established: the same `PRK`, so §5, §7.4 and §7.5 apply verbatim and are
+    /// unchanged by §11. What differs is only what may be *said* about it —
+    /// `mayPersistPairing` has no meaning here because there is no code and no
+    /// `mu` (7.4f), and there is no network to name because 11.10a forbids one
+    /// crossing a bootstrap connection.
+    ///
+    /// ⛔ **5.1c is satisfied by construction**: there is no original secret to
+    /// persist, only an ephemeral one that 11.6f has already erased. What is
+    /// written is `PRK` and nothing else, exactly as the code path writes.
+    ///
+    /// ⚠ 7.4b — consent is still required and still starts off. A pairing the
+    /// user did not ask to keep is one they cannot remember agreeing to.
+    public static func save(guidedPairing pairing: BootstrapPairing,
+                            displayName: String?,
+                            consent: Bool) throws {
+        guard consent else { throw StoreError.consentNotGiven }
+        // ⛔ 11.10a — no `Peer.id`, no device or user name and no network crossed
+        // the bootstrap connection, so there is nothing here to record for them.
+        // `Peer.id` is first disclosed in `hello`, inside TLS, after the pairing
+        // exists (7.6b), and `bind(sessionId:toCounterpart:)` is where it lands.
+        try write(sessionId: pairing.sessionId, prk: pairing.keys.prk,
+                  displayName: displayName, counterpartPeerId: nil,
+                  networkName: nil)
+    }
+
     /// 7.4c — records the counterpart identity once `hello` has disclosed it
     /// inside the authenticated channel. ⛔ A pairing scoped to nobody is a
     /// pairing scoped to anybody.
