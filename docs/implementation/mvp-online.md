@@ -82,13 +82,13 @@ That section argued 3.6a's *"it will not work at a range"* made RV-6 *"a feature
 
 ⚠ **Nobody checked the premise, including us.** E53 records that *"four review passes and twenty findings never asked whether the deployment existed"* — both implementation teams inherited it from the request and so did the protocol owner. This repository went further than inheriting it: it escalated a consequence of the premise into delivery scope and shipped a demo step for it. Recorded here rather than quietly reverted, because the failure is worth more than the correction.
 
-### ⛔ One thing for the product owner to confirm
+### ✅ Confirmed by the product owner, 24 August 2026
 
-E53's premise is a claim about **this** product, and it is now load-bearing in a specification: it narrowed RV-6's justification, resized B15's fleet case to a studio's two or three stereo devices, and resized 3.4d3's rotation to a handful of pairings. If the host *is* sometimes at the range — a coach with a laptop at a bay, a fitting session, a range with a fitting bay — then 3.6a bites after all and 3.7h returns to MVP scope.
+**The host is never at the range. It is in the studio.** E53's premise is correct, and this document follows it: discovery over mDNS on a home or studio network, 3.7h not implemented, no discovery-disabled run in §4.1.
 
-**Until that is confirmed, this document follows E53:** discovery over mDNS on a controlled network, 3.7h not implemented, and the demo of §4.1 without a discovery-disabled run.
+⚠ Recorded because E53's premise is now load-bearing in a specification — it narrowed RV-6's justification, resized B15's fleet case to a studio's two or three stereo devices, and resized 3.4d3's rotation to a handful of pairings. Those four clauses rest on this sentence, so the sentence is worth having written down on this side too.
 
-⚠ **A second consequence, which is scope rather than rendezvous.** E53 says the range case is *"standalone, and its session travels home as a bundle"*. That is offline operation, and (d) removes offline catch-up from the **MVP** — correctly, as a scope reduction. But it means the bundle path is not a nicety the product could later drop: on E53's own account it is how a range session reaches Studio at all. §1's note that (d) is a subtraction and not a product decision was right, and is now load-bearing.
+⛔ **And the lesson, which is the useful part.** The deployment model was in the product's name the whole time — *PinPoint **Studio*** is the host, and a studio is not a range. Four review passes, twenty findings, two implementation teams and a protocol owner reasoned carefully about clauses, arithmetic and premises without anyone reading the name. It is the same failure as the three arithmetic ones this repository made today, in its most economical form: **everything stated as a number got checked, and nothing stated as a word did.**
 
 ### 2.4 What each repository owes
 
