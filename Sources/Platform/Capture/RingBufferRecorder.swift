@@ -309,20 +309,34 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
     /// - Returns: the extraction and, when it found frames, the concatenated
     ///   clip: the initialisation segment followed by every overlapping fragment
     ///   in time order.
+    ///
+    /// ⚠ **Assembled through `RetainedWindow` since E1.5.** The bytes are
+    /// identical — the window walks the same entries in the same order behind
+    /// the same header — but the walk is now the one implementation E4.1's
+    /// bundle-backed source will reuse, instead of a private loop here that a
+    /// second backing would have had to duplicate.
     public func clip(aroundNs t0: Int64, preNs: Int64, postNs: Int64)
         throws -> (extraction: ClipExtraction, bytes: Data?) {
         let extraction = ring.extract(aroundNs: t0, preNs: preNs, postNs: postNs)
         guard extraction.isAbsent == false else { return (extraction, nil) }
 
-        var bytes = initialisationSegment ?? Data()
-        for fragment in extraction.fragments {
-            let url = fileURL(of: fragment)
-            guard let data = try? Data(contentsOf: url) else {
-                throw RecorderError.fragmentMissing(fragment.sequence)
-            }
-            bytes.append(data)
+        let requested = (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs))
+        let window = RetainedWindow(
+            snapshot: TimelineIndex(ring.timelineEntries()).snapshot(requested),
+            source: self)
+        guard let assembled = try window
+            .concatenatedPayload(ofSource: FragmentRing.defaultVideoSourceId) else {
+            return (extraction, nil)
         }
-        return (extraction, bytes)
+        // ⛔ A fragment the ring indexed and the disk cannot serve is not a
+        // shorter clip, it is a broken backing — the ring's own eviction removes
+        // the entry and its file together, so a missing file means something
+        // else deleted it. Throwing keeps that distinct from 8.4b's `absent`,
+        // which is what an interval the ring never held answers with.
+        if let firstMissing = assembled.missing.first {
+            throw RecorderError.fragmentMissing(firstMissing.sequence)
+        }
+        return (extraction, assembled.bytes)
     }
 
     /// The Capture and its `AchievedFrames`, assembled honestly.
@@ -370,6 +384,10 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
         let orphans = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil)) ?? []
         for orphan in orphans { try? FileManager.default.removeItem(at: orphan) }
+    }
+
+    func fileURL(ofSequence sequence: UInt64) -> URL {
+        directory.appendingPathComponent("frag-\(sequence).mp4")
     }
 
     private func fileURL(of fragment: CapturedFragment) -> URL {
@@ -448,5 +466,33 @@ extension RingBufferRecorder: AVAssetWriterDelegate {
             stats.fragmentsEvicted += 1
             removeFile(of: evicted)
         }
+    }
+}
+
+// MARK: - The ring as a payload backing (E1.5)
+
+/// ⛔ **This is the seam E4.1 will implement a second time, against a bundle.**
+/// The window above does not know it is talking to a live ring — it asks for an
+/// entry's bytes and for whatever header they need in front, and both a
+/// fragment directory and a `PPCPBNDL` can answer that honestly. PPS's
+/// equivalent could not: `SwingPayloadSource::payloadOf` returns a RAM-ring
+/// handle, so its disk source has to manufacture one.
+extension RingBufferRecorder: RetainedPayloadSource {
+
+    /// ⚠ `nil` means the ring listed this entry and the bytes are gone — an
+    /// eviction that raced the snapshot. A **result**, not a failure (8.4b), so
+    /// it does not throw; the caller decides what a short clip means.
+    public func payload(for entry: TimelineEntry) throws -> Data? {
+        let url = fileURL(ofSequence: entry.sequence)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
+    }
+
+    /// ⛔ The `mpeg4AppleHLS` initialisation segment, and it is load-bearing.
+    /// Measured 24 August 2026: the header plus fragments opens as one video
+    /// track, and the same fragments without it do not open at all. A backing
+    /// that forgot this would serve clips that are bytes and not video.
+    public func initialisationPrefix(ofSource sourceId: String) -> Data? {
+        initialisationSegment
     }
 }

@@ -219,9 +219,48 @@ public struct FragmentRing: Sendable, Hashable {
         return extract(requested)
     }
 
+    // MARK: The timeline (E1.5)
+
+    /// ⛔ **The source id a ring's fragments are indexed under when it has not
+    /// been told the Stream's own.** `extract` builds a private single-source
+    /// index, so the id never leaves this file; a caller merging this ring with
+    /// audio and IMU passes the real `source_id` to `timelineEntries(sourceId:)`.
+    public static let defaultVideoSourceId = "src:video"
+
+    /// This ring's fragments as timeline units, for merging with every other
+    /// source a Session carries (E1.5).
+    ///
+    /// ⚠ One entry per **fragment**, not per frame. A fragment is the unit that
+    /// is independently decodable and independently evictable, so it is the unit
+    /// coverage is a property of; the frames inside it are already on the
+    /// fragment and are not coverage questions.
+    public func timelineEntries(sourceId: String = FragmentRing.defaultVideoSourceId)
+        -> [TimelineEntry] {
+        fragments.map { fragment in
+            TimelineEntry(sourceId: sourceId,
+                          kind: PpcpStreamKind.video,
+                          sequence: fragment.sequence,
+                          startNs: fragment.startNs,
+                          endNs: fragment.endNs,
+                          byteCount: fragment.byteCount,
+                          presence: .data)
+        }
+    }
+
     /// The interval form, for a `capture_request` that names one directly.
+    ///
+    /// ⚠ **Built over `TimelineSnapshot` since E1.5**, so the overlap, realised
+    /// interval and hole arithmetic is the one implementation every source
+    /// shares rather than this file's private copy. ⛔ The behaviour is
+    /// unchanged and the conformance suite is what says so — CT-I10, CT-I11,
+    /// CT-I27 and CT-I36 all assert against this method and none of them was
+    /// touched.
     public func extract(_ requested: Range<Int64>) -> ClipExtraction {
-        let overlapping = fragments.filter { $0.intervalNs.overlaps(requested) }
+        let snapshot = TimelineIndex(timelineEntries()).snapshot(requested)
+        let bySequence = Dictionary(fragments.map { ($0.sequence, $0) },
+                                    uniquingKeysWith: { first, _ in first })
+        let overlapping = snapshot.dataEntries(ofSource: Self.defaultVideoSourceId)
+            .compactMap { bySequence[$0.sequence] }
 
         guard let firstCovered = overlapping.first, let lastCovered = overlapping.last else {
             // ⛔ 8.4b — the interval is no longer retained. `absent`, with a
@@ -239,15 +278,18 @@ public struct FragmentRing: Sendable, Hashable {
 
         // Holes: any discontinuity BETWEEN retained fragments inside the realised
         // span. A ring evicts only from the front, so a hole in the middle means
-        // recording actually stopped — an interruption (7.3d), which is the one
-        // thing a consumer must not interpolate across (5.14b).
-        var holes: [Range<Int64>] = []
-        for (previous, next) in zip(overlapping, overlapping.dropFirst())
-        where next.startNs > previous.endNs {
-            let hole = Swift.max(previous.endNs, realised.lowerBound)
-                ..< Swift.min(next.startNs, realised.upperBound)
-            if hole.isEmpty == false { holes.append(hole) }
-        }
+        // recording actually stopped.
+        //
+        // ⚠ **That is an inference, and E1.5 is where it stops being the only
+        // answer available.** A write failure leaves an identical shape, and
+        // `RingBufferRecorder` counts those separately now. The snapshot
+        // classifies each hole — `.interruption`, `.absent` or `.unexplained` —
+        // and a video-only ring holds no records to classify against, so every
+        // hole here comes back `.unexplained`, which is the honest answer for a
+        // ring asked in isolation. ⛔ `ClipExtraction.holesNs` carries the
+        // intervals exactly as before; the cause is additional information that
+        // a merged index (`CaptureSessionRecorder`) can supply and this cannot.
+        let holes = snapshot.holes(ofSource: Self.defaultVideoSourceId).map(\.intervalNs)
 
         var frames: [Int64] = []
         var exposure: [Int64] = []

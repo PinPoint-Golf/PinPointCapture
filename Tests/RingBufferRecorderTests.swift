@@ -187,6 +187,39 @@ struct RingBufferRecorderTests {
                 "a separable segment without its header is not a movie")
     }
 
+    /// ⛔ **The guard on E1.5's refactor.** `clip(aroundNs:)` now assembles through
+    /// `RetainedWindow` instead of its own loop over `extraction.fragments`. This
+    /// reconstructs the expected bytes *independently* — the initialisation
+    /// segment, then each overlapping fragment file in sequence order — and
+    /// compares. ⚠ Independently matters: asserting that the new path produces
+    /// something plausible would pass whatever it produced.
+    @Test("The window assembles exactly the bytes a manual concatenation would")
+    func windowMatchesAManualConcatenation() async throws {
+        let (recorder, directory, queue) = try await Self.recorded(seconds: 3)
+        defer { queue.sync { recorder.stopRetaining() }
+                try? FileManager.default.removeItem(at: directory) }
+
+        let retained = try #require(queue.sync { recorder.ring.retainedNs })
+        let midpoint = (retained.lowerBound + retained.upperBound) / 2
+        let (extraction, bytes) = try queue.sync {
+            try recorder.clip(aroundNs: midpoint, preNs: 500_000_000,
+                              postNs: 500_000_000)
+        }
+        let assembled = try #require(bytes)
+
+        // The old implementation, written out by hand rather than called.
+        var expected = Data()
+        let header = queue.sync { recorder.initialisationPrefix(ofSource: "") }
+        expected.append(try #require(header))
+        for fragment in extraction.fragments {
+            expected.append(try Data(contentsOf: directory
+                .appendingPathComponent("frag-\(fragment.sequence).mp4")))
+        }
+
+        #expect(assembled == expected)
+        #expect(extraction.fragments.isEmpty == false, "and it was a real clip")
+    }
+
     /// ⛔ REQ-BUF-1's rollover, and the half that is easy to forget: the evicted
     /// fragment's **file** goes with its index entry. A ring that evicts entries
     /// and leaves bytes fills the disk at 6.25 MB/s.

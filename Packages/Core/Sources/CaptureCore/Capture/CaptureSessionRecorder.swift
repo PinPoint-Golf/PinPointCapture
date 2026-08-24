@@ -53,6 +53,30 @@ public final class CaptureSessionRecorder: @unchecked Sendable {
     private var coverage: [String: StreamCoverage] = [:]
     private var isClosed = false
 
+    /// ⛔ **E1.5 — the one timeline, across every source this Session carries.**
+    ///
+    /// `coverage` above is a dictionary of *independent* per-Stream accounts:
+    /// each knows what it accounted for and none of them can see the others. So
+    /// the question `CORE` §8.4's extraction semantics assume — "what covered
+    /// this interval, from every source?" — had nowhere to be asked. This index
+    /// is where. It carries video fragments, audio windows, IMU batches and
+    /// interruptions on one nanosecond timeline, so a hole in one source can be
+    /// explained by a record from another.
+    ///
+    /// ⛔ **Durable records ONLY — interruptions and declared absences.** A live
+    /// source's coverage must NOT accumulate here, and the reason is I10: the
+    /// ring evicts, and an index that kept every fragment ever written would go
+    /// on asserting coverage for bytes that are long gone. What is held here is
+    /// what has no other home — an interruption is a transient event that would
+    /// otherwise be written to the bundle and forgotten. Live coverage is merged
+    /// at query time from whichever source still owns it, in
+    /// `timeline(over:mergingLive:)`.
+    private var timeline = TimelineIndex()
+
+    /// Which `source_id` each open Stream belongs to, so an entry can be
+    /// attributed without the caller repeating it.
+    private var sourceOfStream: [String: String] = [:]
+
     public private(set) var shotCount: UInt64 = 0
     public private(set) var candidateCount: UInt64 = 0
 
@@ -73,9 +97,47 @@ public final class CaptureSessionRecorder: @unchecked Sendable {
         try ensureOpen()
         try writer.open(stream: stream)
         streamIds.append(stream.id)
+        sourceOfStream[stream.id] = stream.sourceId
         if stream.continuity == .continuous {
             coverage[stream.id] = try StreamCoverage(stream: stream)
         }
+    }
+
+    // MARK: The merged timeline (E1.5)
+
+    /// Record a durable timeline fact — something with no other home, which a
+    /// later query could not reconstruct.
+    ///
+    /// ⛔ **Not for a live source's coverage.** A `FragmentRing`'s entries
+    /// describe what it holds *now*; put them here and they outlive their own
+    /// eviction. Pass those to `timeline(over:mergingLive:)` instead.
+    ///
+    /// ⚠ `sourceId` rather than `streamId` deliberately: 5.3/I4 put two Sources
+    /// on one clock by naming the same `Timebase.id`, and coverage is a property
+    /// of the source that produced the bytes.
+    public func indexDurable(_ entries: [TimelineEntry]) {
+        timeline.insert(contentsOf: entries)
+    }
+
+    /// ⛔ **What covered this interval, from every source** (`CORE` §8.4).
+    ///
+    /// This is the whole point of E1.5, and the question that had nowhere to be
+    /// asked: `coverage` is a dictionary of independent per-Stream accounts and
+    /// none of them can see the others. Ask this around a `t0` and the answer
+    /// names every source that contributed, what each realised, and — for a
+    /// source with a hole — whether an interruption recorded against *another*
+    /// Stream explains it.
+    ///
+    /// - Parameter live: coverage from sources that own their own history, as
+    ///   of right now — `ring.timelineEntries(sourceId:)` and its equivalents.
+    ///   ⚠ Passed per query rather than accumulated, so a fragment that has
+    ///   rolled out of the ring stops being claimed the moment it is gone.
+    public func timeline(over interval: Range<Int64>,
+                         mergingLive live: [TimelineEntry] = []) -> TimelineSnapshot {
+        guard live.isEmpty == false else { return timeline.snapshot(interval) }
+        var merged = timeline
+        merged.insert(contentsOf: live)
+        return merged.snapshot(interval)
     }
 
     /// `CORE` 7.3c — `readiness`, whenever `settled` changes.
@@ -88,6 +150,31 @@ public final class CaptureSessionRecorder: @unchecked Sendable {
     public func record(_ interruption: InterruptionRecord) throws {
         try ensureOpen()
         try writer.record(interruption)
+
+        // ⛔ **On the timeline as well as in the bundle, and this is the fix
+        // E1.5 exists for.** An interruption used to be written and forgotten,
+        // so a hole in the video had to be *inferred* from a missing fragment —
+        // an inference that reads a disk write failure as a platform
+        // interruption, because both leave the same shape. Indexed here, the
+        // hole is explained by the record that actually caused it.
+        //
+        // ⚠ An empty `streamIds` means every open capture Stream (7.3d), so the
+        // gap is attributed to all of their sources rather than to none.
+        let affected = interruption.streamIds.isEmpty ? streamIds : interruption.streamIds
+        indexDurable(affected.compactMap { streamId in
+            guard let sourceId = sourceOfStream[streamId] else { return nil }
+            return TimelineEntry(
+                sourceId: sourceId,
+                kind: PpcpStreamKind.event,
+                // ⚠ Sequence is for loss detection within a source's own units
+                // (I2); an interruption is not one of them, so it carries none
+                // rather than a number that would look like one.
+                sequence: 0,
+                startNs: interruption.intervalNs.lowerBound,
+                endNs: interruption.intervalNs.upperBound,
+                presence: .interruption(kind: interruption.kind,
+                                        recovered: interruption.recovered))
+        })
     }
 
     /// Announce a shot- or candidate-anchored Capture, and queue its payload.
