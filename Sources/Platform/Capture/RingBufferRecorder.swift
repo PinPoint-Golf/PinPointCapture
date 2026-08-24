@@ -339,6 +339,43 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
         return (extraction, assembled.bytes)
     }
 
+    /// Everything a shot-anchored Capture needs around a `t0`, in one value.
+    ///
+    /// ⛔ **Does not throw**, because 8.4b makes "the interval is gone" an
+    /// answer: a ring holding nothing returns an `absent` extraction and the
+    /// Shot still exists. Only the payload provider throws, and only when a
+    /// backing that ought to have bytes cannot produce them.
+    ///
+    /// ⚠ The payload is a closure over this recorder, so the bytes are read
+    /// when the bundle writes them and not before (`ENC` 7c).
+    public func retainedClip(aroundNs t0: Int64, preNs: Int64, postNs: Int64,
+                             thermal: [PpcpThermalPoint] = []) -> RetainedClip {
+        let extraction = ring.extract(aroundNs: t0, preNs: preNs, postNs: postNs)
+        guard extraction.isAbsent == false else {
+            return RetainedClip(extraction: extraction, exposure: .noExposure)
+        }
+        let batch = FrameTimeline.Batch(timestampsNs: extraction.frameTimestampsNs,
+                                        exposureNs: extraction.exposureNs,
+                                        iso: extraction.iso,
+                                        intrinsics: extraction.intrinsics,
+                                        droppedFrames: extraction.droppedFrames)
+        return RetainedClip(
+            extraction: extraction,
+            // ⛔ The measured value, not the `.lockedConstant(0)` that stood
+            // here in `HostlessRecordingSession` — 5.8d makes exposure
+            // mandatory precisely because I17's conversion needs it, and zero
+            // would have converted every instant by the wrong amount.
+            exposure: FrameTimeline.exposure(batch, lockedNs: lockedExposureNs),
+            intrinsics: FrameTimeline.intrinsics(batch),
+            thermal: thermal,
+            payload: { [weak self] in
+                guard let self else { throw RecorderError.notRecording }
+                let (_, bytes) = try self.clip(aroundNs: t0, preNs: preNs, postNs: postNs)
+                guard let bytes else { throw RecorderError.notRecording }
+                return bytes
+            })
+    }
+
     /// The Capture and its `AchievedFrames`, assembled honestly.
     public func capture(id: String, shotId: String, stream: PpcpStreamRecord,
                         aroundNs t0: Int64, preNs: Int64, postNs: Int64,
@@ -348,12 +385,17 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
         let batch = FrameTimeline.Batch(timestampsNs: extraction.frameTimestampsNs,
                                         exposureNs: extraction.exposureNs,
                                         iso: extraction.iso,
-                                        intrinsics: [],
+                                        // ⛔ Was `[]`, and that was the whole of
+                                        // E1.3's gap: the matrices were observed
+                                        // per frame, drained per fragment, and
+                                        // then thrown away one line before the
+                                        // builder that wanted them.
+                                        intrinsics: extraction.intrinsics,
                                         droppedFrames: extraction.droppedFrames)
         let assembly = CaptureBuilder.shotCapture(
             id: id, shotId: shotId, stream: stream, extraction: extraction,
             exposure: FrameTimeline.exposure(batch, lockedNs: lockedExposureNs),
-            intrinsics: nil,
+            intrinsics: FrameTimeline.intrinsics(batch),
             thermal: thermal)
         return (assembly, bytes)
     }
@@ -443,6 +485,12 @@ extension RingBufferRecorder: AVAssetWriterDelegate {
             frameTimestampsNs: batch.timestampsNs,
             exposureNs: batch.exposureNs,
             iso: batch.iso,
+            // REQ-OPT-7 / `ENC` §4.1 — row-major, one per frame, and only where
+            // the connection actually delivered them. ⛔ `FrameTimeline` appends
+            // nothing when it did not, so an empty array here means the device
+            // is not delivering intrinsics rather than that this fragment
+            // missed them.
+            intrinsics: batch.intrinsics,
             byteCount: data.count,
             droppedFrames: batch.droppedFrames)
         sequence += 1

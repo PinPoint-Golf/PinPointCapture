@@ -285,6 +285,11 @@ public final class AppModel {
             return
         }
         startDetecting()
+        // REQ-META-1 / REQ-CLIP-1 — attitude and gravity. ⛔ Started with the
+        // session and stopped with it, for the same privacy reason the
+        // microphone is (7.2, REQ-PRIV-4): a motion sensor running outside a
+        // capture session is something this application must not have.
+        recording.startMetadata()
         captureStatus.state = .armed
         // A real Session, opened now, holding the shots this arm produces.
         session = Session(name: Self.sessionName(for: recording.anchor.wallClock),
@@ -303,6 +308,7 @@ public final class AppModel {
     /// The local override of a host-controlled state (REQ-STATE-1).
     public func disarm() {
         stopDetecting()
+        recording?.stopMetadata()
         stopHealthPolling()
         stopRecording()
         // ⛔ **Read the counters BEFORE stopping.** `stopRetaining` drops the
@@ -469,7 +475,21 @@ public final class AppModel {
         // E1.1's instrument, sampled at the same 1 Hz. ⚠ Cheap by construction —
         // `ringStats` is a struct copy of plain integers read through the sample
         // queue, and it is NOT on the frame path.
-        if captureStatus.state == .armed { ringStats = device.ringStats }
+        guard captureStatus.state == .armed else { return }
+        ringStats = device.ringStats
+
+        // ⛔ The `metadata` Stream's segments, on the same tick. A `continuous`
+        // Stream must account for its whole open interval (I36) and
+        // `close(completeness: .complete)` refuses a Session with an unaccounted
+        // tail — so this has to run on a clock, not on samples arriving. It is a
+        // no-op until a segment is actually due.
+        do {
+            try recording?.pumpMetadata(nowNs: MachClock.hostTimeNs)
+        } catch {
+            // §9.2 — a Stream that stopped accounting for itself is not a
+            // cosmetic failure, and the close will refuse rather than lie.
+            recordingError = String(describing: error)
+        }
     }
 
     private func startHealthPolling() {

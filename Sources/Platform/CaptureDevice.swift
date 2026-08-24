@@ -125,6 +125,29 @@ public protocol CaptureDevice: AnyObject, Sendable {
     /// It never invents frames and it never throws.
     func extractClip(_ requestedNs: Range<Int64>) -> ClipExtraction
 
+    /// Everything a shot-anchored Capture needs from the capture stack around a
+    /// `t0` — the extraction, the measured exposure, the intrinsics the
+    /// connection delivered, a thermal timeline over the interval, and a lazy
+    /// provider for the clip's bytes.
+    ///
+    /// ⚠ **Adding this was a decision** (REQ-PORT-2), and the reason is that
+    /// `extractClip` above answers only half the question. A `Capture` needs
+    /// four more things and none of them was reachable through the port, so
+    /// `HostlessRecordingSession` filled the gap with a hardcoded
+    /// `.lockedConstant(0)` exposure, no intrinsics and no payload — an
+    /// announced Capture with a fabricated number in the one field 5.8d calls
+    /// mandatory. One method that returns what the builder consumes is what
+    /// stops that recurring.
+    ///
+    /// ⛔ **Does not throw.** 8.4b/I10: a ring holding nothing answers an
+    /// `absent` extraction, which is a *result* and leaves the Shot intact.
+    /// Only `RetainedClip.payload` throws, and only where a backing that ought
+    /// to have bytes cannot produce them.
+    ///
+    /// ⚠ `RetainedClip` is a Core type in and a Core type out; an Android port
+    /// replaces this method and nothing else.
+    func retainedClip(aroundNs t0: Int64, preNs: Int64, postNs: Int64) -> RetainedClip
+
     /// `CORE` 7.3d — platform interruptions, reported as **completed** gaps.
     ///
     /// ⛔ The handler is called when an interruption *ends*, because the gap is

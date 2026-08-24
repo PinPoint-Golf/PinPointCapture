@@ -23,7 +23,9 @@
 //  Spec: `CORE` §5.8, §5.14, §8.4; requirements REQ-BUF-1..4.
 
 import AVFoundation
+import CoreGraphics
 import CoreMedia
+import ImageIO
 import Foundation
 import Testing
 import CaptureCore
@@ -160,7 +162,7 @@ struct RingBufferRecorderTests {
         }
         #expect(extraction.isAbsent == false)
         let clip = try #require(bytes)
-        #expect(clip.count > 0)
+        #expect(clip.isEmpty == false)
 
         // ── The clip, as a receiver would open it ────────────────────────────
         let playable = directory.appendingPathComponent("clip.mp4")
@@ -218,6 +220,102 @@ struct RingBufferRecorderTests {
 
         #expect(assembled == expected)
         #expect(extraction.fragments.isEmpty == false, "and it was a real clip")
+    }
+
+    // MARK: E1.2 / E1.3 — the clip, and what describes it
+
+    /// ⛔ **E1.2's exit criterion, in everything but the camera.** "A trigger
+    /// produces a playable clip instead of `absent`" — here the trigger is a
+    /// synthetic `t0` rather than a club strike, and the frames are 30 fps
+    /// rather than 150, but the path from an instant to a decodable MP4 with a
+    /// real exposure behind it is the shipping one.
+    @Test("A t0 produces a RetainedClip whose payload is a playable MP4")
+    func aTriggerProducesAPlayableClip() async throws {
+        let (recorder, directory, queue) = try await Self.recorded(seconds: 3)
+        defer { queue.sync { recorder.stopRetaining() }
+                try? FileManager.default.removeItem(at: directory) }
+
+        let retained = try #require(queue.sync { recorder.ring.retainedNs })
+        let t0 = (retained.lowerBound + retained.upperBound) / 2
+        let clip = queue.sync {
+            recorder.retainedClip(aroundNs: t0, preNs: 500_000_000, postNs: 500_000_000)
+        }
+
+        #expect(clip.extraction.isAbsent == false, "⛔ not `absent` — that was the point")
+        let payload = try #require(clip.payload, "a present Capture carries a provider")
+        let bytes = try payload()
+
+        let url = directory.appendingPathComponent("shot.mp4")
+        try bytes.write(to: url)
+        let asset = AVURLAsset(url: url)
+        let tracks = try await asset.loadTracks(withMediaCharacteristic: .visual)
+        #expect(tracks.count == 1, "playable, not just bytes")
+        #expect(try await asset.load(.duration).seconds > 0.4)
+    }
+
+    /// ⛔ **The hardcoded exposure is gone.** `HostlessRecordingSession` supplied
+    /// `.lockedConstant(0)` to every Capture this application ever announced.
+    /// 5.8d makes exposure mandatory on a camera Capture with frames precisely
+    /// because I17's canonical-instant conversion needs it, and converting by
+    /// zero is converting by the wrong amount.
+    @Test("The clip carries the measured exposure, not a placeholder zero")
+    func clipCarriesMeasuredExposure() async throws {
+        let (recorder, directory, queue) = try await Self.recorded(seconds: 3)
+        defer { queue.sync { recorder.stopRetaining() }
+                try? FileManager.default.removeItem(at: directory) }
+
+        // What the device reports under the REQ-OPT-3 lock.
+        queue.sync { recorder.lockedExposureNs = 4_000_000 }
+
+        let retained = try #require(queue.sync { recorder.ring.retainedNs })
+        let clip = queue.sync {
+            recorder.retainedClip(
+                aroundNs: (retained.lowerBound + retained.upperBound) / 2,
+                preNs: 500_000_000, postNs: 500_000_000)
+        }
+
+        #expect(clip.exposure == .lockedConstant(4_000_000))
+        #expect(clip.exposure.provenance == .lockedConstant,
+                "5.8h / CT-S7 (3) — locked, not `sampled` and never `per_frame`")
+    }
+
+    /// ⛔ **E1.2's third component.** The default tolerance on
+    /// `AVAssetImageGenerator` lets it return the nearest keyframe, and REQ-BUF-1
+    /// puts an IDR at every 0.5 s boundary — so a defaulted generator could hand
+    /// back a frame up to half a second from impact. At 150 fps that is
+    /// seventy-five frames away.
+    @Test("The thumbnail is the frame asked for, not the nearest keyframe")
+    func thumbnailIsTheRequestedFrameNotAKeyframe() async throws {
+        let (recorder, directory, queue) = try await Self.recorded(seconds: 3)
+        defer { queue.sync { recorder.stopRetaining() }
+                try? FileManager.default.removeItem(at: directory) }
+
+        let retained = try #require(queue.sync { recorder.ring.retainedNs })
+        let clip = queue.sync {
+            recorder.retainedClip(
+                aroundNs: (retained.lowerBound + retained.upperBound) / 2,
+                preNs: 500_000_000, postNs: 500_000_000)
+        }
+        let url = directory.appendingPathComponent("thumb-source.mp4")
+        // ⚠ Three statements, not one expression: the inline form
+        // `try (try #require(clip.payload))().write(to: url)` crashes the Swift
+        // type checker on this toolchain (`recordArgumentList` assertion).
+        let payload = try #require(clip.payload)
+        let bytes = try payload()
+        try bytes.write(to: url)
+
+        // ⚠ 700 ms in — deliberately NOT on a 0.5 s fragment boundary, so a
+        // generator that snapped to the nearest keyframe would land elsewhere.
+        let jpeg = try await ClipThumbnail.jpeg(fromClipAt: url, atNs: 700_000_000)
+        #expect(jpeg.isEmpty == false)
+        // JPEG magic — it is an image, not an empty container.
+        #expect(jpeg.prefix(2) == Data([0xFF, 0xD8]))
+
+        let source = try #require(CGImageSourceCreateWithData(jpeg as CFData, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(image.width <= Int(ClipThumbnail.maximumEdge))
+        #expect(image.height <= Int(ClipThumbnail.maximumEdge))
+        #expect(image.width > 0 && image.height > 0)
     }
 
     /// ⛔ REQ-BUF-1's rollover, and the half that is easy to forget: the evicted

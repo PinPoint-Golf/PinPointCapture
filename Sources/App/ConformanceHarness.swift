@@ -631,8 +631,10 @@ public actor ConformanceHarness {
             // ⛔ Both extractions answer `absent` / `outside_buffer`: there is no
             // camera and no ring here, and 8.4b says that is a result.
             extractAudio: { requested in Self.nothingRetained(requested) },
-            extractVideo: { requested in Self.nothingRetained(requested) },
-            videoExposure: { _ in .lockedConstant(0) })
+            videoClip: { requested in
+                RetainedClip(extraction: Self.nothingRetained(requested),
+                             exposure: .noExposure)
+            })
         return Built(queue: queue, sink: sink, detect: detect)
     }
 

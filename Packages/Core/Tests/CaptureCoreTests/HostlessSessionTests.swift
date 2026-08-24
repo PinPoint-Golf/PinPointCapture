@@ -145,9 +145,14 @@ struct HostlessSessionTests {
             promotion: DetectAndMint.defaultPromotion(),
             mintCaptureId: { captureIds.mint() },
             extractAudio: { Self.extraction($0) },
-            extractVideo: { Self.extraction($0) },
-            videoExposure: { _ in .lockedConstant(1_000_000) },
-            videoPayload: { _ in { clip } })
+            // ⚠ One closure since E1.2/E1.3 — it was `extractVideo` +
+            // `videoExposure` + `videoPayload`, which had no way to carry the
+            // intrinsics or the thermal timeline `CaptureBuilder` asks for.
+            videoClip: { requested in
+                RetainedClip(extraction: Self.extraction(requested),
+                             exposure: .lockedConstant(1_000_000),
+                             payload: { clip })
+            })
 
         // Two swings, a second apart.
         let first = try pipeline.observe(Self.window(startNs: 10_000_000_000,

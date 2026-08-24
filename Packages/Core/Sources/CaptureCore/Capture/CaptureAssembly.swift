@@ -202,9 +202,37 @@ public enum CaptureBuilder {
                 // one would be a different claim.
                 iso: extraction.iso.count == extraction.frameTimestampsNs.count
                     ? .perFrame(extraction.iso) : nil,
-                intrinsics: intrinsics?.values)
+                // ⛔ **The same 5.8f rule as `iso`, and it was missing.** A
+                // parallel array is exactly `frames.ns` long; a shorter one is a
+                // different claim, not a partial one. It could not bite while
+                // intrinsics were always `nil` (E1.3 is what started filling
+                // them), which is exactly the kind of latent mismatch that
+                // surfaces the first time a device delivers matrices for only
+                // some of its frames.
+                //
+                // ⚠ The CONSTANT form is exempt and must stay so: one matrix for
+                // the whole clip is not a series and has no length to match.
+                intrinsics: Self.parallelIntrinsics(intrinsics, frameCount:
+                                                    extraction.frameTimestampsNs.count))
 
             return CaptureAssembly(record: record, achievedFrames: frames)
+        }
+    }
+
+    /// 5.8f — a per-frame series must be exactly as long as `frames.ns`.
+    ///
+    /// - Returns: the constant form untouched; the per-frame form only where it
+    ///   matches frame for frame; `nil` otherwise. ⛔ `nil` rather than a
+    ///   truncated or padded array: absent means "not delivered", which is true,
+    ///   while a series of the wrong length is a claim about frames it does not
+    ///   describe.
+    private static func parallelIntrinsics(_ observation: IntrinsicsObservation?,
+                                           frameCount: Int) -> PpcpPerFrame<PpcpMatrix3>? {
+        switch observation {
+        case .none: nil
+        case .constant(let matrix): .constant(matrix)
+        case .perFrame(let matrices): matrices.count == frameCount
+            ? .perFrame(matrices) : nil
         }
     }
 }

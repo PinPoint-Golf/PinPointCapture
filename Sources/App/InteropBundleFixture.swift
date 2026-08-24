@@ -122,8 +122,7 @@ enum InteropBundleFixture {
             promotion: DetectAndMint.defaultPromotion(),
             // ⛔ 8.4b / I10 — "an absent capture is a result, not a failure".
             extractAudio: { ClipExtraction.nothingRetained($0) },
-            extractVideo: { ClipExtraction.nothingRetained($0) },
-            videoExposure: { _ in .lockedConstant(0) })
+            videoClip: { RetainedClip.nothingRetained($0) })
 
         var nominated = 0
         var minted: [PpcpShot] = []

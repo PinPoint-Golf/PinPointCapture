@@ -192,11 +192,24 @@ public final class HostlessRecordingSession {
                 // `outside_buffer`, which 8.4b makes a result rather than a
                 // failure (I10).
                 extractAudio: { [device] requested in device.extractClip(requested) },
-                extractVideo: { [device] requested in device.extractClip(requested) },
-                // 5.8h / CT-S7 (3) — `per_frame` is not reachable on this
-                // platform, and under the session lock the honest answer is a
-                // locked constant.
-                videoExposure: { _ in .lockedConstant(0) })
+                // ⛔ **The whole of E1.2 and E1.3 is this line changing.** It
+                // used to be three closures: an extraction, a hardcoded
+                // `.lockedConstant(0)` exposure, and no payload provider at all
+                // — so every Shot this application ever minted announced a
+                // Capture with a fabricated exposure and no bytes behind it.
+                // The device now answers with what it actually retained:
+                // measured exposure (5.8d), the intrinsics the connection
+                // delivered (REQ-OPT-7), a thermal timeline over the interval,
+                // and a lazy provider for the clip.
+                videoClip: { [device, bundle] requested in
+                    let half = (requested.upperBound - requested.lowerBound) / 2
+                    var clip = device.retainedClip(
+                        aroundNs: requested.lowerBound + half,
+                        preNs: half, postNs: half)
+                    Self.persist(&clip, forT0Ns: requested.lowerBound + half,
+                                 in: bundle)
+                    return clip
+                })
         }
     }
 
@@ -220,8 +233,85 @@ public final class HostlessRecordingSession {
     public func pumpMint(nowRefNs: Int64) throws -> [PpcpShot] {
         guard let detect else { return [] }
         let minted = try detect.pump(nowRefNs: nowRefNs)
-        for _ in minted { recorder.countShot() }
+        for shot in minted {
+            recorder.countShot()
+            // E1.2's thumbnail. ⚠ Only reachable here: the clip is written under
+            // a `t0` key inside `videoClip`, because `pump` mints the Capture id
+            // *after* asking for the clip — so the two are joined up once the
+            // Shot comes back carrying it.
+            adoptClip(forT0Ns: shot.t0Ns, captureId: shot.captureIds.first)
+        }
         return minted
+    }
+
+    // MARK: The clip on disk (E1.2)
+
+    /// Where t₀ sits inside an extracted clip. ⚠ Mirrors
+    /// `DetectAndMint.Configuration`'s default pre-roll, which is what `pump`
+    /// asks the ring for.
+    nonisolated static let clipPreNs: Int64 = 1_500_000_000
+
+    /// ⛔ **Materialise the clip NOW, and this is not an optimisation choice.**
+    ///
+    /// `RetainedClip.payload` reads the ring, and the ring is a **ten-second
+    /// rolling buffer**. The bundle writes payloads at `close()` (`ENC` 7c holds
+    /// them until after the manifest), by which time the fragments behind a shot
+    /// from earlier in the session have long been evicted and the provider would
+    /// answer nothing. So the bytes are taken while they still exist and written
+    /// to `clips/`, and the provider handed onward reads that file.
+    ///
+    /// ⚠ The laziness that matters is preserved — a session's clips are ~1.4 GB
+    /// and none of them is held in memory. What changes is *where* the provider
+    /// reads from: a file rather than a buffer that will not be there.
+    nonisolated private static func persist(_ clip: inout RetainedClip,
+                                            forT0Ns t0Ns: Int64,
+                                            in bundle: SessionBundle) {
+        guard let payload = clip.payload else { return }
+        do {
+            let bytes = try payload()
+            try FileManager.default.createDirectory(at: bundle.clipsDirectory,
+                                                    withIntermediateDirectories: true)
+            let url = Self.pendingClipURL(forT0Ns: t0Ns, in: bundle)
+            try bytes.write(to: url, options: .atomic)
+            clip.payload = { try Data(contentsOf: url) }
+        } catch {
+            // ⛔ A clip whose bytes could not be kept is a Capture with no
+            // payload, not a Capture with a payload nobody can read. Dropping
+            // the provider is what makes the announce honest.
+            clip.payload = nil
+        }
+    }
+
+    /// Keyed on `t0` because the Capture id does not exist yet when the clip is
+    /// extracted — `DetectAndMint.pump` mints it afterwards.
+    nonisolated private static func pendingClipURL(forT0Ns t0Ns: Int64,
+                                                   in bundle: SessionBundle) -> URL {
+        bundle.clipsDirectory.appendingPathComponent("t0-\(t0Ns).mp4")
+    }
+
+    /// Join the `t0`-keyed clip to the Capture that now names it, and render its
+    /// thumbnail.
+    ///
+    /// ⚠ Thumbnail generation is detached: it decodes a frame, and `pumpMint`
+    /// runs on the main actor. A picture for a row is never worth a stutter in
+    /// the capture UI.
+    private func adoptClip(forT0Ns t0Ns: Int64, captureId: String?) {
+        guard let captureId else { return }
+        let clipURL = Self.pendingClipURL(forT0Ns: t0Ns, in: bundle)
+        guard FileManager.default.fileExists(atPath: clipURL.path) else { return }
+
+        let thumbnailURL = bundle.thumbnailFile(captureId: captureId)
+        let directory = bundle.thumbnailsDirectory
+        // ⚠ Where t₀ falls inside the clip, not where it falls on the capture
+        // clock — the generator only knows about the asset's own timeline.
+        let offsetNs = Self.clipPreNs
+        Task.detached(priority: .utility) {
+            guard let jpeg = try? await ClipThumbnail.jpeg(fromClipAt: clipURL,
+                                                           atNs: offsetNs) else { return }
+            try? FileManager.default.createDirectory(at: directory,
+                                                     withIntermediateDirectories: true)
+            try? jpeg.write(to: thumbnailURL, options: .atomic)
+        }
     }
 
     /// The Streams a hostless capture session opens, from what was declared.
@@ -279,6 +369,59 @@ public final class HostlessRecordingSession {
     /// The `video` Stream, for a Capture to land on.
     public var videoStream: PpcpStreamRecord? {
         streams.first { $0.kind == PpcpStreamKind.video }
+    }
+
+    /// D4's attitude and gravity, on the `continuous` `metadata` Stream.
+    ///
+    /// ⛔ **Written since D4 and never started until E1.3.** REQ-CLIP-1 lists
+    /// "device attitude and gravity" and REQ-META-1 requires the Stream; the
+    /// source, its encoder and its segment builder were all complete and
+    /// nothing had ever called `start()`, so the Stream was opened and then
+    /// carried nothing.
+    private let motion = MotionMetadataSource(timebaseId: PpcpTimebases.captureId)
+    /// Where the metadata Stream's coverage has reached.
+    private var metadataSegmentIndex = 0
+
+    /// Begin sampling attitude and gravity. ⚠ Only where the Stream was actually
+    /// opened — the declaration decides whether this device has an IMU, and a
+    /// source sampling into no Stream is motion nobody can account for.
+    public func startMetadata() {
+        guard metadataStream != nil else { return }
+        motion.start()
+    }
+
+    public func stopMetadata() { motion.stop() }
+
+    /// The next `metadata` segment, if one is due.
+    ///
+    /// ⛔ **A `continuous` Stream must account for its whole open interval**
+    /// (I36), and `close(completeness: .complete)` already refuses a Session
+    /// with an unaccounted tail. So this is called on a ticker rather than when
+    /// samples happen to be ready — and `segment` produces an `absent` segment
+    /// where nothing was sampled, because 5.11c2 makes a named span carrying
+    /// nothing an assertion and silence merely a gap in the record.
+    @discardableResult
+    public func pumpMetadata(nowNs: Int64) throws -> PpcpCaptureRecord? {
+        guard let stream = metadataStream,
+              var account = recorder.coverage(of: stream.id) else { return nil }
+        let due = account.accountedThroughNs
+            + Int64(MotionMetadataSource.segmentSeconds * 1_000_000_000)
+        guard nowNs >= due else { return nil }
+
+        metadataSegmentIndex += 1
+        let (record, bytes) = try motion.segment(
+            id: "\(stream.id)/seg:\(metadataSegmentIndex)",
+            endingAtNs: due,
+            coverage: &account)
+        // ⚠ The bytes are handed over as a provider like every other payload,
+        // so `ENC` 7c's manifest-before-payload ordering holds for the metadata
+        // Stream too. `nil` where nothing was sampled, which is the `absent`
+        // segment path and correctly carries no payload.
+        let provider: CaptureSessionRecorder.ClipProvider? = bytes.map { data in
+            { @Sendable in data }
+        }
+        try recorder.announceSegment(record, coverage: account, clip: provider)
+        return record
     }
 
     /// The `continuous` `metadata` Stream, if the device declared an IMU.

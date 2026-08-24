@@ -57,6 +57,16 @@ public struct CapturedFragment: Sendable, Hashable, Identifiable {
     public var exposureNs: [Int64]
     /// ISO per frame, same rule.
     public var iso: [Int64]
+    /// `ENC` §4.1 row-major intrinsic matrices, one per frame, where the
+    /// connection delivered them (REQ-OPT-7).
+    ///
+    /// ⚠ **Empty is the normal case and is not a failure.** Under the session's
+    /// focus lock (REQ-OPT-2) every matrix is the same, and `FrameTimeline`
+    /// collapses that to the scalar form — which is both smaller and *truer*
+    /// than a per-frame series of identical values. ⛔ Never synthesise one: an
+    /// intrinsic matrix nobody delivered is a calibration claim with nothing
+    /// behind it.
+    public var intrinsics: [PpcpMatrix3]
     public var byteCount: Int
     /// Frames the platform reported dropped while this fragment was recorded.
     public var droppedFrames: Int
@@ -69,6 +79,7 @@ public struct CapturedFragment: Sendable, Hashable, Identifiable {
                 frameTimestampsNs: [Int64],
                 exposureNs: [Int64] = [],
                 iso: [Int64] = [],
+                intrinsics: [PpcpMatrix3] = [],
                 byteCount: Int = 0,
                 droppedFrames: Int = 0) {
         self.sequence = sequence
@@ -77,6 +88,7 @@ public struct CapturedFragment: Sendable, Hashable, Identifiable {
         self.frameTimestampsNs = frameTimestampsNs
         self.exposureNs = exposureNs
         self.iso = iso
+        self.intrinsics = intrinsics
         self.byteCount = byteCount
         self.droppedFrames = droppedFrames
     }
@@ -110,7 +122,7 @@ public struct ClipExtraction: Sendable, Hashable {
         reason: String = PpcpAbsentReason.outsideBuffer) -> ClipExtraction {
         ClipExtraction(requestedNs: requestedNs, outcome: .absent(reason: reason),
                        fragments: [], realisedNs: nil, holesNs: [],
-                       frameTimestampsNs: [], exposureNs: [], iso: [],
+                       frameTimestampsNs: [], exposureNs: [], iso: [], intrinsics: [],
                        droppedFrames: 0, byteCount: 0)
     }
 
@@ -130,8 +142,43 @@ public struct ClipExtraction: Sendable, Hashable {
     public var frameTimestampsNs: [Int64]
     public var exposureNs: [Int64]
     public var iso: [Int64]
+    /// The intrinsic matrices of the frames inside `realisedNs`, in order.
+    ///
+    /// ⚠ Empty where the connection delivered none. ⛔ **A short array is not a
+    /// partial answer** — 5.8f makes a parallel series exactly `frames.ns` long,
+    /// so a series that does not match frame-for-frame must not be sent at all,
+    /// and `CaptureBuilder` is where that check belongs.
+    public var intrinsics: [PpcpMatrix3]
     public var droppedFrames: Int
     public var byteCount: Int
+
+    /// ⚠ Explicit rather than synthesised **so `intrinsics` can carry a
+    /// default**. The memberwise initialiser would have forced every existing
+    /// construction — including two in the test suite — to name a field that is
+    /// empty in the overwhelming majority of cases.
+    public init(requestedNs: Range<Int64>,
+                outcome: Outcome,
+                fragments: [CapturedFragment],
+                realisedNs: Range<Int64>?,
+                holesNs: [Range<Int64>],
+                frameTimestampsNs: [Int64],
+                exposureNs: [Int64],
+                iso: [Int64],
+                intrinsics: [PpcpMatrix3] = [],
+                droppedFrames: Int,
+                byteCount: Int) {
+        self.requestedNs = requestedNs
+        self.outcome = outcome
+        self.fragments = fragments
+        self.realisedNs = realisedNs
+        self.holesNs = holesNs
+        self.frameTimestampsNs = frameTimestampsNs
+        self.exposureNs = exposureNs
+        self.iso = iso
+        self.intrinsics = intrinsics
+        self.droppedFrames = droppedFrames
+        self.byteCount = byteCount
+    }
 
     public var isAbsent: Bool {
         if case .absent = outcome { return true }
@@ -269,7 +316,7 @@ public struct FragmentRing: Sendable, Hashable {
                 requestedNs: requested,
                 outcome: .absent(reason: PpcpAbsentReason.outsideBuffer),
                 fragments: [], realisedNs: nil, holesNs: [],
-                frameTimestampsNs: [], exposureNs: [], iso: [],
+                frameTimestampsNs: [], exposureNs: [], iso: [], intrinsics: [],
                 droppedFrames: 0, byteCount: 0)
         }
 
@@ -294,6 +341,7 @@ public struct FragmentRing: Sendable, Hashable {
         var frames: [Int64] = []
         var exposure: [Int64] = []
         var isoValues: [Int64] = []
+        var matrices: [PpcpMatrix3] = []
         var dropped = 0
         var bytes = 0
         for fragment in overlapping {
@@ -302,6 +350,12 @@ public struct FragmentRing: Sendable, Hashable {
                 frames.append(timestamp)
                 if index < fragment.exposureNs.count { exposure.append(fragment.exposureNs[index]) }
                 if index < fragment.iso.count { isoValues.append(fragment.iso[index]) }
+                // ⚠ Indexed alongside its frame, never appended wholesale: a
+                // fragment that delivered matrices for only some of its frames
+                // would otherwise slide the series out of step with the times.
+                if index < fragment.intrinsics.count {
+                    matrices.append(fragment.intrinsics[index])
+                }
             }
             dropped += fragment.droppedFrames
             bytes += fragment.byteCount
@@ -316,7 +370,7 @@ public struct FragmentRing: Sendable, Hashable {
                 requestedNs: requested,
                 outcome: .absent(reason: PpcpAbsentReason.outsideBuffer),
                 fragments: [], realisedNs: nil, holesNs: [],
-                frameTimestampsNs: [], exposureNs: [], iso: [],
+                frameTimestampsNs: [], exposureNs: [], iso: [], intrinsics: [],
                 droppedFrames: 0, byteCount: 0)
         }
 
@@ -330,6 +384,7 @@ public struct FragmentRing: Sendable, Hashable {
             frameTimestampsNs: frames,
             exposureNs: exposure,
             iso: isoValues,
+            intrinsics: matrices,
             droppedFrames: dropped,
             byteCount: bytes)
     }

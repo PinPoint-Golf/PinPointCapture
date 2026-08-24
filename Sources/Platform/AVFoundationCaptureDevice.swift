@@ -44,6 +44,14 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
     /// ⛔ `nil` until `startRetaining`.
     private var recorder: RingBufferRecorder?
 
+    /// `CORE` §5.8's thermal timeline. ⛔ Written and uncalled until E1.3 — the
+    /// health service read `ProcessInfo.thermalState` per tick and nothing kept
+    /// the series, so every Capture carried an empty `thermal` and REQ-CLIP-1's
+    /// "thermal state timeline" was a field nobody filled. Held here because a
+    /// Capture's timeline must cover the *Capture's* interval, and this is what
+    /// knows when that was.
+    private let thermalTimeline = ThermalTimeline(timebaseId: PpcpTimebases.captureId)
+
     /// ⛔ **Where every delivered frame goes, and the only thing that decides.**
     ///
     /// One `AVCaptureVideoDataOutput`, one delegate — this class — and a state
@@ -337,6 +345,13 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
             $0.exposureMode == .locked ? Self.nanoseconds($0.exposureDuration) : nil
         }
 
+        // ⛔ Started here, not at the first Capture. Its own comment says why:
+        // the first point is the state NOW, so a device that was already hot
+        // when the session opened says so — which is the case REQ-ENC-4 is
+        // about, and the one a timeline beginning at the first transition would
+        // silently miss.
+        thermalTimeline.start()
+
         sampleQueue.async { [weak self] in
             guard let self else { return }
             self.recorder = recorder
@@ -350,6 +365,7 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
     /// so a deferred teardown would race the removal and could cancel a writer
     /// whose output had already gone. Not on the frame path, so the wait is free.
     public func stopRetaining() {
+        thermalTimeline.stop()
         sampleQueue.sync {
             recorder?.stopRetaining()
             recorder = nil
@@ -561,6 +577,30 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
                 return ClipExtraction.nothingRetained(requestedNs)
             }
             return recorder.ring.extract(requestedNs)
+        }
+    }
+
+    /// E1.2 / E1.3 — the extraction **and** everything else the Capture needs.
+    ///
+    /// ⚠ Read through `sampleQueue` for the same reason `extractClip` is: that
+    /// queue owns the recorder, and the ring is mutated at every segment
+    /// boundary.
+    ///
+    /// ⛔ The thermal timeline is clipped to the Capture's own interval, not
+    /// taken as one reading now — `CORE` §5.8 asks for a timeline over the
+    /// interval, and a single sample at announce time would say nothing about
+    /// what the device was doing while the swing happened.
+    public func retainedClip(aroundNs t0: Int64, preNs: Int64,
+                             postNs: Int64) -> RetainedClip {
+        sampleQueue.sync {
+            guard let recorder, recorder.isRetaining else {
+                return RetainedClip.nothingRetained(
+                    (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs)))
+            }
+            return recorder.retainedClip(
+                aroundNs: t0, preNs: preNs, postNs: postNs,
+                thermal: thermalTimeline.points(
+                    covering: (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs))))
         }
     }
 

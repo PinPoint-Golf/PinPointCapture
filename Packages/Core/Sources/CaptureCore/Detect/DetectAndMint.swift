@@ -119,19 +119,19 @@ public final class DetectAndMint: @unchecked Sendable {
 
     /// 5.12.1a — the audio window around one Candidate.
     private let extractAudio: @Sendable (Range<Int64>) -> ClipExtraction
-    /// The video clip around one `t0`.
-    private let extractVideo: @Sendable (Range<Int64>) -> ClipExtraction
-    /// 5.8d / I17 — mandatory on a camera Capture that has frames, because the
-    /// canonical-instant conversion is impossible without it.
-    private let videoExposure: @Sendable (ClipExtraction) -> ExposureObservation
-    /// Where a minted Shot's clip bytes come from.
+    /// Everything the video Capture needs around one `t0`.
     ///
-    /// ⚠ **A provider keyed on the extraction, not on the Capture id.** The id is
-    /// minted inside `pump`, so a caller could never have registered bytes against
-    /// it beforehand; and the bytes are fetched only when the payload is written,
-    /// because at 1080p150 a session's clips are a gigabyte and `ENC` 7c holds
-    /// them until after the manifest.
-    private let videoPayload: @Sendable (ClipExtraction) -> (@Sendable () throws -> Data)?
+    /// ⚠ **One closure, because three had drifted apart from the builder they
+    /// feed.** It was `extractVideo` + `videoExposure` + `videoPayload`, while
+    /// `CaptureBuilder.shotCapture` wanted an extraction, an exposure,
+    /// intrinsics AND a thermal timeline — so the last two had no way through
+    /// and were silently absent from every Capture this application ever
+    /// announced. `RetainedClip` mirrors the builder exactly.
+    ///
+    /// ⚠ Its `payload` is a provider, not bytes: the Capture id is minted inside
+    /// `pump` so nothing could have been registered against it beforehand, and
+    /// `ENC` 7c holds the bytes until after the manifest.
+    private let videoClip: @Sendable (Range<Int64>) -> RetainedClip
 
     public init(peer: DevicePeer,
                 sink: DetectionSink,
@@ -143,10 +143,7 @@ public final class DetectAndMint: @unchecked Sendable {
                 mintCaptureId: @escaping @Sendable () -> String
                     = { UUID().uuidString.lowercased() },
                 extractAudio: @escaping @Sendable (Range<Int64>) -> ClipExtraction,
-                extractVideo: @escaping @Sendable (Range<Int64>) -> ClipExtraction,
-                videoExposure: @escaping @Sendable (ClipExtraction) -> ExposureObservation,
-                videoPayload: @escaping @Sendable (ClipExtraction)
-                    -> (@Sendable () throws -> Data)? = { _ in nil }) {
+                videoClip: @escaping @Sendable (Range<Int64>) -> RetainedClip) {
         self.peer = peer
         self.sink = sink
         self.mint = mint
@@ -156,9 +153,7 @@ public final class DetectAndMint: @unchecked Sendable {
         self.promotion = promotion
         self.mintCaptureId = mintCaptureId
         self.extractAudio = extractAudio
-        self.extractVideo = extractVideo
-        self.videoExposure = videoExposure
-        self.videoPayload = videoPayload
+        self.videoClip = videoClip
     }
 
     /// One window of microphone audio, all the way to nomination.
@@ -210,22 +205,22 @@ public final class DetectAndMint: @unchecked Sendable {
         for var shot in try mint.pump(nowRefNs: nowRefNs) {
             let lower = shot.t0Ns - configuration.clipPreNs
             let upper = shot.t0Ns + configuration.clipPostNs
-            let extraction = extractVideo(lower..<upper)
+            let clip = videoClip(lower..<upper)
             let captureId = mintCaptureId()
             let assembly = CaptureBuilder.shotCapture(
                 id: captureId,
                 shotId: shot.id,
                 stream: configuration.videoStream,
-                extraction: extraction,
-                exposure: videoExposure(extraction))
+                extraction: clip.extraction,
+                exposure: clip.exposure,
+                intrinsics: clip.intrinsics,
+                thermal: clip.thermal)
 
             // ⛔ `absent` is a **result, not a failure** (I10, 8.4b). A ring that
             // no longer holds the interval answers `outside_buffer` and the Shot
             // still exists — a Shot with no Capture is a legitimate record.
             let isAbsent = assembly.record.completeness == PpcpCaptureRecord.Completeness.absent
-            let clip: CaptureSessionRecorder.ClipProvider? = isAbsent
-                ? nil : videoPayload(extraction)
-            try sink.announce(assembly, clip: clip)
+            try sink.announce(assembly, clip: isAbsent ? nil : clip.payload)
             try shot.add(captureId: captureId)
             try sink.record(shot: shot)
             minted.append(shot)
@@ -269,10 +264,11 @@ public extension DetectAndMint {
     }
 }
 
-extension ExposureObservation {
+public extension ExposureObservation {
 
     /// For a Capture on a Stream whose profile has **no `format`** — an `audio`
-    /// window, an IMU segment.
+    /// window, an IMU segment, or an `absent` video Capture that has no frames
+    /// to have been exposed.
     ///
     /// ⚠ `CORE` 6.1d fixes `convention: mid` there and the canonical instant is
     /// the raw one, so there is no `d` to carry and no conversion to feed. Zero is

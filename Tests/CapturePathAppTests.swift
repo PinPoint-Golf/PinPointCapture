@@ -393,6 +393,13 @@ final class StubCaptureDevice: CaptureDevice, @unchecked Sendable {
         ClipExtraction.nothingRetained(requestedNs)
     }
 
+    /// ⚠ A stub that never retains, so the honest answer is the `absent` one —
+    /// which is what these tests are about (`arm` refusing to claim otherwise).
+    func retainedClip(aroundNs t0: Int64, preNs: Int64, postNs: Int64) -> RetainedClip {
+        RetainedClip.nothingRetained(
+            (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs)))
+    }
+
     func observeInterruptions(_ handler: @escaping @MainActor (InterruptionRecord) -> Void) {}
 }
 

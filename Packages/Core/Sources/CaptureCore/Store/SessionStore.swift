@@ -31,6 +31,8 @@ public struct SessionBundle: Sendable, Hashable, Identifiable {
     public static let fileExtension = "ppcpbndl"
     /// Where the clips a payload frame names actually live.
     public static let clipsDirectoryName = "clips"
+    /// ⚠ Outside the `.ppcpbndl`. See `thumbnailsDirectory`.
+    public static let thumbnailsDirectoryName = "thumbnails"
 
     /// ⛔ `CORE` 5.1a — "an `Id` minted by a peer is stable for the lifetime of
     /// the entity it names and is **not derived from mutable local state** — a
@@ -50,6 +52,26 @@ public struct SessionBundle: Sendable, Hashable, Identifiable {
     }
     public var clipsDirectory: URL {
         directory.appendingPathComponent(Self.clipsDirectoryName, isDirectory: true)
+    }
+
+    /// Where E1.2's shot thumbnails live.
+    ///
+    /// ⛔ **Beside the bundle, deliberately not inside it.** A thumbnail is a UI
+    /// convenience with no PPCP record type; inside the container it would be a
+    /// payload PinPointStudio must ignore, and REQ-CLIP-2 wants an identical
+    /// schema on wire and on disk. ⚠ Regenerable from the clip, so a missing one
+    /// is cosmetic and the screens fall back to their placeholder.
+    public var thumbnailsDirectory: URL {
+        directory.appendingPathComponent(Self.thumbnailsDirectoryName, isDirectory: true)
+    }
+
+    /// The thumbnail for one Capture. ⚠ Keyed on the Capture id, which 5.1a
+    /// makes stable for the entity's lifetime — never on an ordinal that would
+    /// renumber.
+    public func thumbnailFile(captureId: String) -> URL {
+        thumbnailsDirectory
+            .appendingPathComponent(captureId.replacingOccurrences(of: "/", with: "_"))
+            .appendingPathExtension("jpg")
     }
 
     public init(sessionId: String, mintingPeerId: String, directory: URL) {

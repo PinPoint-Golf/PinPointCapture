@@ -195,12 +195,21 @@ public final class CaptureSessionRecorder: @unchecked Sendable {
     /// ⚠ Build it through the Stream's own `StreamCoverage` (`segment`,
     /// `absentSegment`, `shed`) — that is what makes a hole between segments
     /// unconstructible rather than merely wrong.
+    /// - Parameter clip: the segment's bytes, where it has any. ⛔ Defaulted to
+    ///   `nil` and **that default was hiding a gap**: a `metadata` segment's
+    ///   encoded samples had no route to the bundle at all, so the Stream could
+    ///   account for its interval while carrying nothing. `absent` segments
+    ///   legitimately pass `nil`; a `complete` one that does is announcing
+    ///   payload bytes nobody will ever write.
     public func announceSegment(_ record: PpcpCaptureRecord,
-                                coverage updated: StreamCoverage) throws {
+                                coverage updated: StreamCoverage,
+                                clip: ClipProvider? = nil) throws {
         try ensureOpen()
         try writer.announce(record)
         announced.append(record)
         coverage[updated.streamId] = updated
+        guard record.completeness != .absent, let clip else { return }
+        pendingPayloads.append(HeldPayload(captureId: record.id, clip: clip, frames: nil))
     }
 
     /// The coverage account for a Stream, to advance and hand back.
