@@ -919,6 +919,65 @@ F-D3-1's 48 KB stack temporary — the body struct is still built on the heap
 because `PPCP_MAX_MANIFEST` entries do not belong on a stack, but nothing gets or
 sets a union member any more.
 
+### Raised from MVP scoping — a change request, not a defect
+
+**F-MVP-1 — the product wants a pairing with no code to scan, and `RV` has no
+authenticated path to one.**
+
+⚠ **Whose defect: nobody's.** This is a requirement the specification does not
+serve, raised the way a defect is because that is the channel this project has and
+because E23 came out of the same conversation. It asks the protocol team a
+question; it does not propose an answer.
+
+**The requirement.** A range session should begin with PinPointStudio finding the
+capture device and connecting to it, with no per-session scan. Stated 24 August
+2026 as an MVP goal.
+
+**Why it cannot be built today — two independent clauses, and only one of them is
+a specification question.**
+
+**(1) `RV` 2c (MUST)** — *"There is no unauthenticated **rendezvous** path."* 2a
+makes the pairing-code path REQUIRED and §2's table calls it Primary; §2's other
+two paths both presuppose a `PRK` that a pairing has already established. Pairing
+a device the host has never met therefore has no path: the bootstrap connection
+would carry no shared secret, and §5's handshake cannot complete over one.
+
+⛔ **This is the only part a change request can address**, and the constraint any
+answer must respect is 2c itself — the bootstrap has to be *authenticated*, not
+merely encrypted, or 2c is deleted rather than extended. A short-code PAKE is the
+obvious family; ⚠ **this document deliberately does not choose one**. Naming a
+mechanism here would invert the commitment in requirements §14.2 that the
+specification is normative and precedes implementation, and a plausible-looking
+scheme invented in passing is harder to discard than none at all.
+
+**(2) `RV` 3.5d (MUST NOT), erratum E23** — a peer must not *"advertise for
+reconnection where its platform cannot resolve a PSK identity server-side"*.
+5.3b requires the accepting side to recompute `tag` with the `K_id` of each
+pairing it holds; `Network.framework`'s listener has no such hook and answers
+`PSK_IDENTITY_NOT_FOUND`. That erratum exists because of **F-D1-1, raised from
+this application in session S1**.
+
+⛔ **The two are independent, and the interaction is the substance of this
+finding.** Grant the change request in full — an authenticated in-band bootstrap
+lands in `RV` tomorrow — and *first contact* would work without a code. **Every
+reconnection after it still fails 3.5d**, because 5.3a's identity is fresh per
+connection and still has nowhere to be resolved on this platform. The change
+request on its own therefore moves the first handshake and leaves the steady state
+exactly where it is.
+
+**What would reach the steady state**, none of which this document recommends:
+
+| Direction | Cost |
+|---|---|
+| Reverse the roles — the host advertises, the capture peer browses and dials | **None to the specification.** 3.5c already calls this conformant *"and is the shape a 'reconnect to a discovered host' interaction needs"*; 3.5d says the reversal is the conformant shape for such a peer rather than a deviation. `PpcpAdvertiser.browse(against:)` and B1's discovered-host screen are already built for it. The cost is that the host supplies the responder — 3.5c calls that a platform question rather than a protocol one |
+| A non-rotating PSK identity for reconnection | Weakens 3.4a's unlinkability, which 3.2b and 3.4 exist to protect. A larger RV change than the bootstrap, and in the opposite direction from the privacy work |
+| Embed a TLS library to obtain a server-side resolver | No specification change at all. ⚠ Changes the App Store export-compliance answer, adds a patching obligation, and is the route [`RV` 5.4b1's measurement](#the-tls-version-question-settled-before-the-run-and-not-by-a-failed-one) already identified as the only way past Apple's PSK limits |
+
+**What this application does in the meantime.** The pairing-code path, unchanged —
+REQUIRED by 2a, working, and measured 30/30 two-sided against PinPointStudio's real
+listener. ⛔ Nothing here is worked around in code, and no rendezvous mechanism
+absent from `RV` is implemented.
+
 ---
 
 ## 4a. Interoperability — `CONF` §5
