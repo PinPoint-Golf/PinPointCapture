@@ -198,27 +198,27 @@ public actor BootstrapAdvertiser {
 
     /// 3.7b's fourth cause: a further user action.
     public func close(on action: BootstrapWindow.UserAction,
-                      nowNs providedNowNs: Int64? = nil) {
+                      nowNs providedNowNs: Int64? = nil) async {
         guard window.close(on: action,
                            atNs: providedNowNs ?? MachClock.hostTimeNs) else { return }
-        withdraw()
+        await withdraw()
     }
 
     /// 3.7b — one completed pairing, or one attempt aborted or rejected.
     public func finishAttempt(_ outcome: BootstrapWindow.AttemptOutcome,
-                              nowNs providedNowNs: Int64? = nil) throws {
+                              nowNs providedNowNs: Int64? = nil) async throws {
         try window.endAttempt(outcome, atNs: providedNowNs ?? MachClock.hostTimeNs)
-        withdraw()
+        await withdraw()
     }
 
-    private func timedOut() {
+    private func timedOut() async {
         // ⚠ Forced rather than routed through `tick`: `Task.sleep` runs on the
         // continuous clock and `MachClock` is what the deadline was computed in,
         // so a wake a nanosecond early would leave `tick` returning nil and the
         // window open past its bound. 3.7b is a MUST and this is the one place
         // that enforces it, so it does not depend on two clocks agreeing.
         guard window.close(reason: .timedOut, atNs: MachClock.hostTimeNs) else { return }
-        withdraw()
+        await withdraw()
     }
 
     /// ⛔ 3.7b — "on close the peer withdraws the service instance", and 3.7d —
@@ -227,13 +227,47 @@ public actor BootstrapAdvertiser {
     ///
     /// ⚠ **Nothing here reopens anything** (11.9b). There is no restart, no
     /// re-register and no retry, and adding one would breach the clause silently.
-    private func withdraw() {
+    ///
+    /// ⛔ **This AWAITS the cancellation, and that is the repair for a measured
+    /// defect.** `NWListener.cancel()` is asynchronous: it returns immediately
+    /// and the listener reaches `.cancelled` later, on its own queue. Until it
+    /// does, the listening socket is still bound, so a dial arriving in that gap
+    /// completes its TCP handshake into the accept backlog and is only then
+    /// reset. `close(on:)` used to return inside that gap — observed as
+    /// `SO_ERROR [54: Connection reset by peer]` in the test log of
+    /// 2026-08-24 17:25:12, with a connection succeeding after the window had
+    /// closed. Withdrawal is a MUST on the close edge (3.7b), so the method that
+    /// performs it does not return until the platform says it is done.
+    private func withdraw() async {
         deadline?.cancel()
         deadline = nil
-        listener?.newConnectionHandler = nil
-        listener?.cancel()
-        listener = nil
         pendingDials = 0
+        guard let listener else { return }
+        self.listener = nil
+        listener.newConnectionHandler = { $0.cancel() }
+        await Self.cancel(listener)
+    }
+
+    /// Resolves when the listener reports `.cancelled`.
+    ///
+    /// ⚠ Bounded. A listener that never reports would otherwise hang the caller,
+    /// and a hang is worse than a failure because it reads as "still running" —
+    /// which is exactly how a deadlock in this file's own tests reached the
+    /// orchestrator as a 25-minute silence.
+    private static func cancel(_ listener: NWListener) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumed = Mutex(false)
+            listener.stateUpdateHandler = { state in
+                guard case .cancelled = state, resumed.claim() else { return }
+                continuation.resume()
+            }
+            listener.cancel()
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                guard resumed.claim() else { return }
+                continuation.resume()
+            }
+        }
     }
 
     // MARK: - 11.3c — the first frame
@@ -291,7 +325,7 @@ public actor BootstrapAdvertiser {
         // pairing until §11.5's exchange exists — trap 2 lives in exactly this
         // code, and `bs_accept` MUST be sent before `pk_i` arrives.
         refuse(connection)
-        try? finishAttempt(.abortedOrRejected)
+        try? await finishAttempt(.abortedOrRejected)
     }
 
     /// Accumulate until the envelope of `ENC` §3 is whole, or until it is refused.
