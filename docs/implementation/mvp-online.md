@@ -72,15 +72,29 @@ This is the part most easily got wrong, so it is stated as a table rather than a
 
 ⛔ **The peers swap roles between the two connections** (11.2b), and neither direction contradicts the other. "Studio finds the phone" is true at first contact, which is where the operator is standing and where the requirement came from. It is *not* true of reconnection, and `F-MVP-1` records why that is settled rather than open.
 
-### 2.3 What each repository owes
+### 2.3 ⛔ The venue problem — RV-6 over mDNS does not work where it was asked for
+
+`PPCP-RV` 3.6a is unusually blunt:
+
+> Multicast is rate-limited or dropped by many consumer access points, blocked by client isolation on guest networks, and does not cross VLAN boundaries. **It will not work at a range.**
+
+CR-01 asked for guided pairing **because of** a driving range. So a conformant RV-6 reached over discovery delivers the feature everywhere except the venue that motivated it, and *conformant* and *solves the problem* are different states here.
+
+The answer is **3.7h** — *"a guided pairing be reached **without** discovery, at an endpoint entered or configured out of band"*. ⚠ It is a `MAY`, the specification deliberately says nothing about how the endpoint is learned, and **neither application implements it**. PinPointStudio raised this as R-06 and sought no clause change, which was right; it leaves the gap in the applications, which is where it belongs and where it can be missed.
+
+⛔ **3.7h is MVP scope here, not a later refinement.** A demo that works in this office and fails at a range is the worst place to discover this, and §4.1 step 1 currently assumes discovery. Concretely that means the capture device must be able to show, and the host to accept, the window's endpoint by some means that is not mDNS — the simplest being the device displaying `host:port` on the pairing screen alongside the six digits it will show a moment later.
+
+⚠ It only works if **both** ends implement it. Recorded as a dependency on PinPointStudio in §2.4, and raised with them in the third-pass review.
+
+### 2.4 What each repository owes
 
 ⚠ Named as dependencies. This document does not assign work outside this repository — except where the protocol owner has already assigned it to us, which §5 of the review response does once.
 
 | Repository | Owes |
 |---|---|
 | **libppcp** | The five bootstrap frames on `PPCP-ENC` channel `255`; the derivation chain of §11.6 including E34's transcript binding; §10.4 as vectors; conformance rows RT-18, RT-20, RT-21, RT-24, RT-25, RT-26. ⛔ **Not X25519** — B17's seam takes it from the embedding |
-| **PinPointCapture** | The **acceptor** role (see below); opening and advertising the window (§3.7); the plaintext bootstrap connection — ⛔ **not** TLS, 11.2c; `CryptoKit` X25519 behind B17's seam; the six-digit comparison UI (11.7d) and abort copy (11.9c), now assertable under RT-26; then the swap to §5. **Plus RT-20's relay** |
-| **PinPointStudio** | The **initiator** role; the same comparison UI; and — separately, still unanswered — **advertising `_ppcp._tcp` with `role: host`** for reconnection (3.5e) |
+| **PinPointCapture** | The **acceptor** role (see below); opening and advertising the window (§3.7); the plaintext bootstrap connection — ⛔ **not** TLS, 11.2c; `CryptoKit` X25519 behind B17's seam; the six-digit comparison UI (11.7d) and abort copy (11.9c), now assertable under RT-26; **3.7h's out-of-band endpoint** (§2.3); then the swap to §5. **Plus RT-20's relay** |
+| **PinPointStudio** | The **initiator** role; the same comparison UI; **3.7h — dialling a window at an endpoint entered out of band** (§2.3, and it is useless unless both ends have it); and — separately, still unanswered — **advertising `_ppcp._tcp` with `role: host`** for reconnection (3.5e) |
 
 ⛔ **This repository must implement the acceptor, and it is not a preference.** R-05/9e1 records that **PinPointStudio will ship initiator-only**, and *two initiator-only peers cannot pair*. 11.2b already puts the capture device on the acceptor side of first contact, so the two agree — but it means an acceptor-only build here and an initiator-only build there is the whole of the interoperable set, with no slack if either is descoped.
 
@@ -125,6 +139,7 @@ The only piece with nothing to compose. `PreviewProducer` exists and is uncalled
 ### 4.1 The demo
 
 1. Studio browses, finds the device's open bootstrap window, and dials it. Six digits on both screens; the operator confirms at each end. **No code is carried between screens.**
+   - ⛔ **And again with discovery disabled**, reaching the window at an endpoint entered by hand (3.7h). This is the run that matters: §2.3 is why, and an MVP demonstrated only over mDNS has not been demonstrated at a range.
 2. The pairing exists. The device dials Studio under §5. Link up, both ends reporting `TLS 1.2 / TLS_PSK_WITH_AES_128_GCM_SHA256 / no forward secrecy`.
 3. Sync burst runs. The device reports `.connected` with a real offset and uncertainty on B3 — **not** the fixture it shows today.
 4. Preview appears in Studio.
