@@ -136,6 +136,32 @@ struct BootstrapWindowTests {
         #expect(DiscoveredInstance.classify(txt: txt) == .reconnection)
     }
 
+    // MARK: - The C1 gate: a real foreign advertisement, told apart
+
+    /// ⚠ **Observed, not invented.** This is the exact TXT record PinPointStudio
+    /// (H9, `8ed4259`) had on the network at 17:23 on 24 August 2026, read with
+    /// `dns-sd -L PPCP-11121314 _ppcp._tcp local.` — `PPCP-11121314` at
+    /// `Marks-Mac-mini.local.:47788`. It is here so the classifier is exercised
+    /// against another implementation's bytes rather than only against this
+    /// one's idea of them.
+    @Test("3.3g — the host's live reconnection instance is told apart from a window")
+    func theObservedHostAdvertisementClassifies() {
+        let observed = ["txtvers": "1", "pv": "1.0", "role": "host",
+                        "rn": "05060708090a0b0c", "rid": "e1629a8860e0386c"]
+        #expect(DiscoveredInstance.classify(txt: observed) == .reconnection)
+
+        // The two halves the fields have to survive for §3.4 to reach them.
+        #expect(DiscoveryResolver.hexField(observed["rn"], bytes: 8)?.count == 8)
+        #expect(DiscoveryResolver.hexField(observed["rid"], bytes: 8)?.count == 8)
+        #expect(DiscoveryRole(rawValue: observed["role"]!) == .host)
+        #expect(PpcpVersionRange.advertises(observed["pv"]!, major: 1))
+
+        // ⛔ And it is NOT a bootstrap instance: no `bs`, so §3.7 does not reach
+        // it and 3.4c governs instead — this peer may not dial what it cannot
+        // resolve.
+        #expect(observed["bs"] == nil)
+    }
+
     // MARK: - 3.3f / 3.3g / 4.4d — dl
 
     @Test("4.4d — dl is truncated to 32 bytes on a scalar boundary")
