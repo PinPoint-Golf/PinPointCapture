@@ -103,7 +103,7 @@ CONFORM_WARMUP_S ?= 75
 
 COMMA := ,
 
-.PHONY: all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop rv6 _rv6_run interop read-bundle pull-bundles device deploy lint clean help
+.PHONY: all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop rv6 _rv6_run interop read-bundle pull-bundles device deploy lint browse clean help
 
 # ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
 # what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
@@ -792,6 +792,24 @@ print(c[0]["identifier"] if c else "")' "$$tmp" 2>/dev/null || echo ""); \
 
 lint:
 	@swiftlint lint --quiet
+
+# What is actually advertising `_ppcp._tcp` on this network, unfiltered.
+#
+# ⚠ **The one question the app cannot answer about itself.** `PpcpBrowser.browse`
+# refuses an instance whose `rid` it cannot resolve (`RV` 3.4c), and it is right
+# to — but that makes "no host is here" and "a host is here that this device has
+# no pairing for" identical from inside the app. This resolves nothing and
+# connects to nothing, so it can print both.
+#
+# ⛔ Finding nothing is NOT a failure (3.6a) and this target does not exit
+# non-zero for it. Run it on the same network as PinPointStudio.
+#
+#   make browse            # 15 seconds
+#   make browse BROWSE_S=60
+BROWSE_S ?= 15
+browse:
+	@swiftc -O -o $(DERIVED)/ppcp-browse tools/discovery/ppcp-browse.swift
+	@$(DERIVED)/ppcp-browse $(BROWSE_S)
 
 clean:
 	@rm -rf $(DERIVED) $(PROJECT)
