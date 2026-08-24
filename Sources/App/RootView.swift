@@ -154,6 +154,33 @@ struct RootView: View {
             // C1 is full-bleed. The preview is the screen; a nav bar over it would
             // cost exactly the area the golfer needs to be judged in.
             .toolbar(.hidden, for: .navigationBar)
+            #if DEBUG
+            // ⛔ **E1.1's instrument, and debug builds only.** The exit criterion
+            // is "twenty fragments, rolling, **at the claimed rate**" — the rate
+            // clause cannot be read off a directory listing or a preview that
+            // looks fine, and a device run without this produces an impression.
+            //
+            // ⚠ Here rather than in `DebugScreenGallery`: the gallery is selected
+            // by a launch argument and REPLACES the app, so it cannot show a
+            // running capture. The numbers are only interesting while armed.
+            //
+            // ⚠ Overlaid rather than added to `ArmedScreen`, so the designed
+            // screen keeps the shape the handoff specifies and this cannot drift
+            // into it. Tap to expand.
+            .overlay(alignment: .topLeading) {
+                if model.captureStatus.state == .armed || model.lastRunRingStats != nil {
+                    RingStatsOverlay(
+                        stats: model.captureStatus.state == .armed
+                            ? model.ringStats
+                            : (model.lastRunRingStats ?? RingStats()),
+                        expectedFPS: model.activeMode?.fps,
+                        isLive: model.captureStatus.state == .armed)
+                    .padding(.leading, 12)
+                    .padding(.top, 8)
+                    .allowsHitTesting(true)
+                }
+            }
+            #endif
             .navigationDestination(for: AppRoute.self, destination: destination(for:))
         }
     }

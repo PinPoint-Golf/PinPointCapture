@@ -39,6 +39,18 @@ public final class AppModel {
     public internal(set) var permissions: Permissions
     public private(set) var capabilityError: String?
 
+    /// E1.1's ring instrument, sampled while armed. ⛔ The exit criterion is a
+    /// measurement — "twenty fragments, rolling, **at the claimed rate**" — and
+    /// `maxInterArrivalNs` is the field that separates a steady 150 fps from an
+    /// average one. Without a readout a device run produces an impression.
+    public private(set) var ringStats = RingStats()
+
+    /// What the last completed retention measured. ⛔ Kept because
+    /// `stopRetaining` destroys the live counters, and disarming is exactly when
+    /// somebody wants to read them. Also what E10.1's diagnostic bundle will
+    /// want, which is why it is on the model and not only in a debug view.
+    public private(set) var lastRunRingStats: RingStats?
+
     // MARK: Fixture state — replaced as each subsystem lands
 
     /// ⛔ **Starts `cold`, not at a fixture.** It was `PreviewFixtures.armed`, so
@@ -293,6 +305,12 @@ public final class AppModel {
         stopDetecting()
         stopHealthPolling()
         stopRecording()
+        // ⛔ **Read the counters BEFORE stopping.** `stopRetaining` drops the
+        // recorder and its stats go with it, so a disarm would otherwise erase
+        // the measurement of the run that just happened — which is the only
+        // moment anybody wants to read it.
+        ringStats = device.ringStats
+        lastRunRingStats = ringStats
         // ⛔ Before `goCold`, which removes the session's outputs. `goCold` calls
         // this too for the paths that do not come through here, and it is
         // idempotent — but the ordering is stated at both ends rather than left
@@ -448,6 +466,10 @@ public final class AppModel {
         if let mode = activeMode {
             storage = device.storageHeadroom(forMode: mode)
         }
+        // E1.1's instrument, sampled at the same 1 Hz. ⚠ Cheap by construction —
+        // `ringStats` is a struct copy of plain integers read through the sample
+        // queue, and it is NOT on the frame path.
+        if captureStatus.state == .armed { ringStats = device.ringStats }
     }
 
     private func startHealthPolling() {

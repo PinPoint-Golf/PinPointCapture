@@ -474,3 +474,66 @@ struct ArmingRetainsTests {
         #expect(model.captureStatus.state == .cold)
     }
 }
+
+@Suite("E1.1 — the ring readout")
+struct RingStatsOverlayTests {
+
+    /// ⛔ A display that showed 23/20 would be reporting on itself rather than on
+    /// the ring. `fragmentsWritten` and `fragmentsEvicted` are lifetime counters;
+    /// what is *held* is their difference, clamped.
+    @Test("Fragments held never exceeds capacity, whatever the counters say")
+    func fragmentsHeldIsClamped() {
+        var stats = RingStats()
+        stats.fragmentsWritten = 137
+        stats.fragmentsEvicted = 117
+        #expect(stats.fragmentsInRing(capacity: 20) == 20)
+
+        stats.fragmentsEvicted = 0          // impossible, and must not render as 137
+        #expect(stats.fragmentsInRing(capacity: 20) == 20)
+
+        stats.fragmentsWritten = 3
+        stats.fragmentsEvicted = 0
+        #expect(stats.fragmentsInRing(capacity: 20) == 3, "a young ring reads honestly")
+
+        stats.fragmentsWritten = 0
+        stats.fragmentsEvicted = 5          // also impossible; must not go negative
+        #expect(stats.fragmentsInRing(capacity: 20) == 0)
+    }
+
+    /// ⚠ REQ-FPS-2 / REQ-TIME-5 — the rate comes from measured timestamp deltas,
+    /// never from a frame count over a wall clock. The readout must not quietly
+    /// reintroduce the count-based figure the requirement forbids.
+    @Test("The displayed rate is derived from the measured period")
+    func displayedRateComesFromThePeriod() {
+        #expect(RingStatsOverlay.rate(fromPeriodNs: 6_666_666) == "150 fps")
+        #expect(RingStatsOverlay.rate(fromPeriodNs: 33_333_333) == "30 fps")
+        #expect(RingStatsOverlay.rate(fromPeriodNs: 0) == "—",
+                "no measurement yet is a dash, not a zero and not a guess")
+    }
+
+    /// ⛔ The whole point of the panel: a run whose *mean* looks like 150 fps but
+    /// which stalled for 40 ms is a failing run, and the readout must show the two
+    /// numbers differently rather than averaging the stall away.
+    @Test("A stalled run and a steady run report the same mean and different max")
+    func theStallIsVisibleEvenThoughTheMeanIsNot() {
+        let period: Int64 = 6_666_666
+
+        var steady = RingStats()
+        for index in 0..<150 { steady.observeArrival(atNs: Int64(index) * period) }
+
+        var stalled = RingStats()
+        var clock: Int64 = 0
+        for index in 0..<150 {
+            clock += index == 75 ? 40_000_000 : period
+            stalled.observeArrival(atNs: clock)
+        }
+
+        #expect(RingStatsOverlay.rate(fromPeriodNs: steady.meanInterArrivalNs) == "150 fps")
+        // ⛔ 145 against 150 — a 3% dent that reads as a healthy run, produced by
+        // a stall SIX TIMES the frame period. That gap between the two numbers is
+        // the entire argument for showing `max gap` beside the rate.
+        #expect(RingStatsOverlay.rate(fromPeriodNs: stalled.meanInterArrivalNs) == "145 fps")
+        #expect(RingStatsOverlay.ms(steady.maxInterArrivalNs) == "6.7 ms")
+        #expect(RingStatsOverlay.ms(stalled.maxInterArrivalNs) == "40.0 ms")
+    }
+}
