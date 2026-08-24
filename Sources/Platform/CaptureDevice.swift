@@ -50,6 +50,39 @@ public protocol CaptureDevice: AnyObject, Sendable {
     /// Tear the session down (`cold`).
     func goCold()
 
+    /// REQ-BUF-1 — start filling the rolling buffer. `CaptureState.armed` is the
+    /// application's word for this; ⛔ that word does not cross the wire (5.15a).
+    ///
+    /// ⚠ **Adding this to the port surface was a decision** (REQ-PORT-2), and it
+    /// is the same one already argued for `extractClip` below. The ring was
+    /// reachable only from the concrete iOS class, so `extractClip` was a
+    /// question nothing above the platform layer could ever make answer `present`
+    /// — the getter was on the port and the switch that fills it was not.
+    ///
+    /// ⛔ **Throwing is how arming stays honest.** A device that cannot retain
+    /// must not reach `armed`: §9.2 makes capture the thing that must not be
+    /// quietly wrong, and an `armed` peer retaining nothing is the exact failure
+    /// `AppModel.arm` already refuses for the warm-up half.
+    func startRetaining(mode: VideoMode) throws
+
+    /// Stop retaining and drop what is held, with its files.
+    ///
+    /// ⚠ Idempotent, and ⛔ **must be called before `goCold`** — `goCold` removes
+    /// the session's outputs, and a writer left open across that teardown is one
+    /// nothing will ever close.
+    func stopRetaining()
+
+    /// What the ring did during the current retention, counted rather than
+    /// inferred.
+    ///
+    /// ⚠ **On the port because the exit criterion is a measurement.** REQ-FPS-2
+    /// and REQ-TIME-5 both say the realised rate comes from timestamp deltas and
+    /// never from a frame count over a wall clock; `maxInterArrivalNs` is the
+    /// field that distinguishes a steady 150 fps from an average one, and a
+    /// diagnostic bundle (E10.1) that omits it cannot tell a maintainer which of
+    /// the two they had.
+    var ringStats: RingStats { get }
+
     /// REQ-CAP-2. Run the self-test and report what the device sustained.
     ///
     /// ⚠ REQ-ENC-4: a figure obtained from cold is not a measurement. The

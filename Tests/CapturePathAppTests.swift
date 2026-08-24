@@ -211,4 +211,266 @@ struct CapturePathAppTests {
         #expect(model.recording == nil)
         #expect(model.recordingError == nil, "nothing failed — nothing was attempted")
     }
+
+    // MARK: E1.1 — the ring's instrument, and the flag that must follow the state
+
+    /// ⛔ **The single line where REQ-CAP-3 and §9.2 pull in opposite
+    /// directions.** The self-test wants late frames discarded so `didDrop`
+    /// fires and degradation is visible; the ring wants them kept because
+    /// capture is non-recoverable and degrades last. One property, two
+    /// requirements — so it is derived from the routing state rather than
+    /// written as a literal, and this is the test that it stays derived.
+    @Test("REQ-CAP-3 vs §9.2 — late frames are discarded iff we are not retaining")
+    func discardPolicyFollowsTheRoutingState() {
+        #expect(AVFoundationCaptureDevice.Routing.retaining.discardsLateFrames == false)
+        #expect(AVFoundationCaptureDevice.Routing.warm.discardsLateFrames == true)
+        #expect(AVFoundationCaptureDevice.Routing.selfTesting(FrameRateProbe())
+                    .discardsLateFrames == true)
+    }
+
+    /// ⛔ Frames arriving with nothing retaining used to vanish: `append`
+    /// returned early and no counter moved. PPS's `acquireWriteSlot` returns
+    /// `valid=false` precisely so the producer can see that its write went
+    /// nowhere, and this is that signal.
+    @Test("A frame delivered while nothing is retaining is counted, not swallowed")
+    func framesBeforeRetainingAreCounted() throws {
+        let directory = URL.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let recorder = RingBufferRecorder(
+            directory: directory,
+            queue: DispatchQueue(label: "test.samples"))
+        #expect(recorder.isRetaining == false)
+
+        let marker = try #require(Self.markerSampleBuffer())
+        recorder.append(marker, device: nil)
+        recorder.append(marker, device: nil)
+
+        #expect(recorder.stats.framesDroppedNotRetaining == 2)
+        #expect(recorder.stats.framesAppended == 0, "nothing reached an encoder")
+    }
+
+    /// ⚠ **Suspect the instrument first.** `maxInterArrivalNs` is the number the
+    /// E1.1 exit criterion rests on — it is what separates a steady 150 fps from
+    /// an average one — so the arithmetic is tested before any device run is
+    /// asked to believe it.
+    @Test("The rate instrument catches the stall an average hides")
+    func maxInterArrivalCatchesWhatTheMeanHides() {
+        let period: Int64 = 6_666_666  // 150 fps
+        var steady = RingStats()
+        for index in 0..<100 { steady.observeArrival(atNs: Int64(index) * period) }
+
+        var stalled = RingStats()
+        var clock: Int64 = 0
+        for index in 0..<100 {
+            // One 40 ms stall in the middle, the rest at rate.
+            clock += index == 50 ? 40_000_000 : period
+            stalled.observeArrival(atNs: clock)
+        }
+
+        #expect(steady.maxInterArrivalNs == period)
+        #expect(stalled.maxInterArrivalNs == 40_000_000)
+        // ⛔ Both report ~150 fps on the mean. Only one of them was.
+        #expect(stalled.meanInterArrivalNs < period * 2,
+                "the mean stays close to the frame period, which is exactly the problem")
+        #expect(steady.framesAppended == stalled.framesAppended)
+    }
+
+    /// With `AllowFrameReordering = false` this should never fire. Counting it
+    /// is how we learn that rather than assume it — `receive()` derives a
+    /// fragment's period from first and last on the assumption that delivery is
+    /// sorted.
+    @Test("A timestamp that goes backwards is counted, not folded into the rate")
+    func monotonicityViolationsAreCounted() {
+        var stats = RingStats()
+        stats.observeArrival(atNs: 1_000_000)
+        stats.observeArrival(atNs: 2_000_000)
+        stats.observeArrival(atNs: 1_500_000)   // backwards
+        stats.observeArrival(atNs: 3_000_000)
+
+        #expect(stats.monotonicityViolations == 1)
+        #expect(stats.maxInterArrivalNs == 1_500_000,
+                "the backwards step contributes no negative gap and no inflated one")
+        #expect(stats.framesAppended == 4, "the frame still arrived")
+    }
+
+    /// A sample buffer with no data and no format — enough to drive the paths
+    /// that reject a frame before reading it, which is all a simulator can
+    /// honestly exercise.
+    static func markerSampleBuffer() -> CMSampleBuffer? {
+        var buffer: CMSampleBuffer?
+        CMSampleBufferCreate(allocator: kCFAllocatorDefault,
+                             dataBuffer: nil, dataReady: false,
+                             makeDataReadyCallback: nil, refcon: nil,
+                             formatDescription: nil, sampleCount: 0,
+                             sampleTimingEntryCount: 0, sampleTimingArray: nil,
+                             sampleSizeEntryCount: 0, sampleSizeArray: nil,
+                             sampleBufferOut: &buffer)
+        return buffer
+    }
+}
+
+/// A `CaptureDevice` that reports a camera and can be told to refuse retention.
+///
+/// ⚠ **Why this exists.** The one thing `arm()` must never do is reach `armed`
+/// on a device that is not retaining — §9.2, and the comment `arm()` already
+/// carries about warm-up. That half is testable on a simulator because there is
+/// no camera; the retention half is not, because `warmUp` fails first and the
+/// new branch is never reached. A stub is the only way to see it before a phone
+/// does.
+///
+/// ⛔ Everything except `startRetaining` is real: the declaration comes from
+/// `DeviceProfiles` and `PpcpTimebases`, so a test that gets as far as arming
+/// has genuinely built a hostless session. A stub that faked the declaration
+/// would make `arm()` fail for the wrong reason and pass this test green.
+final class StubCaptureDevice: CaptureDevice, @unchecked Sendable {
+
+    var refusesToRetain = false
+    private(set) var startRetainingCalls = 0
+    private(set) var stopRetainingCalls = 0
+    private(set) var isRetaining = false
+
+    static let mode = VideoMode(width: 1920, height: 1080, fps: 150,
+                                lens: .wide, deliversIntrinsics: true)
+
+    func enumerateCapability() throws -> DeviceCapability {
+        DeviceCapability(modelIdentifier: "stub", modelName: "Stub", claimed: [Self.mode])
+    }
+
+    func warmUp(mode: VideoMode) throws {}
+    func goCold() { stopRetaining() }
+
+    func startRetaining(mode: VideoMode) throws {
+        startRetainingCalls += 1
+        if refusesToRetain {
+            throw CaptureDeviceError.configurationFailed("stub refuses to retain")
+        }
+        isRetaining = true
+    }
+
+    func stopRetaining() {
+        stopRetainingCalls += 1
+        isRetaining = false
+    }
+
+    var ringStats: RingStats { RingStats() }
+
+    func measureSustainedRate(mode: VideoMode,
+                              duration: TimeInterval) async throws -> MeasuredCapability {
+        MeasuredCapability(mode: mode, achievedFPS: mode.fps, droppedFrames: 0,
+                           thermalAtEnd: .nominal, measuredAt: Date(),
+                           method: .coldSample, durationSeconds: duration,
+                           observedHostTimeNs: 0, exposureSeconds: nil, iso: nil)
+    }
+
+    var thermalState: ThermalState { .nominal }
+
+    func storageHeadroom(forMode mode: VideoMode) -> StorageHeadroom {
+        StorageHeadroom(estimatedSessions: 40, freeBytes: 64 << 30)
+    }
+
+    func ppcpDeclarationInput(peerId: String,
+                              viewpoint: PpcpViewpoint?) throws -> PpcpDeclarationInput {
+        guard let timing = DeviceProfiles.ppcp(for: DeviceProfiles.currentIdentifier) else {
+            throw CaptureDeviceError.configurationFailed("no timing profile")
+        }
+        return PpcpDeclarationInput(
+            peerId: peerId,
+            profiles: PpcpProfileSet.device,
+            timebases: PpcpTimebases.all,
+            captureTimebaseId: PpcpTimebases.captureId,
+            capability: try enumerateCapability(),
+            timing: timing,
+            clipCodec: "hevc",
+            declaresMicrophone: true,
+            declaresIMU: true,
+            viewpoint: viewpoint,
+            product: ("Apple", "Stub", "1.0"))
+    }
+
+    func extractClip(_ requestedNs: Range<Int64>) -> ClipExtraction {
+        ClipExtraction.nothingRetained(requestedNs)
+    }
+
+    func observeInterruptions(_ handler: @escaping @MainActor (InterruptionRecord) -> Void) {}
+}
+
+@MainActor
+@Suite("E1.1 — arming is a claim about the ring")
+struct ArmingRetainsTests {
+
+    private func model(_ device: StubCaptureDevice) -> (AppModel, URL) {
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
+                                                                 isDirectory: true)
+        let model = AppModel(device: device, store: SessionStore(root: root))
+        model.refreshCapability()
+        // ⚠ A simulator never grants these, and `warmUp` gates on them — so
+        // without this the arm path stops before it reaches anything E1.1
+        // changed, and all three tests below would pass having tested nothing.
+        model.permissions = Permissions(camera: .allowed, microphone: .allowed,
+                                        localNetwork: .allowed, motion: .allowed)
+        return (model, root)
+    }
+
+    /// ⛔ **The rule §9.2 turns on.** An `armed` peer retaining nothing is the
+    /// state the app reported on every device before E1.1, and it is the one
+    /// thing capture must never be quietly wrong about.
+    ///
+    /// ⚠ **This test carries its own control.** `startRetainingCalls == 1` is
+    /// only reachable past `arm()`'s `guard let recording` — so if the stub's
+    /// declaration were malformed and the hostless session failed to open, the
+    /// count would be zero and this would fail rather than pass green on a
+    /// short-circuit. That matters more than usual here, because the *success*
+    /// path cannot be tested beside it (see below).
+    @Test("A device that cannot retain does not reach armed")
+    func refusedRetentionBlocksArmed() throws {
+        let device = StubCaptureDevice()
+        device.refusesToRetain = true
+        let (model, root) = self.model(device)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        model.arm()
+
+        #expect(device.startRetainingCalls == 1,
+                "the hostless session opened and retention was attempted")
+        #expect(device.isRetaining == false)
+        #expect(model.captureStatus.state != .armed)
+        #expect(model.capabilityError != nil, "and the refusal is reported, not swallowed")
+    }
+
+    // ⛔ **The successful arm cannot be tested here, and the reason is the
+    // simulator rather than the code.** `arm()` calls `startDetecting()` after
+    // retention succeeds, and `AVAudioEngine.inputNode` **aborts the process**
+    // in a simulator test host — `AURemoteIO::Initialize` → `_ReportRPCTimeout`
+    // → `abort`, confirmed from the crash report on 24 Aug 2026, not inferred.
+    // It is a trap in AudioToolbox, not a Swift error, so it cannot be caught
+    // and no stub above it helps.
+    //
+    // ⚠ So "arm reaches `.armed` with a live ring" is a **device-run check**
+    // (E1.1 step 3), listed as such rather than faked with a test that stops
+    // short and reads as though it did not. The refusal path above is testable
+    // because it returns before the microphone.
+
+    /// ⛔ `goCold` removes the session's outputs; a writer left open across that
+    /// teardown is one nothing will ever close. `disarm` must therefore stop
+    /// retaining first.
+    ///
+    /// ⚠ Not armed first — see the note above. What this pins is that the call
+    /// site exists and runs unconditionally, which is the half that silently
+    /// disappears in a refactor. The ordering against `goCold` is additionally
+    /// enforced inside `AVFoundationCaptureDevice.goCold`, so neither end
+    /// depends on the other remembering.
+    @Test("Disarm stops retaining, whatever state it was in")
+    func disarmAlwaysStopsRetaining() throws {
+        let device = StubCaptureDevice()
+        let (model, root) = self.model(device)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        model.disarm()
+
+        #expect(device.stopRetainingCalls >= 1)
+        #expect(device.isRetaining == false)
+        #expect(model.captureStatus.state == .cold)
+    }
 }

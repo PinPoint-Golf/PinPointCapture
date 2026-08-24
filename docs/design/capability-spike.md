@@ -97,6 +97,40 @@ been a trap: `REQ-BUF-4`/`REQ-PORT-9` note that Android's constrained high-speed
 session offers no clean per-frame access either, so encode-to-fragments is the one
 design that survives both platforms.
 
+### Two video data outputs, one per discard policy
+
+**Available since iOS 16, and rejected anyway.** The capture path needs
+`alwaysDiscardsLateVideoFrames = false` (§9.2 — capture degrades last) and the
+self-test needs it `true` (REQ-CAP-3 — drops must be visible). Two outputs, one
+each, is the obvious escape.
+
+`AVCaptureSession.h` (iOS 27.0 SDK, checked 24 Aug 2026) says the old one-of-each
+rule was lifted: *"For applications linked on or after iOS 16.0, this restriction
+no longer applies to AVCaptureVideoDataOutputs. When adding more than one
+AVCaptureVideoDataOutput, `AVCaptureSession.hardwareCost` must be taken into
+account."*
+
+⛔ **That last sentence is the reason not to.** Per `AVCaptureSession.h:644`, a
+plain `AVCaptureSession` computes a non-zero `hardwareCost` **only** once a second
+video data output is added — so today's cost is 0 and a second output is the thing
+that starts the meter. `> 1.0` and the session refuses to start with an
+`AVCaptureSessionRuntimeErrorNotification` ([§2](#2-camera-and-avcapturesession)).
+At 1080p150 that is a gamble on the axis [§9.2](#9-what-must-be-measured-before-any-of-this-hardens)
+already calls binding, taken to avoid setting one boolean.
+
+✅ **What was done instead (E1.1):** one output, one delegate —
+`AVFoundationCaptureDevice` itself — and a `Routing` state (`warm` / `retaining` /
+`selfTesting`) that the flag is *derived* from. Mutually exclusive by
+construction, so self-testing cannot flip the discard policy under a live ring.
+The shape is PinPointStudio's `EventBuffer` reduced to one source: one producer
+path with an explicit state, consumers behind it, rather than consumers competing
+to own the producer.
+
+⚠ Worth re-checking only if a genuine second consumer appears that cannot be fed
+from the one delegate — a hardware-accelerated preview encode, say. The
+measurement to take first is `hardwareCost` at the operating format, which costs
+one line and is currently unknown.
+
 ### Frame clipping / region of interest
 
 **Not available in the sense that would help.** On a machine-vision camera, ROI
@@ -222,8 +256,12 @@ so a slot-based producer has nothing reliable to put in a slot (REQ-PORT-9).
   `SwingPayloadSource::payloadOf` returns `SourceRing::ReadHandle`, so even the
   disk source must manufacture a RAM-ring handle. PPC should return an opaque
   handle its own substrate defines.
-- **Apple thread QoS** — `thread_policy.cpp` sets `QOS_CLASS_USER_INTERACTIVE` for
-  capture. PPC sets no QoS on the sample queue at all today.
+- **Apple thread QoS** — `thread_policy.cpp:106` sets `QOS_CLASS_USER_INTERACTIVE`
+  for `ThreadRole::Capture` and `QOS_CLASS_USER_INITIATED` for `Merger`. ✅
+  **Adopted 24 Aug (E1.1).** ⚠ *This entry said PPC "sets no QoS on the sample
+  queue at all", which was wrong* — it set `.userInitiated`, which is the tier PPS
+  gives its **merger** thread, one below the capture callback. Now
+  `.userInteractive`, matching PPS's capture role.
 
 **Two things not to inherit.** `reorder_window_us = 5000` encodes a multi-camera
 desktop assumption; on this device camera and microphone share a timebase and CT-I4

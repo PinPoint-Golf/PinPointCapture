@@ -30,7 +30,13 @@ public final class AppModel {
     /// about the phone in your hand.
     public private(set) var capability: DeviceCapability
     public private(set) var storage: StorageHeadroom
-    public private(set) var permissions: Permissions
+    /// ⚠ `internal(set)` **so the arm path can be tested at all.** `warmUp`
+    /// gates on `canCapture`, and a simulator never has it — which means every
+    /// rule `arm()` enforces after that gate, including the one §9.2 turns on
+    /// (an `armed` peer must actually be retaining), is unreachable in a test.
+    /// The setter stays out of the public surface; nothing in the app writes it
+    /// but `refreshPermissions`.
+    public internal(set) var permissions: Permissions
     public private(set) var capabilityError: String?
 
     // MARK: Fixture state — replaced as each subsystem lands
@@ -254,7 +260,18 @@ public final class AppModel {
         warmUp()
         guard captureStatus.state == .warm else { return }
         startRecording()
-        guard let recording else { return }
+        guard let recording, let mode = activeMode else { return }
+        // ⛔ REQ-BUF-1, and the same rule the comment above states for warm-up:
+        // a device that cannot retain must not reach `armed`. This is the half
+        // that used to be missing — the state said `armed` and the ring held
+        // nothing, on every device, because nothing ever started one.
+        do {
+            try device.startRetaining(mode: mode)
+        } catch {
+            capabilityError = String(describing: error)
+            stopRecording()
+            return
+        }
         startDetecting()
         captureStatus.state = .armed
         // A real Session, opened now, holding the shots this arm produces.
@@ -276,6 +293,11 @@ public final class AppModel {
         stopDetecting()
         stopHealthPolling()
         stopRecording()
+        // ⛔ Before `goCold`, which removes the session's outputs. `goCold` calls
+        // this too for the paths that do not come through here, and it is
+        // idempotent — but the ordering is stated at both ends rather than left
+        // to one of them remembering.
+        device.stopRetaining()
         device.goCold()
         captureStatus.state = .cold
         session.end = Date()

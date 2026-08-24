@@ -634,6 +634,94 @@ struct CapturePathTests {
                                   captureId: "cap:1"))
     }
 
+    // MARK: The desktop buffer's hard-won tests, carried across (E1.1)
+
+    // ⚠ **Ported as specifications, not as code.** PinPointStudio's
+    // `src/Buffer/tests` pins behaviour learned the hard way on a RAM ring of raw
+    // frames. The substrate does not transfer — `capability-spike.md` §4 shows
+    // why — but three of the intents survive it unchanged, because a ring of
+    // encoded fragments still overruns, still needs a monotonic sequence, and
+    // still must refuse to publish something that did not land. Reimplementing
+    // without carrying these across rediscovers the same bugs in the field.
+
+    /// PPS `timeline_index_test.cpp` — `SequenceNumberWrapAround`.
+    @Test("Fragment sequence is monotonic across a rollover, and never reused")
+    func sequenceIsMonotonicAcrossRollover() {
+        var ring = FragmentRing(capacity: 4)
+        for index in 0..<12 {
+            ring.append(Self.fragment(UInt64(index),
+                                      startNs: 10_000_000_000 + Int64(index) * Self.fragmentNs,
+                                      gridOriginNs: 10_000_000_000))
+        }
+        let sequences = ring.fragments.map(\.sequence)
+        #expect(sequences == [8, 9, 10, 11],
+                "the ring holds the last `capacity`, and their sequences are the originals")
+        #expect(sequences == sequences.sorted(), "strictly increasing, never renumbered")
+        #expect(Set(sequences).count == sequences.count, "and never reused")
+    }
+
+    /// PPS `source_ring_test.cpp` — `OverrunNoCorruption`.
+    ///
+    /// ⛔ The point is not that eviction happens. It is that after an overrun the
+    /// *index* still describes exactly what is there: no torn entry, no fragment
+    /// naming an interval it no longer covers, and a retained window that matches
+    /// the fragments rather than the history.
+    @Test("Overrunning the ring evicts the oldest and leaves the index consistent")
+    func overrunLeavesTheIndexConsistent() {
+        let capacity = 20
+        var ring = FragmentRing(capacity: capacity)
+        let origin: Int64 = 10_000_000_000
+        for index in 0..<(capacity * 3) {
+            ring.append(Self.fragment(UInt64(index),
+                                      startNs: origin + Int64(index) * Self.fragmentNs,
+                                      gridOriginNs: origin))
+        }
+
+        #expect(ring.fragments.count == capacity, "never more than capacity")
+
+        let retained = ring.retainedNs
+        #expect(retained?.lowerBound == ring.fragments.first?.startNs)
+        #expect(retained?.upperBound == ring.fragments.last?.endNs)
+
+        // Contiguous and ordered: an overrun must not leave a hole behind.
+        for (earlier, later) in zip(ring.fragments, ring.fragments.dropFirst()) {
+            #expect(earlier.sequence + 1 == later.sequence)
+            #expect(earlier.endNs == later.startNs)
+        }
+
+        // ⛔ An interval that rolled away is `absent`, not a stale hit.
+        let evicted = ring.extract(origin..<(origin + Self.fragmentNs))
+        #expect(evicted.isAbsent)
+    }
+
+    /// PPS `source_ring_test.cpp` — `PublishOnInvalidSlotIsNoop`.
+    ///
+    /// ⛔ `RingBufferRecorder.receive` returns without appending when the
+    /// fragment's bytes fail to write, so the ring never claims an interval it
+    /// cannot produce (8.4b). Nothing tested that the *index* behaves correctly
+    /// when a fragment is skipped, and a skipped fragment is what a full disk
+    /// looks like.
+    @Test("A fragment that never landed leaves a hole the ring reports honestly")
+    func skippedFragmentIsAHoleAndNotAClaim() {
+        var ring = FragmentRing(capacity: 8)
+        let origin: Int64 = 10_000_000_000
+        // Sequences 0 and 2 land; 1's bytes failed, so it was never appended.
+        ring.append(Self.fragment(0, startNs: origin, gridOriginNs: origin))
+        ring.append(Self.fragment(2, startNs: origin + 2 * Self.fragmentNs,
+                                  gridOriginNs: origin))
+
+        #expect(ring.fragments.map(\.sequence) == [0, 2],
+                "the gap in sequence is the record that something did not land")
+
+        let clip = ring.extract(origin..<(origin + 3 * Self.fragmentNs))
+        #expect(clip.isAbsent == false, "what did land is still extractable")
+        #expect(clip.holesNs.isEmpty == false,
+                "and the interval that did not is reported as a hole, not silently spanned")
+        let hole = clip.holesNs.first
+        #expect(hole?.lowerBound == origin + Self.fragmentNs)
+        #expect(hole?.upperBound == origin + 2 * Self.fragmentNs)
+    }
+
     // MARK: Helpers
 
     /// Encoded size of an `AchievedFrames`, through the library's own encoder.

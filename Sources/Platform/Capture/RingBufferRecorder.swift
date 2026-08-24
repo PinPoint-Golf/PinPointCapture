@@ -17,14 +17,19 @@
 //  self-test, and the difference is deliberate.** The self-test wants drops to be
 //  *visible* (REQ-CAP-3); the capture path wants them not to happen, because
 //  §9.2 is "capture is non-recoverable; replay is repeatable" and capture
-//  degrades last. The comment in `AVFoundationCaptureDevice.warmUp` asks for
-//  exactly this and this is where it is answered.
+//  degrades last. ⚠ The flag itself is NOT set here — it lives on the output, and
+//  `AVFoundationCaptureDevice.Routing.discardsLateFrames` derives it from which
+//  consumer is active, so neither requirement can quietly overwrite the other.
 //
-//  ⚠ **Not exercised on hardware in this session.** The Core half is covered by
-//  `make test-core`; what is below is the wiring, and the simulator has no
-//  150 fps camera to run it against. Where an API contract is load-bearing it is
-//  named in a comment so the first device run has something to check against
-//  rather than a guess to re-derive.
+//  ⚠ **Connected 24 Aug 2026 (E1.1), and still not exercised on hardware.**
+//  `AVFoundationCaptureDevice` feeds this from the live session's sample
+//  delegate; what no phone has yet done is produce twenty fragments, rolling, at
+//  the claimed rate. The Core half is covered by `make test-core`, and the
+//  simulator has no 150 fps camera and no encoder path worth trusting for the
+//  rest. Where an API contract is load-bearing it is named in a comment so the
+//  first device run has something to check against rather than a guess to
+//  re-derive — and `stats` is there so that run reports numbers instead of an
+//  impression.
 //
 //  Spec: `CORE` §5.8, §5.14, §8.4; requirements REQ-BUF-1..4, REQ-PORT-9.
 
@@ -32,6 +37,87 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import CaptureCore
+
+/// What the ring did, counted rather than inferred.
+///
+/// ⚠ **The instrument exists because the exit criterion cannot be checked
+/// without it.** E1.1 asks for "twenty fragments, rolling, at the claimed rate";
+/// a directory listing shows the first two and says nothing about the third. An
+/// average frame rate is the specific number that hides the failure — 150 fps
+/// mean with one 40 ms stall is not 150 fps, and it is the stall that loses the
+/// impact frame.
+///
+/// Adapted from PinPointStudio's `src/Buffer/source_stats.h`, which carries the
+/// same intent on a different substrate: `events_written`,
+/// `events_overwritten`, `max_inter_arrival_us`, `monotonicity_violations`. ⛔
+/// The counters that matter most are the ones for frames that go NOWHERE —
+/// PPS's `acquireWriteSlot` returns `valid=false` rather than swallowing a
+/// write, and the equivalents here are `framesDroppedNotRetaining` and
+/// `fragmentsDroppedWriteFailed`.
+public struct RingStats: Sendable, Hashable {
+
+    /// Frames handed to the encoder. The denominator for everything else.
+    public var framesAppended: Int = 0
+    /// The encoder was not ready. §9.2: counted, never ignored.
+    public var framesDroppedEncoderBusy: Int = 0
+    /// ⛔ A frame that arrived while nothing was retaining. Previously invisible:
+    /// `append` returned early and the frame vanished without a trace.
+    public var framesDroppedNotRetaining: Int = 0
+
+    /// Fragments that reached the ring index.
+    public var fragmentsWritten: Int = 0
+    /// Fragments evicted by rollover. `written - evicted` should settle at the
+    /// capacity once the ring is full.
+    public var fragmentsEvicted: Int = 0
+    /// ⛔ Bytes that did not land, so the ring must not claim them (8.4b).
+    public var fragmentsDroppedWriteFailed: Int = 0
+    /// A fragment that carried no frames at all, so it could not be indexed.
+    public var fragmentsDroppedEmpty: Int = 0
+
+    /// **The rate evidence.** The largest gap between consecutive delivered
+    /// frames. PPS's `updateInterArrival`.
+    public var maxInterArrivalNs: Int64 = 0
+    /// Frame timestamps that went backwards. With `AllowFrameReordering = false`
+    /// this should stay zero — counting it is how we find out rather than
+    /// assume.
+    public var monotonicityViolations: Int = 0
+
+    public init() {}
+
+    /// The realised rate over what the ring actually saw, from timestamp deltas
+    /// and never from a frame count over a wall clock (REQ-FPS-2, REQ-TIME-5).
+    ///
+    /// ⚠ Deliberately paired with `maxInterArrivalNs` at every call site. On its
+    /// own it is the average that hides the stall.
+    public var meanInterArrivalNs: Int64 {
+        guard framesAppended > 1, spanNs > 0 else { return 0 }
+        return spanNs / Int64(framesAppended - 1)
+    }
+
+    /// First to last delivered frame, in the capture timebase.
+    public internal(set) var spanNs: Int64 = 0
+
+    /// ⚠ Called on the frame path. No allocation, no locking — the caller owns
+    /// the queue this runs on.
+    mutating func observeArrival(atNs timestampNs: Int64) {
+        defer { lastArrivalNs = timestampNs }
+        framesAppended += 1
+        guard let previous = lastArrivalNs else {
+            firstArrivalNs = timestampNs
+            return
+        }
+        let delta = timestampNs - previous
+        if delta < 0 {
+            monotonicityViolations += 1
+            return
+        }
+        if delta > maxInterArrivalNs { maxInterArrivalNs = delta }
+        if let first = firstArrivalNs { spanNs = timestampNs - first }
+    }
+
+    private var firstArrivalNs: Int64?
+    private var lastArrivalNs: Int64?
+}
 
 /// The rolling buffer, its files, and the clip extraction that reads it.
 ///
@@ -73,6 +159,21 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
     /// answers "what does the buffer hold?".
     public private(set) var ring = FragmentRing(capacity: RingBufferRecorder.fragmentCapacity)
 
+    /// What the ring did during the current retention. ⛔ Reset by
+    /// `startRetaining`, so the numbers always belong to one run — a counter
+    /// accumulated across arms answers a question nobody asked.
+    ///
+    /// ⚠ Mutated on `queue` and read from anywhere. The read is a struct copy of
+    /// plain integers, which is the reason this is a value type and not a class.
+    public private(set) var stats = RingStats()
+
+    /// ⚠ **Exposed for the synthetic-frame tests, which are the only thing that
+    /// can prove the concatenation contract without a camera.** A clip is the
+    /// initialisation segment followed by fragments; a fragment alone does not
+    /// decode, and there is no platform guarantee the writer got that right — so
+    /// a test has to be able to ask whether the header ever arrived.
+    var hasInitialisationSegment: Bool { initialisationSegment != nil }
+
     /// Set while the exposure lock holds, which is the shipping configuration
     /// (REQ-OPT-3). `nil` means exposure was not locked and the numbers are
     /// `sampled` per frame (5.8h).
@@ -97,8 +198,8 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
     public func startRetaining(width: Int, height: Int, fps: Double,
                                bitrate: Int) throws {
         guard writer == nil else { return }
-        try FileManager.default.createDirectory(at: directory,
-                                                withIntermediateDirectories: true)
+        try prepareDirectory()
+        stats = RingStats()
 
         // ⚠ `contentType:` plus `outputFileTypeProfile = .mpeg4AppleHLS` is what
         // makes the writer emit segments through the delegate instead of writing
@@ -164,8 +265,21 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
 
     /// One delivered frame. ⚠ Called on `queue`, inside a 6.7 ms budget.
     public func append(_ sampleBuffer: CMSampleBuffer, device: AVCaptureDevice?) {
+        // ⛔ The guard comes BEFORE the timeline, and the order is the fix. It
+        // used to observe first, so frames arriving after `stopRetaining` piled
+        // into `pending` with no segment boundary left to drain them — and
+        // frames arriving before `startRetaining` disappeared with no counter at
+        // all. PPS makes the same moment explicit: `acquireWriteSlot` returns
+        // `valid=false` when the buffer is not Capturing, and the producer can
+        // see that it did.
+        guard let writer, let input else {
+            stats.framesDroppedNotRetaining += 1
+            return
+        }
+
+        stats.observeArrival(
+            atNs: FrameTimeline.nanoseconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)))
         timeline.observe(sampleBuffer, device: device)
-        guard let writer, let input else { return }
 
         if sessionStarted == false {
             writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
@@ -176,12 +290,16 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
             // §9.2 says capture degrades last — so this is counted, not ignored,
             // and reaches the wire as `dropped_frames` on `AchievedSummary`.
             timeline.observeDrop()
+            stats.framesDroppedEncoderBusy += 1
             return
         }
         input.append(sampleBuffer)
     }
 
-    public func appendDrop() { timeline.observeDrop() }
+    public func appendDrop() {
+        timeline.observeDrop()
+        stats.framesDroppedEncoderBusy += 1
+    }
 
     // MARK: Extraction
 
@@ -228,6 +346,32 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
 
     // MARK: Files
 
+    /// Create the ring directory, mark it, and sweep whatever the last run left.
+    ///
+    /// ⛔ **The sweep is not tidiness.** Fragments that outlive their process —
+    /// a crash, a jetsam kill mid-swing — are not in the in-memory ring, so
+    /// nothing will ever evict them. They belong to no session, they cannot be
+    /// extracted from, and they count against the storage headroom REQ-OFF-2's
+    /// arm-time floor is computed from. The only moment it is safe to delete
+    /// them is here, before anything starts writing.
+    private func prepareDirectory() throws {
+        var directory = directory
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+
+        // ⚠ Excluded from backup, and NOT in Caches. The ring is regenerable, so
+        // Caches is the conventional home — but iOS may purge it under storage
+        // pressure while the session is armed, and a ring that empties itself
+        // without saying so is precisely the silent failure §9.2 forbids.
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? directory.setResourceValues(values)
+
+        let orphans = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)) ?? []
+        for orphan in orphans { try? FileManager.default.removeItem(at: orphan) }
+    }
+
     private func fileURL(of fragment: CapturedFragment) -> URL {
         directory.appendingPathComponent("frag-\(fragment.sequence).mp4")
     }
@@ -266,6 +410,7 @@ extension RingBufferRecorder: AVAssetWriterDelegate {
         // whose track times disagree with the frames is a report about the
         // container; the frames are the measurement.
         guard let first = batch.timestampsNs.first, let last = batch.timestampsNs.last else {
+            stats.fragmentsDroppedEmpty += 1
             return
         }
         let period = batch.timestampsNs.count > 1
@@ -291,8 +436,17 @@ extension RingBufferRecorder: AVAssetWriterDelegate {
             // A fragment whose bytes did not land is not in the buffer, and the
             // ring must not claim it: the next `capture_request` for that span
             // gets `absent`/`outside_buffer`, which is the honest answer (8.4b).
+            //
+            // ⚠ PPS's `PublishOnInvalidSlotIsNoop` is the same rule on the other
+            // substrate, and it is counted for the same reason: a ring that
+            // silently shrinks looks identical to one that is simply young.
+            stats.fragmentsDroppedWriteFailed += 1
             return
         }
-        for evicted in ring.append(fragment) { removeFile(of: evicted) }
+        stats.fragmentsWritten += 1
+        for evicted in ring.append(fragment) {
+            stats.fragmentsEvicted += 1
+            removeFile(of: evicted)
+        }
     }
 }

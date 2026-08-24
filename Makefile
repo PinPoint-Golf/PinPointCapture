@@ -68,7 +68,7 @@ CONFORM_WARMUP_S ?= 75
 
 COMMA := ,
 
-.PHONY: all gen build build-device _udid test test-core test-app conform conform-sim conform-tool conform-iop interop read-bundle pull-bundles device deploy lint clean help
+.PHONY: all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop interop read-bundle pull-bundles device deploy lint clean help
 
 # ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
 # what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
@@ -129,7 +129,14 @@ build-device: gen
 	udid="$(UDID)"; \
 	if [ -z "$$udid" ]; then udid=$$($(MAKE) --no-print-directory _udid); fi; \
 	if [ -z "$$udid" ]; then \
-		echo "make build-device: no connected device. Try: make device"; exit 1; \
+		echo "make build-device: no connected PHYSICAL device."; \
+		paired=$$($(MAKE) --no-print-directory _udid_paired); \
+		if [ -n "$$paired" ]; then \
+			echo "  paired but not connected: $$paired"; \
+			echo "  plug it in, unlock it, and trust this Mac."; \
+		fi; \
+		echo "  ⛔ a simulator is NOT a substitute here — see the _udid note."; \
+		exit 1; \
 	fi; \
 	echo "device UDID: $$udid"; \
 	set -o pipefail && xcodebuild build \
@@ -142,14 +149,37 @@ build-device: gen
 		-allowProvisioningUpdates \
 		| $(XCB)
 
-# Resolve the UDID of the first connected physical device. Prints nothing if none.
+# Resolve the UDID of the first connected PHYSICAL device. Prints nothing if none.
+#
+# ⛔ **`devicectl list devices` lists simulators too, and they report
+# `tunnelState: connected` while a real phone sitting on the desk reports
+# `disconnected`.** Filtering on tunnelState alone therefore returns a SIMULATOR
+# udid — which `xcodebuild -destination id=...` accepts happily, so `make
+# build-device` and `make deploy` succeed against a simulator and every "device
+# run" measures a machine with no camera. Found 24 Aug 2026 while setting up
+# E1.1's device run; it had been silently true since this target was written.
+#
+# ⚠ `hardwareProperties.reality == "physical"` is the discriminator. Prefer a
+# connected one; if the only physical device is not connected, print nothing so
+# the caller can say so by name rather than falling through to a simulator.
 _udid:
 	@tmp=$$(mktemp -t ppcp-devices); \
 	xcrun devicectl list devices --json-output "$$tmp" >/dev/null 2>&1 || true; \
 	python3 -c 'import json,sys;\
 d=json.load(open(sys.argv[1])).get("result",{}).get("devices",[]);\
-c=[x for x in d if x.get("connectionProperties",{}).get("tunnelState")=="connected"];\
+p=[x for x in d if x.get("hardwareProperties",{}).get("reality")=="physical"];\
+c=[x for x in p if x.get("connectionProperties",{}).get("tunnelState")=="connected"];\
 print(c[0]["hardwareProperties"]["udid"] if c else "")' "$$tmp" 2>/dev/null || true; \
+	rm -f "$$tmp"
+
+# Physical devices that are paired but NOT connected, for a useful error message.
+_udid_paired:
+	@tmp=$$(mktemp -t ppcp-devices); \
+	xcrun devicectl list devices --json-output "$$tmp" >/dev/null 2>&1 || true; \
+	python3 -c 'import json,sys;\
+d=json.load(open(sys.argv[1])).get("result",{}).get("devices",[]);\
+p=[x for x in d if x.get("hardwareProperties",{}).get("reality")=="physical"];\
+print("; ".join(x.get("deviceProperties",{}).get("name","?")+" ("+x.get("connectionProperties",{}).get("tunnelState","?")+")" for x in p))' "$$tmp" 2>/dev/null || true; \
 	rm -f "$$tmp"
 
 # Everything. Core first: it is the fast one, and if the layer seam is broken

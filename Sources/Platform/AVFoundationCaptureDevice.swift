@@ -8,7 +8,14 @@ import AVFoundation
 import Foundation
 import CaptureCore
 
-public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable {
+/// ⚠ `NSObject` because this class is now the capture session's sample-buffer
+/// delegate itself (see **The frame path**), and `setSampleBufferDelegate`
+/// requires `NSObjectProtocol`. It is the delegate rather than vending one so
+/// that there is exactly one owner of the frame path and no way for a consumer
+/// to unhook another.
+public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
+                                              AVCaptureVideoDataOutputSampleBufferDelegate,
+                                              @unchecked Sendable {
 
     /// ⛔ REQ-OPT-5. PHYSICAL devices only — never `.builtInDualCamera`,
     /// `.builtInDualWideCamera` or `.builtInTripleCamera`.
@@ -25,14 +32,64 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     private let session = AVCaptureSession()
     /// `CORE` 7.3d. Held here because the session it observes is held here.
     private var interruptions: InterruptionMonitor?
+    /// ⛔ `.userInteractive`, matching PinPointStudio's `ThreadPolicy::apply`
+    /// for `ThreadRole::Capture` (`src/Buffer/thread_policy.cpp:106`). It was
+    /// `.userInitiated`, which is the tier PPS gives its *merger* thread — one
+    /// below the capture callback. At 150 fps the budget is 6.7 ms per frame and
+    /// the frame the scheduler defers is not late, it is gone.
     private let sampleQueue = DispatchQueue(label: "org.pinpointstudio.capture.samples",
-                                            qos: .userInitiated)
+                                            qos: .userInteractive)
     private var activeDevice: AVCaptureDevice?
-    /// REQ-BUF-1's ring, held here because the sample path that must eventually
-    /// feed it is here. ⛔ `nil` until something retains — see `extractClip`.
+    /// REQ-BUF-1's ring, held here because the sample path that feeds it is here.
+    /// ⛔ `nil` until `startRetaining`.
     private var recorder: RingBufferRecorder?
 
-    public init() {}
+    /// ⛔ **Where every delivered frame goes, and the only thing that decides.**
+    ///
+    /// One `AVCaptureVideoDataOutput`, one delegate — this class — and a state
+    /// that says who receives. The alternative, two outputs with opposite
+    /// discard policies, became legal in iOS 16 (`AVCaptureSession.h`: "this
+    /// restriction no longer applies to AVCaptureVideoDataOutputs") and is still
+    /// wrong here: a session computes a non-zero `hardwareCost` only once a
+    /// second video data output is added, `> 1.0` refuses to start, and 1080p150
+    /// already sits on the thermal axis that binds first.
+    ///
+    /// ⚠ Mutually exclusive by construction. Self-testing while retaining would
+    /// flip `alwaysDiscardsLateVideoFrames` under a live ring, which is the one
+    /// combination that must not be representable.
+    /// ⚠ Internal rather than private **so the discard invariant can be
+    /// tested**. `discardsLateFrames` is the single line where REQ-CAP-3 and
+    /// §9.2 pull in opposite directions, and it is not reachable on a simulator
+    /// through `warmUp` — which needs a camera. A test that cannot see this
+    /// enum cannot check the one thing most worth checking.
+    enum Routing {
+        /// Warm: locked and settled, nothing consuming frames but the preview.
+        case warm
+        /// REQ-BUF-1. Frames go to the ring, and late frames are NOT discarded.
+        case retaining
+        /// REQ-CAP-2/CAP-3. Frames go to the probe, and late frames ARE
+        /// discarded, because the self-test wants drops to be visible.
+        case selfTesting(FrameRateProbe)
+
+        /// ⛔ The self-test and the capture path want opposite answers and the
+        /// reason is §9.2: capture is non-recoverable, replay is repeatable, so
+        /// capture degrades last and must never be the place a frame is thrown
+        /// away. Deriving the flag from the state is what stops the two
+        /// requirements overwriting each other.
+        var discardsLateFrames: Bool {
+            if case .retaining = self { return false }
+            return true
+        }
+    }
+
+    /// ⛔ **Owned by `sampleQueue`, like `recorder`.** Every write goes through
+    /// `sampleQueue.async` and every read on the frame path is already on that
+    /// queue, so the two are serialised by the queue itself and the 6.7 ms
+    /// budget pays for no lock. Callers outside the frame path read through
+    /// `sampleQueue.sync`.
+    private var routing: Routing = .warm
+
+    public override init() { super.init() }
 
     // MARK: - Enumeration (REQ-FPS-1, REQ-CAP-1)
 
@@ -170,17 +227,28 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
             output = existing
         } else {
             let fresh = AVCaptureVideoDataOutput()
-            // The self-test wants drops to be VISIBLE, so late frames are
-            // discarded and `didDrop` fires (REQ-CAP-3). ⚠ The ring-buffer
-            // capture path has the opposite requirement and must revisit this:
-            // capture is non-recoverable (§9.2).
-            fresh.alwaysDiscardsLateVideoFrames = true
             guard session.canAddOutput(fresh) else {
                 throw CaptureDeviceError.configurationFailed("cannot add video output")
             }
             session.addOutput(fresh)
             output = fresh
         }
+
+        // ⛔ **The flag is derived from `routing`, never written as a literal.**
+        // It used to be `true` here with a comment saying the capture path would
+        // have to revisit it; this is that revisit. The self-test wants late
+        // frames DISCARDED so `didDrop` fires and REQ-CAP-3 can see degradation;
+        // the ring wants them KEPT because §9.2 makes capture degrade last. Two
+        // requirements, one property — so it moves with the state rather than
+        // one of them quietly winning.
+        output.alwaysDiscardsLateVideoFrames = routing.discardsLateFrames
+
+        // ⚠ Set ONCE, here, and never reassigned. `measureSustainedRate` used to
+        // seize this delegate and null it on the way out, which would have
+        // silently disconnected the ring the first time anyone self-tested while
+        // armed. The probe is now a consumer behind `routing`, not a rival
+        // delegate.
+        output.setSampleBufferDelegate(self, queue: sampleQueue)
 
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
@@ -223,6 +291,11 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     }
 
     public func goCold() {
+        // ⛔ Retention ends before the outputs do. A writer left open across the
+        // teardown below is one nothing will ever close, and its fragment files
+        // outlive the process as orphans. `stopRetaining` is idempotent, so
+        // callers that already did the right thing pay nothing.
+        stopRetaining()
         if session.isRunning { session.stopRunning() }
         session.beginConfiguration()
         session.inputs.forEach { session.removeInput($0) }
@@ -230,6 +303,83 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
         session.commitConfiguration()
         activeDevice = nil
     }
+
+    // MARK: - Retention (REQ-BUF-1)
+
+    /// Where the rolling buffer's fragments live.
+    ///
+    /// ⛔ **Application Support, not Caches.** The ring is regenerable, which is
+    /// the textbook argument for Caches — and iOS may purge Caches under storage
+    /// pressure *while the session is armed*. A ring that empties itself with no
+    /// report is the silent failure §9.2 exists to forbid, and it would surface
+    /// as `extractClip` answering `absent` for a swing the user watched happen.
+    /// The directory is excluded from backup instead, and swept on each
+    /// `startRetaining`.
+    private static func ringDirectory() throws -> URL {
+        try FileManager.default.url(for: .applicationSupportDirectory,
+                                    in: .userDomainMask,
+                                    appropriateFor: nil, create: true)
+            .appendingPathComponent("ring", isDirectory: true)
+    }
+
+    public func startRetaining(mode: VideoMode) throws {
+        // ⚠ Built on the caller's thread, deliberately. Nothing can reach this
+        // recorder until the `async` below installs it, so the throwing work —
+        // directory creation, `AVAssetWriter.startWriting` — happens where it
+        // can be reported, and the frame path never sees a half-built ring.
+        let recorder = RingBufferRecorder(directory: try Self.ringDirectory(),
+                                          queue: sampleQueue)
+        try recorder.startRetaining(width: mode.width, height: mode.height,
+                                    fps: mode.fps, bitrate: Self.provisionalBitrate)
+        // REQ-OPT-3. The lock is the shipping configuration, so the exposure
+        // numbers are `locked_constant` rather than `sampled` (5.8h).
+        recorder.lockedExposureNs = activeDevice.flatMap {
+            $0.exposureMode == .locked ? Self.nanoseconds($0.exposureDuration) : nil
+        }
+
+        sampleQueue.async { [weak self] in
+            guard let self else { return }
+            self.recorder = recorder
+            self.routing = .retaining
+            self.applyDiscardPolicy()
+        }
+    }
+
+    /// ⚠ `sync`, not `async`, and the reason is `goCold`: it removes the
+    /// session's outputs on the caller's thread immediately after calling this,
+    /// so a deferred teardown would race the removal and could cancel a writer
+    /// whose output had already gone. Not on the frame path, so the wait is free.
+    public func stopRetaining() {
+        sampleQueue.sync {
+            recorder?.stopRetaining()
+            recorder = nil
+            routing = .warm
+            applyDiscardPolicy()
+        }
+    }
+
+    public var ringStats: RingStats {
+        sampleQueue.sync { recorder?.stats ?? RingStats() }
+    }
+
+    /// ⚠ Must run on `sampleQueue`, which owns `routing`.
+    private func applyDiscardPolicy() {
+        let discards = routing.discardsLateFrames
+        for output in session.outputs.compactMap({ $0 as? AVCaptureVideoDataOutput }) {
+            output.alwaysDiscardsLateVideoFrames = discards
+        }
+    }
+
+    /// ⚠ **Provisional, and marked so deliberately.** REQ-BUF-3 requires the
+    /// operating bitrate be set by measurement against shaft-detection RMSE and
+    /// never by judgement; 50 Mbps is the capability spike's placeholder, chosen
+    /// to sit between the sweep's endpoints. **E1.4 owns the real number and
+    /// E-M2 produces it** — this level must not harden one.
+    ///
+    /// ⚠ It also sits above the 40 Mbps Main-tier cap at level 5.1, so whether
+    /// VideoToolbox actually emits High tier must be read off the output rather
+    /// than assumed.
+    static let provisionalBitrate = 50_000_000
 
     private static func deviceType(for lens: Lens) -> AVCaptureDevice.DeviceType {
         switch lens {
@@ -257,12 +407,29 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
     public func measureSustainedRate(mode: VideoMode,
                                      duration: TimeInterval) async throws -> MeasuredCapability {
         try warmUp(mode: mode)
-        guard let output = session.outputs.compactMap({ $0 as? AVCaptureVideoDataOutput }).first
+        guard session.outputs.contains(where: { $0 is AVCaptureVideoDataOutput })
         else { throw CaptureDeviceError.configurationFailed("no video output") }
 
+        // ⛔ A state change, not a delegate swap. This used to install the probe
+        // as the output's delegate and null it on the way out — which, once the
+        // ring is connected, silently disconnects the capture path and leaves
+        // nothing listening. The probe is a consumer behind `routing` now.
+        //
+        // ⚠ The prior routing is restored rather than assumed to be `.warm`:
+        // self-testing while armed must give the ring back, not drop it.
         let probe = FrameRateProbe()
-        output.setSampleBufferDelegate(probe, queue: sampleQueue)
-        defer { output.setSampleBufferDelegate(nil, queue: nil) }
+        let previous = sampleQueue.sync { () -> Routing in
+            let previous = routing
+            routing = .selfTesting(probe)
+            applyDiscardPolicy()
+            return previous
+        }
+        defer {
+            sampleQueue.sync {
+                routing = previous
+                applyDiscardPolicy()
+            }
+        }
 
         let thermalAtStart = thermalState
         try? await Task.sleep(for: .seconds(duration))
@@ -377,25 +544,24 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
 
     // MARK: - The retained window (CORE 8.4b)
 
-    /// ⛔ **`outside_buffer`, honestly, until the ring is fed by a real camera.**
+    /// The frames the ring actually holds around an interval.
     ///
-    /// `RingBufferRecorder` is written, unit-tested and not connected: the live
-    /// capture session's `AVCaptureVideoDataOutput` currently drives only the
-    /// self-test's `FrameRateProbe`, so nothing appends fragments and the ring is
-    /// empty on every device including a phone. Answering `absent` with
-    /// `outside_buffer` is what 8.4b says a peer whose ring does not hold the
-    /// interval must answer, and it is the truth here — an implementation that
-    /// returned a `present` extraction over no fragments would be the one thing
-    /// I10 exists to prevent.
+    /// ⛔ **`absent` is a result, not a failure** (I10, 8.4b). A peer that is not
+    /// retaining — cold, warm-but-not-armed, or armed on a device whose writer
+    /// refused — answers `outside_buffer` and the Shot still exists. It never
+    /// invents frames and it never throws. An implementation that returned a
+    /// `present` extraction over no fragments is the single thing I10 is for.
     ///
-    /// ⚠ Recorded in `docs/conformance/ppcp-conformance.md` under what needs a phone. The
-    /// seam is what D-compose owed; the wire from the sample callback into the
-    /// ring is device work that cannot be verified on a simulator.
+    /// ⚠ Read through `sampleQueue` because that queue owns `recorder`: the ring
+    /// is mutated at every segment boundary, and an extraction racing an
+    /// eviction would name a fragment whose file has just been deleted.
     public func extractClip(_ requestedNs: Range<Int64>) -> ClipExtraction {
-        if let recorder, recorder.isRetaining {
+        sampleQueue.sync {
+            guard let recorder, recorder.isRetaining else {
+                return ClipExtraction.nothingRetained(requestedNs)
+            }
             return recorder.ring.extract(requestedNs)
         }
-        return ClipExtraction.nothingRetained(requestedNs)
     }
 
     /// `CORE` 5.7 `format.codec` — what a Capture from these profiles is encoded
@@ -420,6 +586,50 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
         let session = session
         Task { @MainActor in
             monitor.start(observing: session) { session.isRunning }
+        }
+    }
+
+    // MARK: - The frame path
+
+    /// ⛔ **Every delivered frame arrives here and nowhere else.**
+    ///
+    /// ⚠ No allocation, no actor hop, no `await`, no lock. At 150 fps the budget
+    /// is 6.7 ms and `routing` is owned by the queue this runs on, so reading it
+    /// costs nothing. A `Task` created on this path would be the reason the
+    /// device reports drops the hardware did not have.
+    public func captureOutput(_ output: AVCaptureOutput,
+                              didOutput sampleBuffer: CMSampleBuffer,
+                              from connection: AVCaptureConnection) {
+        switch routing {
+        case .warm:
+            // Nothing consuming frames. ⚠ Not counted here: the ring is the
+            // thing that counts what it did and did not take, and there is no
+            // ring. `RingStats.framesDroppedNotRetaining` covers the window
+            // where one exists but is not yet retaining.
+            break
+        case .retaining:
+            recorder?.append(sampleBuffer, device: activeDevice)
+        case .selfTesting(let probe):
+            probe.observe(sampleBuffer)
+        }
+    }
+
+    /// A frame the platform threw away before we saw it.
+    ///
+    /// ⛔ Only reachable while `alwaysDiscardsLateVideoFrames` is `true`, which
+    /// by `Routing.discardsLateFrames` means only while self-testing. If this
+    /// ever fires during `.retaining`, the flag did not follow the state and
+    /// that is a bug this counter will expose rather than hide.
+    public func captureOutput(_ output: AVCaptureOutput,
+                              didDrop sampleBuffer: CMSampleBuffer,
+                              from connection: AVCaptureConnection) {
+        switch routing {
+        case .warm:
+            break
+        case .retaining:
+            recorder?.appendDrop()
+        case .selfTesting(let probe):
+            probe.observeDrop()
         }
     }
 
@@ -468,9 +678,13 @@ public final class AVFoundationCaptureDevice: CaptureDevice, @unchecked Sendable
 /// ⚠ No allocation, no actor hop and no `await` on this path. At 150 fps the
 /// budget is 6.7 ms per frame; a `Task` created here would be the reason the
 /// self-test reports drops that the hardware did not have.
-private final class FrameRateProbe: NSObject,
-                                    AVCaptureVideoDataOutputSampleBufferDelegate,
-                                    @unchecked Sendable {
+/// ⚠ **No longer a delegate.** It was `AVCaptureVideoDataOutputSampleBufferDelegate`
+/// and was installed on the output for the duration of a self-test, which meant
+/// a self-test unhooked whatever else was listening. `AVFoundationCaptureDevice`
+/// owns the delegate now and hands frames here while `routing` is
+/// `.selfTesting`; this type kept its arithmetic and lost its claim on the
+/// output.
+final class FrameRateProbe: @unchecked Sendable {
     struct Result {
         var achievedFPS: Double
         var dropped: Int
@@ -482,9 +696,7 @@ private final class FrameRateProbe: NSObject,
     private var count = 0
     private var dropped = 0
 
-    func captureOutput(_ output: AVCaptureOutput,
-                       didOutput sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection) {
+    func observe(_ sampleBuffer: CMSampleBuffer) {
         let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
         lock.lock()
         if first == nil { first = pts }
@@ -493,9 +705,7 @@ private final class FrameRateProbe: NSObject,
         lock.unlock()
     }
 
-    func captureOutput(_ output: AVCaptureOutput,
-                       didDrop sampleBuffer: CMSampleBuffer,
-                       from connection: AVCaptureConnection) {
+    func observeDrop() {
         lock.lock()
         dropped += 1
         lock.unlock()

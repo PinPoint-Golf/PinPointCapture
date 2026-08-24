@@ -82,9 +82,29 @@ revocable), `NetworkJoin` (§6 — `NEHotspotConfiguration` with consent, and 6b
 **second** branch because iOS cannot reassociate a previous network), and
 `RendezvousCoordinator` (§4's order: decode, expiry, join, then walk).
 
-⛔ `Capture/RingBufferRecorder.swift` is **written and not connected**. The live
-session's `AVCaptureVideoDataOutput` drives only the self-test's probe, so nothing
-appends fragments and `CaptureDevice.extractClip` answers `absent` /
-`outside_buffer` — which is 8.4b's own answer for a ring that does not hold the
-interval, and is the truth here. Recorded in `docs/conformance/ppcp-conformance.md` as needing
-a phone rather than faked.
+✅ `Capture/RingBufferRecorder.swift` is **connected** (E1.1, 24 Aug 2026).
+`AVFoundationCaptureDevice` is itself the session's sole
+`AVCaptureVideoDataOutputSampleBufferDelegate` and routes each frame by an
+explicit state — `warm` (nobody), `retaining` (the ring), `selfTesting` (the rate
+probe). ⛔ `alwaysDiscardsLateVideoFrames` is **derived from that state and never
+written as a literal**: the self-test needs late frames discarded so REQ-CAP-3 can
+see degradation, the ring needs them kept because §9.2 makes capture degrade last,
+and deriving it is what stops one requirement quietly overwriting the other.
+
+✅ **The ring's mechanics are proved on a simulator**, by
+`Tests/RingBufferRecorderTests.swift` driving synthetic frames through the real
+`AVAssetWriter`: fragments land at the 0.5 s cadence, the ring rolls at 20 and
+evicted fragments take their files with them, an out-of-window interval answers
+`absent`, orphans from a previous run are swept, and — the one E1.2 depends on —
+the initialisation segment plus fragments **decodes as one video track, while the
+same fragments without it do not open at all**. ⚠ Frames must be paced at
+wall-clock rate: `expectsMediaDataInRealTime` throttles, and over-feeding this
+path produces silence rather than an error.
+
+⛔ **What still needs a phone is the camera, not the writer**: 1080p at the
+claimed rate, the REQ-OPT-1..4 locks holding under load, thermal behaviour, and
+whether VideoToolbox emits High tier at 50 Mbps. `RingBufferRecorder.stats`
+(`RingStats`) exists so that run reports numbers — inter-arrival maximum,
+fragments written and evicted, frames that went nowhere — rather than a directory
+listing that looks about right. Adapted from PinPointStudio's
+`src/Buffer/source_stats.h`; see `docs/design/capability-spike.md` §4.
