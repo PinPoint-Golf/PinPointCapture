@@ -91,11 +91,16 @@ public struct BootstrapWindow: Sendable, Equatable {
         case userClosed
 
         /// ⚠ 11.9c — whether a screen may offer the ordinary *try again* it
-        /// offers for a network failure. **This is not the whole of 11.9c**: a
-        /// mismatch and a MAC failure are both `attemptAbortedOrRejected`, and
-        /// only the acceptor (D11) knows which. Where this is `true` the reason
-        /// carries no implication either way; where it is `false` the answer is
-        /// settled regardless of what the abort was.
+        /// offers for a network failure, judged on the **close reason alone**.
+        ///
+        /// ⛔ **Use `Close.advice` where there is a `Close`.** This was the whole
+        /// of what D10 could say, and it was not enough: 11.9c turns on whether
+        /// the cause was a mismatch or a MAC failure, and `attemptAbortedOrRejected`
+        /// covers those *and* a timeout *and* a malformed frame. D11 supplies the
+        /// missing half — `AttemptOutcome.abortedOrRejected` now carries the
+        /// `bs_abort` reason code, so `Close` can answer exactly rather than
+        /// conservatively. What remains here is the answer for a window that
+        /// closed without an attempt ending.
         ///
         /// A mismatch is the one signal this path produces that an attack is
         /// under way, and a dialogue whose reflex is *try again* converts a
@@ -111,6 +116,25 @@ public struct BootstrapWindow: Sendable, Equatable {
     public struct Close: Sendable, Equatable {
         public let reason: CloseReason
         public let atNs: Int64
+        /// ⛔ **11.9c's missing half, and D10 could not supply it.** Which
+        /// `bs_abort` reason code ended the attempt, where one did. A mismatch is
+        /// the **one** signal this path produces that an attack is under way, and
+        /// a timeout is an ordinary network failure — `attemptAbortedOrRejected`
+        /// covers both, so a screen reading only the close reason must either
+        /// suppress *try again* for every failure or invite it after an attack.
+        /// Neither is what 11.9c asks for.
+        ///
+        /// `nil` where the window closed without an attempt ending: a timeout of
+        /// the window itself (3.7b), or a further user action.
+        public let abortReason: BootstrapAbortReason?
+
+        /// ⛔ **What a screen may offer** — 11.9c and 11.9d1, answered exactly
+        /// where the attempt's own reason is known and conservatively where it is
+        /// not.
+        public var advice: BootstrapAbortAdvice {
+            if let abortReason { return abortReason.advice }
+            return reason.mayBeReportedAsAnOrdinaryFailure ? .ordinaryFailure : .doNotRetry
+        }
     }
 
     public enum Failure: Error, Sendable, Equatable {
@@ -184,12 +208,14 @@ public struct BootstrapWindow: Sendable, Equatable {
     /// closed, so a second cause arriving after the first does not rewrite the
     /// record of why the window ended.
     @discardableResult
-    public mutating func close(reason: CloseReason, atNs nowNs: Int64) -> Bool {
+    public mutating func close(reason: CloseReason,
+                               abortReason: BootstrapAbortReason? = nil,
+                               atNs nowNs: Int64) -> Bool {
         guard case .open = state else { return false }
         // ⛔ 3.7c/3.7d — the advertisement and `bn` go with the window. The
         // platform layer withdraws the service instance on the same edge.
         state = .closed
-        lastClose = Close(reason: reason, atNs: nowNs)
+        lastClose = Close(reason: reason, atNs: nowNs, abortReason: abortReason)
         return true
     }
 
@@ -232,7 +258,13 @@ public struct BootstrapWindow: Sendable, Equatable {
     /// abort leaves **no** pairing at either peer (11.9a).
     public enum AttemptOutcome: Sendable, Equatable {
         case completed
-        case abortedOrRejected
+        /// ⛔ **The reason is not optional, and that is the point.** 11.9c needs
+        /// to know whether the cause was a mismatch or a MAC failure, and the way
+        /// that gets lost is a parameter nobody had to think about. Every path
+        /// that ends an attempt now has to name the `bs_abort` code it ended on —
+        /// which is the same code 11.4g says is the entire vocabulary of an
+        /// abort, so there is nothing to invent.
+        case abortedOrRejected(BootstrapAbortReason)
     }
 
     /// ⛔ 3.7b + 11.9a. Ending the attempt ends the window — there is no state in
@@ -242,8 +274,10 @@ public struct BootstrapWindow: Sendable, Equatable {
         guard case .open(let open) = state else { throw Failure.windowClosed }
         guard open.attemptInProgress else { throw Failure.noAttemptRunning }
         switch outcome {
-        case .completed:         close(reason: .pairingCompleted, atNs: nowNs)
-        case .abortedOrRejected: close(reason: .attemptAbortedOrRejected, atNs: nowNs)
+        case .completed:
+            close(reason: .pairingCompleted, atNs: nowNs)
+        case .abortedOrRejected(let why):
+            close(reason: .attemptAbortedOrRejected, abortReason: why, atNs: nowNs)
         }
     }
 

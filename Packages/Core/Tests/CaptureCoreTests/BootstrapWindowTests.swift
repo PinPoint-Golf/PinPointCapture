@@ -252,7 +252,7 @@ struct BootstrapWindowTests {
         var window = try BootstrapWindow()
         try window.open(on: Self.action(), advertising: try Self.advert(), atNs: 0)
         try window.beginAttempt(atNs: Self.second)
-        try window.endAttempt(.abortedOrRejected, atNs: 2 * Self.second)
+        try window.endAttempt(.abortedOrRejected(.rejected), atNs: 2 * Self.second)
         #expect(window.isOpen == false)
         #expect(window.lastClose?.reason == .attemptAbortedOrRejected)
     }
@@ -309,7 +309,7 @@ struct BootstrapWindowTests {
         var window = try BootstrapWindow()
         try window.open(on: Self.action(), advertising: try Self.advert(), atNs: 0)
         try window.beginAttempt(atNs: Self.second)
-        try window.endAttempt(.abortedOrRejected, atNs: 2 * Self.second)
+        try window.endAttempt(.abortedOrRejected(.rejected), atNs: 2 * Self.second)
         #expect(window.isOpen == false)
         // Nothing an attempt can do reopens it.
         #expect(throws: BootstrapWindow.Failure.windowClosed) {
@@ -327,6 +327,45 @@ struct BootstrapWindowTests {
         #expect(BootstrapWindow.CloseReason.attemptAbortedOrRejected
                     .mayBeReportedAsAnOrdinaryFailure == false)
         #expect(BootstrapWindow.CloseReason.timedOut.mayBeReportedAsAnOrdinaryFailure)
+    }
+
+    /// ⛔ **The half D10 could not answer, and it is the half 11.9c turns on.**
+    /// `attemptAbortedOrRejected` covers a mismatch, a MAC failure, a timeout and
+    /// a malformed frame. A screen reading only the close reason has to either
+    /// suppress *try again* after an ordinary network failure or invite it after
+    /// an attack; neither is what the clause asks for.
+    @Test("11.9c — the close carries WHY the attempt aborted, so a mismatch and a timeout read differently")
+    func closeCarriesTheAbortReason() throws {
+        func closed(after why: BootstrapAbortReason) throws -> BootstrapWindow.Close {
+            var window = try BootstrapWindow()
+            try window.open(on: Self.action(), advertising: try Self.advert(), atNs: 0)
+            try window.beginAttempt(atNs: Self.second)
+            try window.endAttempt(.abortedOrRejected(why), atNs: 2 * Self.second)
+            return window.lastClose!
+        }
+
+        // ⛔ The one signal this path produces that an attack is under way.
+        let mismatch = try closed(after: .rejected)
+        #expect(mismatch.reason == .attemptAbortedOrRejected)
+        #expect(mismatch.abortReason == .rejected)
+        #expect(mismatch.advice == .doNotRetry)
+
+        // The ordinary failure it is (11.9c's own words).
+        let timedOut = try closed(after: .timeout)
+        #expect(timedOut.reason == .attemptAbortedOrRejected)
+        #expect(timedOut.advice == .ordinaryFailure)
+
+        // 11.9d1 — the pairing code on the FIRST abort, because a second attempt
+        // is guaranteed to fail identically.
+        #expect(try closed(after: .unsupportedVersion).advice == .offerThePairingCode)
+
+        // A window that closed with no attempt running carries no abort reason,
+        // and answers on the close alone.
+        var window = try BootstrapWindow()
+        try window.open(on: Self.action(), advertising: try Self.advert(), atNs: 0)
+        window.close(on: Self.action("close-the-window"), atNs: Self.second)
+        #expect(window.lastClose?.abortReason == nil)
+        #expect(window.lastClose?.advice == .ordinaryFailure)
     }
 
     // MARK: - 11.3d — one attempt at a time
