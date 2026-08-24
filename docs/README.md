@@ -15,6 +15,7 @@ Three folders, one question each.
 | File | What it is |
 |---|---|
 | [`capture-companion-requirements.md`](design/capture-companion-requirements.md) | **The PRD.** 173 numbered requirements, the scope line, the use cases, the open decisions. The primary artefact — everything else refers back to it |
+| [`capability-spike.md`](design/capability-spike.md) | **What the hardware and iOS will actually do**, and the parameter set the build is driven from. Every figure carries its provenance, and most are `assumed` rather than measured |
 | [`mockup v1/README.md`](design/mockup%20v1/README.md) | **The design handoff.** 17 screens, design tokens, copy treated as decisions, and the state semantics each screen encodes |
 | `mockup v1/design/` | The design reference as HTML — a prototype of look, copy and behaviour. **Not production code; none of it is to be ported** |
 | `mockup v1/screens/` | 1× board captures of the screens, in flow order |
