@@ -114,8 +114,18 @@ public struct ReconnectedHost: Sendable {
     /// 3.3b keeps every name off the advertisement, so nothing on the wire here
     /// contributes to this.
     public let hostDisplayName: String?
-    /// The instance name resolved, `PPCP-9B1D2DF9` (3.2a). ⚠ Diagnostic only —
-    /// it changes with every `rn` rotation (3.4a) and names nothing durable.
+    /// The instance name resolved, `PPCP-9B1D2DF9` (3.2a). ⛔ **Diagnostic only,
+    /// and never an identifier** — the durable name of a counterpart is its
+    /// `sessionId`, above.
+    ///
+    /// ⚠ **This comment used to say the name changes with every `rn` rotation,
+    /// and a measurement on 24 August 2026 contradicted that** — see
+    /// `ObservedHostAdvertisementTests`. A real PinPointStudio registration held
+    /// its name at `PPCP-11121314` across two rotations that changed both `rn`
+    /// and `rid`, which is not what 3.2a as `ppcp_rv_instance_name` implements it
+    /// would produce. That discrepancy is **reported, not resolved**, and nothing
+    /// here depends on either answer: this field is never compared, never
+    /// persisted, and never used to decide what to dial.
     public let instanceName: String
 }
 
