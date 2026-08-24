@@ -32,7 +32,17 @@
 //  simply press again — rather than burning the one window 11.9b then refuses to
 //  reopen.
 //
-//  Spec: `RV` 3.7a-3.7f, 3.3f, 3.3g, 11.3c, 11.3d, 11.9a, 11.9b. Plan D10. RT-22.
+//  ⛔ **D11 ADDED THE EXCHANGE, AND TRAP 2 LIVES IN EXACTLY THIS FILE.** The
+//  acceptor's keypair is drawn **before the first frame is read**, and
+//  `BootstrapAcceptor` returns `bs_accept` from the same call that consumes
+//  `bs_offer` (11.5c). ⛔ Nothing in this file may defer that write — batching it
+//  with a later frame, waiting for `bs_reveal` to "save a round trip", or
+//  reordering `apply` so the outgoing bytes leave after the next read would each
+//  destroy the security of the path and change **nothing on the wire**.
+//  `ppcp-relay --probe order-acceptor` is the only thing that can see it.
+//
+//  Spec: `RV` 3.7a-3.7f, 3.3f, 3.3g, 11.3c, 11.3d, 11.3e, §11.5, 11.9a, 11.9b.
+//  Plan D10, D11. RT-22, RT-20b.
 
 import Foundation
 import Network
@@ -67,9 +77,12 @@ public actor BootstrapAdvertiser {
     /// whether one is open.
     public private(set) var window: BootstrapWindow
 
-    /// ⛔ The seam for `libppcp`'s `bs_offer` decoder (plan L19). Until one
-    /// exists this recognises nothing, so every connection is refused — which is
-    /// 11.3c's correct behaviour for a peer with no acceptor.
+    /// ⛔ `libppcp`'s `bs_offer` decoder (plan L19), which is where 11.4c1's
+    /// closed vocabulary is judged. ⚠ D10 defaulted this to
+    /// `BootstrapDecoderUnavailable`, which recognised nothing and refused every
+    /// dial — 11.3c's correct behaviour for a peer with **no acceptor**. There is
+    /// one now, so the default is the real decoder; the stand-in stays reachable
+    /// for a test that wants a peer with no acceptor.
     private let recogniser: any BootstrapOfferRecognising
 
     private var listener: NWListener?
@@ -86,11 +99,82 @@ public actor BootstrapAdvertiser {
     /// dials once.
     static let maximumPendingDials = 4
 
+    /// How much is read at a time once the exchange is running. §11's vocabulary
+    /// is CLOSED (11.10a) and its largest frame is 45 payload octets, so this is
+    /// generous rather than a guess.
+    private static let readChunk = 512
+
+    // MARK: - The exchange (D11)
+
+    /// What a screen needs to know about the one attempt.
+    ///
+    /// ⛔ **There is no `.digitsMatched` and there never will be** (11.1d, trap
+    /// 8). The comparison has value only because it crosses a channel the
+    /// attacker is not on, and the only such channel is a person looking at two
+    /// screens. This actor never compares anything: `.compare` hands the digits
+    /// out and `affirm(on:)` takes a decision a person made.
+    public enum GuidedPairingEvent: Sendable {
+        /// ⛔ 11.7b/11.7c/11.7d — show these to **this device's** user and ask
+        /// whether they **match**. Not *trust*, not *continue*, and the
+        /// affirmative control is neither pre-selected nor where a stray tap
+        /// lands.
+        case compare(BootstrapDigits)
+        /// 11.5g — this side affirmed **and** the counterpart's MAC verified.
+        case paired(BootstrapPairing)
+        /// 11.9a — the attempt is over and nothing survives it. ⛔ `advice`
+        /// is 11.9c: a mismatch or a MAC failure is **not** reported in terms
+        /// that invite a retry.
+        case aborted(reason: BootstrapAbortReason, advice: BootstrapAbortAdvice)
+    }
+
+    /// The one attempt's acceptor, or `nil` between attempts (11.3d).
+    private var acceptor: BootstrapAcceptor?
+    private var liveConnection: NWConnection?
+    /// 11.3e's two bounds, ticked while the attempt runs.
+    private var attemptTimer: Task<Void, Never>?
+    private var subscribers: [UUID: AsyncStream<GuidedPairingEvent>.Continuation] = [:]
+
     public init(timeoutNs: Int64 = BootstrapAdvertisement.maximumTimeoutNs,
                 recognising recogniser: any BootstrapOfferRecognising
-                    = BootstrapDecoderUnavailable()) throws {
+                    = LibppcpOfferRecogniser()) throws {
         self.window = try BootstrapWindow(timeoutNs: timeoutNs)
         self.recogniser = recogniser
+    }
+
+    /// The attempt's events, for a screen. Several subscribers are permitted;
+    /// they all see the same one attempt, because 11.3d allows only one.
+    public func events() -> AsyncStream<GuidedPairingEvent> {
+        AsyncStream { continuation in
+            let id = UUID()
+            Task { await self.subscribe(id, continuation) }
+            continuation.onTermination = { _ in Task { await self.unsubscribe(id) } }
+        }
+    }
+
+    private func subscribe(_ id: UUID, _ c: AsyncStream<GuidedPairingEvent>.Continuation) {
+        subscribers[id] = c
+    }
+    private func unsubscribe(_ id: UUID) { subscribers[id] = nil }
+    private func emit(_ event: GuidedPairingEvent) {
+        for c in subscribers.values { c.yield(event) }
+    }
+
+    /// ⛔ **THIS DEVICE'S OWN USER affirmed that the numbers match** (11.7c).
+    ///
+    /// A single affirmation at one end does not establish a pairing at the other,
+    /// and the counterpart's `bs_confirm` never stands in for this one — there is
+    /// no path in this actor that calls this on a received frame. ⚠ Call it only
+    /// from a control a person operated; `UserAction` has to name which.
+    public func affirm(on action: BootstrapWindow.UserAction) async {
+        guard let acceptor, let connection = liveConnection else { return }
+        await apply(acceptor.affirm(on: action, atNs: MachClock.hostTimeNs), on: connection)
+    }
+
+    /// The user said the numbers do **not** match, or declined. 11.4f — reported
+    /// as `rejected`, indistinguishable to the counterpart from a failed MAC.
+    public func decline(on action: BootstrapWindow.UserAction) async {
+        guard let acceptor, let connection = liveConnection else { return }
+        await apply(acceptor.decline(on: action, atNs: MachClock.hostTimeNs), on: connection)
     }
 
     // MARK: - Opening — 3.7a
@@ -110,6 +194,8 @@ public actor BootstrapAdvertiser {
                      label: BootstrapLabel?,
                      role: DiscoveryRole = .capture,
                      distinctFrom ppcpListenerPort: UInt16?,
+                     // ⚠ Test affordance — see the note at the listener below.
+                     on fixed: UInt16? = nil,
                      // ⚠ `nil` rather than `MachClock.hostTimeNs`: the clock is
                      // internal to this target and a public default argument may
                      // not name it. Tests pass a value; the app passes nothing.
@@ -127,7 +213,19 @@ public actor BootstrapAdvertiser {
         // not the PPCP listener's by construction; the check below is what turns
         // "by construction" into something that fails loudly if it ever stops
         // being true.
-        let listener = try NWListener(using: .tcp)
+        //
+        // ⚠ `on:` overrides that, and it exists for one reason: `ppcp-relay`
+        // DIALS this window, so RT-20b needs a port the harness can be told about
+        // before the app is running. The application passes nothing and gets 0.
+        // The 3.7f check below runs either way, which is why a fixed port is an
+        // affordance rather than a hole.
+        let listener: NWListener
+        if let fixed, fixed != 0 {
+            listener = try NWListener(using: .tcp,
+                                      on: NWEndpoint.Port(rawValue: fixed)!)
+        } else {
+            listener = try NWListener(using: .tcp)
+        }
         listener.service = NWListener.Service(
             name: advertisement.instanceName,
             type: BootstrapAdvertisement.serviceType,
@@ -242,6 +340,21 @@ public actor BootstrapAdvertiser {
         deadline?.cancel()
         deadline = nil
         pendingDials = 0
+        // ⛔ 11.6f / 11.9a — the window closing ends the attempt with it, and
+        // nothing ephemeral outlives it. `wipe()` is idempotent and safe on every
+        // path the embedding abandons, which includes this one: the deadline
+        // firing, a further user action, and a completed pairing all arrive here.
+        attemptTimer?.cancel()
+        attemptTimer = nil
+        acceptor?.wipe()
+        acceptor = nil
+        liveConnection?.cancel()
+        liveConnection = nil
+        // ⚠ The window is the attempt's whole lifetime (3.7b/11.9b), so the event
+        // stream ends with it rather than leaving a screen waiting on something
+        // that will never arrive.
+        for c in subscribers.values { c.finish() }
+        subscribers.removeAll()
         guard let listener else { return }
         self.listener = nil
         listener.newConnectionHandler = { $0.cancel() }
@@ -302,30 +415,164 @@ public actor BootstrapAdvertiser {
         defer { pendingDials -= 1 }
 
         connection.start(queue: queue)
-        guard let payload = await firstFrame(on: connection) else {
+        guard let first = await firstFrame(on: connection) else {
             refuse(connection); return
         }
-        // ⛔ The judgement is `libppcp`'s, not this repository's. With no decoder
-        // this is always false and every dial is refused.
-        guard recogniser.isWellFormedOffer(payload: payload) else {
+        // ⛔ The judgement is `libppcp`'s, not this repository's — 11.4c1's closed
+        // vocabulary is decided in one place. A first frame that is not a
+        // well-formed `bs_offer` closes WITHOUT REPLY (11.3c): something that has
+        // not demonstrated it speaks this protocol gets nothing to learn from.
+        guard recogniser.isWellFormedOffer(payload: first.payload) else {
             refuse(connection); return
         }
 
-        // 11.3d — at most one attempt at a time; a concurrent one is refused.
+        // 11.3d — at most one attempt at a time. ⛔ Serialising is what makes
+        // 3.7b's single-attempt bound mean what §11.8 says it means; an acceptor
+        // running ten attempts in parallel would offer an attacker ten draws
+        // against one operator confirmation.
         do {
             try window.beginAttempt(atNs: MachClock.hostTimeNs)
         } catch {
+            // ⛔ **The other half of 11.3c, and D10 could not write it.** The
+            // counterpart HAS demonstrated it speaks this protocol, so it is owed
+            // a diagnostic its user can act on rather than a silent close — far
+            // more likely a peer racing a window than an attacker. `bs_abort` /
+            // `window_closed`, carrying `rc` and nothing else (11.4g).
+            await Self.send(BootstrapAbortFrame.bytes(.windowClosed), on: connection)
             refuse(connection); return
         }
 
-        // ⛔ **D11 is the acceptor and it is not written.** Reaching here means a
-        // decoder was supplied and a real `bs_offer` arrived; there is nothing yet
-        // that can answer it, so the attempt ends as an abort and the window
-        // closes with it (3.7b, 11.9a). ⚠ Do NOT make this branch complete a
-        // pairing until §11.5's exchange exists — trap 2 lives in exactly this
-        // code, and `bs_accept` MUST be sent before `pk_i` arrives.
-        refuse(connection)
-        try? await finishAttempt(.abortedOrRejected)
+        await runExchange(on: connection, buffered: first.buffered)
+    }
+
+    // MARK: - §11.5 — the exchange
+
+    /// Drives `BootstrapAcceptor` over this connection until the attempt ends.
+    ///
+    /// ⛔ **The keypair is drawn HERE, before a single byte of the offer reaches
+    /// the engine** (11.5a, 11.5c). By the time `feed` runs, `pk_a` is fixed —
+    /// which is what makes trap 2 unreachable rather than merely avoided.
+    private func runExchange(on connection: NWConnection, buffered: Data) async {
+        let acceptor: BootstrapAcceptor
+        do {
+            // 11.5a — a FRESH keypair, for this attempt only. There is
+            // deliberately no seam here through which a stored one could arrive.
+            acceptor = try BootstrapAcceptor(agreement: CryptoKitKeyAgreement(),
+                                             startedAtNs: MachClock.hostTimeNs)
+        } catch {
+            await Self.send(BootstrapAbortFrame.bytes(.malformed), on: connection)
+            refuse(connection)
+            try? await finishAttempt(.abortedOrRejected(.malformed))
+            return
+        }
+        self.acceptor = acceptor
+        self.liveConnection = connection
+        startAttemptTimer()
+
+        // ⛔ `bs_offer` in, `bs_accept` out, in one call and with no `pk_i` in
+        // sight. `buffered` is everything read so far, frame and any pipelined
+        // remainder — the engine consumes one frame at a time and holds the rest.
+        await apply(acceptor.feed(buffered, atNs: MachClock.hostTimeNs), on: connection)
+
+        while self.acceptor === acceptor, acceptor.isFinished == false {
+            guard let more = await Self.receive(on: connection, maximum: Self.readChunk),
+                  more.isEmpty == false
+            else {
+                // 11.9a — a closed connection ends the attempt. ⚠ Reported as a
+                // `timeout`, which 11.9c permits to read as the ordinary failure
+                // it is; a mismatch and a MAC failure are the two that may not.
+                guard self.acceptor === acceptor, acceptor.isFinished == false else { break }
+                acceptor.wipe()
+                refuse(connection)
+                // ⚠ **Emit BEFORE the window closes, not after.** `finishAttempt`
+                // withdraws, and withdrawing ends the event stream — an event
+                // yielded afterwards reaches nobody. Measured: the acceptor's own
+                // account of the first relay run was empty for exactly this
+                // reason while the relay reported a pass.
+                emit(.aborted(reason: .timeout, advice: BootstrapAbortReason.timeout.advice))
+                try? await finishAttempt(.abortedOrRejected(.timeout))
+                break
+            }
+            guard self.acceptor === acceptor else { break }
+            await apply(acceptor.feed(more, atNs: MachClock.hostTimeNs), on: connection)
+        }
+    }
+
+    /// One engine transition reaching the socket and the screen.
+    ///
+    /// ⛔ **The write happens before the close and before the next read**, which
+    /// is 11.5c's ordering at the socket. Reordering these two lines is trap 2.
+    private func apply(_ steps: [BootstrapAcceptor.Step],
+                       on connection: NWConnection) async {
+        for step in steps {
+            if let out = step.outgoing {
+                await Self.send(out, on: connection)
+            }
+            switch step.event {
+            case .compare(let digits):
+                // ⛔ 11.7b/11.7c — handed to a screen, and to nothing else. This
+                // actor does not compare them and offers no call that would.
+                emit(.compare(digits))
+            case .paired(let pairing):
+                // 11.5g — and only now. 3.7b closes the window on a completed
+                // pairing, and 11.5h closes the connection.
+                emit(.paired(pairing))
+                try? await finishAttempt(.completed)
+            case .aborted(let reason):
+                emit(.aborted(reason: reason, advice: reason.advice))
+                try? await finishAttempt(.abortedOrRejected(reason))
+            case nil:
+                break
+            }
+            if step.closeConnection { refuse(connection) }
+        }
+    }
+
+    /// 11.3e's two bounds — 30 seconds to the comparison, 60 more for this
+    /// device's own user. `BootstrapAcceptor` holds the arithmetic; this supplies
+    /// the clock, because Core owns none.
+    ///
+    /// ⚠ Ticking once a second rather than scheduling two one-shots: the second
+    /// bound is measured from the comparison, whose time is not known when the
+    /// attempt starts. The task ends with the attempt.
+    private func startAttemptTimer() {
+        attemptTimer?.cancel()
+        attemptTimer = Task { [weak self] in
+            while Task.isCancelled == false {
+                try? await Task.sleep(for: .seconds(1))
+                guard Task.isCancelled == false else { return }
+                guard let self, await self.tickAttempt() else { return }
+            }
+        }
+    }
+
+    /// - Returns: `false` once there is nothing left to tick.
+    private func tickAttempt() async -> Bool {
+        guard let acceptor, let connection = liveConnection else { return false }
+        let steps = acceptor.tick(nowNs: MachClock.hostTimeNs)
+        guard steps.isEmpty == false else { return acceptor.isFinished == false }
+        await apply(steps, on: connection)
+        return false
+    }
+
+    /// ⛔ Awaits the platform's confirmation that the bytes have gone. `cancel()`
+    /// is abrupt, so a `bs_accept` or a `bs_abort` written and then immediately
+    /// cancelled can be lost — and a lost `bs_accept` is indistinguishable, from
+    /// the far end, from an acceptor that never sent one.
+    private static func send(_ bytes: Data, on connection: NWConnection) async {
+        guard bytes.isEmpty == false else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumed = Mutex(false)
+            connection.send(content: bytes, completion: .contentProcessed { _ in
+                guard resumed.claim() else { return }
+                continuation.resume()
+            })
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                guard resumed.claim() else { return }
+                continuation.resume()
+            }
+        }
     }
 
     /// Accumulate until the envelope of `ENC` §3 is whole, or until it is refused.
@@ -333,14 +580,19 @@ public actor BootstrapAdvertiser {
     /// ⛔ Bounded twice over: by `BootstrapFirstFrame.maximumPayloadBytes`, and by
     /// the window's own deadline. An unauthenticated stranger controls this
     /// stream, so neither the byte count nor the wait may be open-ended.
-    private func firstFrame(on connection: NWConnection) async -> Data? {
+    /// - Returns: the first frame's payload for the recogniser, **and** every
+    ///   byte read so far. ⚠ The second is what the engine is fed: an initiator
+    ///   may pipeline, and a frame this method has already taken off the socket
+    ///   would otherwise be lost between the envelope check and the exchange.
+    private func firstFrame(on connection: NWConnection) async -> (payload: Data,
+                                                                  buffered: Data)? {
         let limit = BootstrapFirstFrame.headerBytes
             + Int(BootstrapFirstFrame.maximumPayloadBytes)
         var buffer = Data()
         while buffer.count < limit {
             guard window.isOpen else { return nil }
             switch BootstrapFirstFrame.classify(buffer) {
-            case .envelope(let payload): return payload
+            case .envelope(let payload): return (payload, buffer)
             case .refuse:                return nil
             case .incomplete:            break
             }

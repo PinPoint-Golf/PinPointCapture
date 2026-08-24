@@ -52,6 +52,19 @@ BUILD_TIMEOUT_S ?= 600
 LIBPPCP     ?= ../libppcp
 PPCP_SIM    ?= $(LIBPPCP)/build/dev/tools/ppcp-sim/ppcp-sim
 PPCP_CONFORM ?= $(LIBPPCP)/build/dev/tools/ppcp-conform/ppcp-conform
+# ⛔ **The relay is the ONLY thing that can see trap 2** — `bs_accept` sent after
+# `pk_i` arrives changes nothing on the wire and passes every static test in this
+# repository. `--probe order-acceptor` withholds `bs_reveal` and checks that
+# `pk_a` had already arrived, which is RT-20b(ii) for an acceptor.
+# ⚠ It needs `openssl` on PATH: §11.11 keeps X25519 out of libppcp, so the relay
+# supplies its own across the same boundary, over a pipe. Its absence must read
+# as a MISSING TOOL and never as a handshake failure.
+PPCP_RELAY  ?= $(LIBPPCP)/build/dev/tools/ppcp-relay/ppcp-relay
+# ⚠ Fixed, because the relay DIALS this application: the port has to be known
+# before the app is running. `BootstrapAdvertiser` binds port 0 everywhere else.
+RV6_PORT    ?= 47799
+# How long to wait for the simulator to boot, install and bind the window.
+RV6_WARMUP_S ?= 90
 # ⚠ **Two axes, and keeping them apart is the point of `tools/scenarios`.** What
 # the peer IS is a declaration file; what it DOES is a named scenario. "A host
 # that never answers a Candidate" is `SCENARIO=silent-host` over the *reference*
@@ -90,7 +103,7 @@ CONFORM_WARMUP_S ?= 75
 
 COMMA := ,
 
-.PHONY: all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop interop read-bundle pull-bundles device deploy lint clean help
+.PHONY: all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop rv6 _rv6_run interop read-bundle pull-bundles device deploy lint clean help
 
 # ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
 # what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
@@ -110,6 +123,7 @@ help:
 	@echo "build         build for the simulator"
 	@echo "build-device  build for a physical device (needs signing)"
 	@echo "test          run the unit tests"
+	@echo "rv6           RT-20b: ppcp-relay against this app's RV-6 acceptor"
 	@echo "conform       ppcp-conform drives the device (D9); SCENARIO=<n> for one ppcp-sim row"
 	@echo "              CONF §5 rows:  make conform ROW=iop1|iop2 SCENARIO=... DECL=..."
 	@echo "pull-bundles  copy the bundles an IOP-1 run wrote out of the simulator container"
@@ -280,6 +294,110 @@ test-app: gen
 # ⛔ The simulator peer is started BEFORE the test and killed after, whatever
 # happens: a listener left bound holds the port and the next run fails for a
 # reason that has nothing to do with conformance.
+# ⛔ **RT-20b — the relay against this application's acceptor.** Two runs, and the
+# first one is the one that matters.
+#
+#   1. `--probe order-acceptor`  ⛔ 11.5c. Withholds `bs_reveal` and checks that
+#      `pk_a` had ALREADY arrived — that this peer committed BLIND. Trap 2 is
+#      invisible on the wire and no static test in this repository can see it.
+#   2. `--peer initiator`        an honest counterpart, so a full five-frame
+#      exchange completes. ⚠ Runs with PPCP_RV6_AFFIRM=1, which makes the harness
+#      affirm its own comparison in software — the one thing 11.1d forbids a real
+#      peer to do. It is evidence the exchange RUNS, not that it authenticates.
+#
+# ⛔ **`--selftest` FIRST, and it is not a formality.** Its sixth row is a
+# negative control: the same probe against a stand-in built to carry trap 2 must
+# FAIL, and does. Without it the ordering probe is an untested test.
+#
+# ⚠ **The direction is the opposite of `make conform`.** There the host listens
+# and the device dials; here the device listens and the relay dials. So the test
+# runs in the BACKGROUND and the relay starts once `lsof` shows the port bound —
+# `rl_connect` tries once with a 5-second timeout and does not retry, and a
+# loopback port with nothing on it refuses immediately rather than waiting.
+# ⚠ `lsof` rather than a probe dial: a dial would consume one of the acceptor's
+# bounded pending slots and put a connection through 11.3c for no reason.
+rv6: gen
+	@if [ ! -x "$(PPCP_RELAY)" ]; then \
+		echo "make rv6: no ppcp-relay at $(PPCP_RELAY)"; \
+		echo "  Build it:  cmake --build $(LIBPPCP)/build/dev --target ppcp-relay"; \
+		exit 1; \
+	fi
+	@command -v openssl >/dev/null 2>&1 || { \
+		echo "make rv6: openssl is not on PATH."; \
+		echo "  ⛔ This is a MISSING TOOL, not a handshake failure — RV 11.11"; \
+		echo "     keeps X25519 out of libppcp and the relay supplies its own."; \
+		exit 1; }
+	@if [ -z "$(SIM_NAME)" ]; then echo "make rv6: no available iPhone simulator."; exit 1; fi
+	@echo "=== ppcp-relay --selftest (the instrument, before anything rests on it) ==="
+	@"$(PPCP_RELAY)" --selftest 2>&1 | tail -12
+	set -o pipefail && $(GUARD) $(BUILD_TIMEOUT_S) xcodebuild build-for-testing \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		| $(XCB)
+	@$(MAKE) --no-print-directory _rv6_run RV6_AFFIRM=0 \
+		RV6_ARGS="--probe order-acceptor --connect 127.0.0.1:$(RV6_PORT)" \
+		RV6_WHAT="11.5c — the acceptor committed BLIND (RT-20b(ii))"
+	@$(MAKE) --no-print-directory _rv6_run RV6_AFFIRM=1 \
+		RV6_ARGS="--peer initiator --connect 127.0.0.1:$(RV6_PORT)" \
+		RV6_WHAT="a full guided pairing against the relay's honest initiator"
+
+# One run: hold a window open in the simulator, then point the relay at it.
+_rv6_run:
+	@set -e; \
+	mkdir -p $(DERIVED); \
+	log=$(DERIVED)/rv6-$(RV6_AFFIRM).log; \
+	rm -f "$$log"; \
+	echo ""; \
+	echo "=== $(RV6_WHAT) ==="; \
+	if lsof -nP -iTCP:$(RV6_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "make rv6: $(RV6_PORT) is ALREADY bound — a previous run is still up."; \
+		echo "  ⚠ Suspect the harness: a stale listener makes the relay measure"; \
+		echo "    the wrong process, and NWListener on a taken port waits forever."; \
+		lsof -nP -iTCP:$(RV6_PORT) -sTCP:LISTEN; exit 1; \
+	fi; \
+	TEST_RUNNER_PPCP_RV6_PORT=$(RV6_PORT) \
+	TEST_RUNNER_PPCP_RV6_AFFIRM=$(RV6_AFFIRM) \
+	$(GUARD) $(TEST_TIMEOUT_S) xcodebuild test-without-building \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-only-testing:PinPointCaptureTests/GuidedPairingRelayTests \
+		>"$$log" 2>&1 & \
+	testpid=$$!; \
+	trap 'kill $$testpid 2>/dev/null || true' EXIT; \
+	bound=""; \
+	i=0; \
+	while [ $$i -lt $$(( $(RV6_WARMUP_S) * 2 )) ]; do \
+		if lsof -nP -iTCP:$(RV6_PORT) -sTCP:LISTEN >/dev/null 2>&1; then bound=yes; break; fi; \
+		kill -0 $$testpid 2>/dev/null || break; \
+		sleep 0.5; i=$$(( i + 1 )); \
+	done; \
+	if [ -z "$$bound" ]; then \
+		echo "make rv6: nothing ever bound $(RV6_PORT)."; \
+		echo "  ⚠ Suspect the harness before the peer: check the test SKIPPED,"; \
+		echo "    and that the simulator reached the window at all."; \
+		grep -E "^RV6|✘|error:|Test run" "$$log" || tail -30 "$$log"; \
+		exit 1; \
+	fi; \
+	echo "port $(RV6_PORT) is bound — starting the relay"; \
+	relayrc=0; \
+	"$(PPCP_RELAY)" $(RV6_ARGS) 2>&1 || relayrc=$$?; \
+	testrc=0; \
+	wait $$testpid || testrc=$$?; \
+	echo "--- the acceptor's own account ---"; \
+	grep -E "^RV6|✔ Test|✘|↳|error:|Test run with" "$$log" || tail -40 "$$log"; \
+	echo "  (full log: $$log)"; \
+	if [ $$relayrc -ne 0 ]; then echo "⛔ relay reported a FAILURE ($$relayrc)"; exit 1; fi; \
+	if [ $$testrc -ne 0 ]; then echo "⛔ the acceptor's own assertions FAILED"; exit 1; fi; \
+	echo "✔ $(RV6_WHAT)"
+
+
 conform-sim: gen
 	@if [ ! -x "$(PPCP_SIM)" ]; then \
 		echo "make conform: no ppcp-sim at $(PPCP_SIM)"; \

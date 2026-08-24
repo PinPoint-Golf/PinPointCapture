@@ -227,17 +227,41 @@ struct BootstrapAdvertiserTests {
         await advertiser.close(on: Self.action("close-the-window"))
     }
 
+    /// ⚠ **Kept, and now it has to ask for the stand-in explicitly.** D10 shipped
+    /// `BootstrapDecoderUnavailable` as the default, which is 11.3c's correct
+    /// behaviour for a peer with **no acceptor**. D11 gave this application one,
+    /// so the default is `libppcp`'s real decoder — but a peer with no acceptor
+    /// is still a state worth asserting, and it is the one an implementation
+    /// regresses into if the seam is ever unplugged.
     @Test("11.3c — with no decoder, even a well-formed envelope is refused")
     func envelopeWithoutADecoderIsRefused() async throws {
-        let advertiser = try BootstrapAdvertiser()
+        let advertiser = try BootstrapAdvertiser(recognising: BootstrapDecoderUnavailable())
         let opened = try await advertiser.open(on: Self.action(), label: nil,
                                                distinctFrom: nil)
-        // Channel 255, complete, and still not a `bs_offer` as far as this build
-        // can tell — because nothing here decodes one. Refusing is correct.
+        // Channel 255, complete, and still not a `bs_offer` as far as THIS build
+        // can tell — because nothing in it decodes one. Refusing is correct.
         let reply = await Self.dial(port: opened.port,
                                     saying: Self.frame(channel: 255,
                                                        payload: Data([0xA2, 0x61, 0x76, 0x01])))
         #expect(reply == .closedWithoutReply)
+        await advertiser.close(on: Self.action("close-the-window"))
+    }
+
+    /// ⛔ 11.4c1 — a map key `libppcp` does not recognise is `malformed`, and the
+    /// closed vocabulary is the one place in the protocol set where that is so.
+    /// With the real decoder in place this is still not a `bs_offer`, so 11.3c's
+    /// close-without-reply still applies.
+    @Test("11.4c1 — a channel-255 frame that is not a bs_offer is still closed without reply")
+    func realDecoderStillRefusesNonOffers() async throws {
+        let advertiser = try BootstrapAdvertiser()
+        let opened = try await advertiser.open(on: Self.action(), label: nil,
+                                               distinctFrom: nil)
+        let reply = await Self.dial(port: opened.port,
+                                    saying: Self.frame(channel: 255,
+                                                       payload: Data([0xA2, 0x61, 0x76, 0x01])))
+        #expect(reply == .closedWithoutReply)
+        let window = await advertiser.window
+        #expect(window.isOpen, "a frame that is not an offer must not start an attempt")
         await advertiser.close(on: Self.action("close-the-window"))
     }
 

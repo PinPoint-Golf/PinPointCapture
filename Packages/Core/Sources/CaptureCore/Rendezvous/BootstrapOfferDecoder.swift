@@ -73,3 +73,34 @@ public struct LibppcpOfferRecogniser: BootstrapOfferRecognising {
         return rc == PPCP_OK && decoded.ty == PPCP_BS_OFFER && consumed == frame.count
     }
 }
+
+/// `RV` 11.3c / 11.3d — the one frame an acceptor sends **before** an exchange
+/// engine exists.
+///
+/// ⛔ **This is the other half of 11.3c and it is a distinction, not a
+/// courtesy.** Where the first frame is *not* a well-formed `bs_offer` the
+/// connection closes **without reply** — something that has not demonstrated it
+/// speaks this protocol gets nothing to learn from. Where it **is** a well-formed
+/// offer and no window is open, or one attempt is already running (11.3d), the
+/// acceptor replies `bs_abort` / `window_closed` and closes: that is far more
+/// likely a peer racing a window that has just shut than an attacker, and it is
+/// owed a diagnostic its user can act on. D10 closed silently in both cases for
+/// want of an encoder; L19 exists now.
+///
+/// ⛔ CA6 — a **separate write path**. It calls `ppcp_bs_frame_write`, which sets
+/// channel 255 itself, and it never goes near `ppcp_channel_validate()`, whose
+/// rejection of 255 *is* 11.4a's fail-closed property (trap 1).
+///
+/// ⛔ 11.4g — `bs_abort` carries `rc` and nothing else. No message, no diagnostic
+/// string, no peer name, and there is no parameter here for one.
+public enum BootstrapAbortFrame {
+    public static func bytes(_ rc: BootstrapAbortReason) -> Data {
+        var f = ppcp_bs_frame()
+        f.ty = PPCP_BS_ABORT
+        f.rc = rc.c
+        var out = [UInt8](repeating: 0, count: 128)
+        var n = 0
+        guard ppcp_bs_frame_write(&f, &out, out.count, &n) == PPCP_OK else { return Data() }
+        return Data(out.prefix(n))
+    }
+}
