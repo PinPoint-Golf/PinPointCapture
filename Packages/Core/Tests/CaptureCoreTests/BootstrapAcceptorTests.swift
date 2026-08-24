@@ -671,3 +671,81 @@ struct BootstrapAcceptorTests {
         ppcp_rv_bootstrap_wipe(&substituted)
     }
 }
+
+// MARK: - 11.7d and 11.9c — the two UX MUSTs
+
+@Suite("RV 11.7d / 11.9c — what a screen may offer")
+struct GuidedPairingPromptTests {
+
+    static func closed(_ reason: BootstrapWindow.CloseReason,
+                       _ why: BootstrapAbortReason? = nil) -> BootstrapWindow.Close {
+        BootstrapWindow.Close(reason: reason, atNs: 0, abortReason: why)
+    }
+
+    @Test("⛔ 11.7d — the prompt asks whether the numbers MATCH, not whether to trust or continue")
+    func theQuestionIsMatch() {
+        let p = GuidedPairingPrompt.compare(dl: "Bay 3")
+        #expect(p.heading == "Do these numbers match?")
+        // The words 11.7d rules out. A dialogue whose default is *Continue* is a
+        // dialogue that authenticates whatever is on the other end.
+        let forbidden = ["trust", "continue", "connect", "allow", "accept"]
+        let lowered = p.heading.lowercased()
+        for word in forbidden {
+            #expect(lowered.contains(word) == false, "the heading must not say '\(word)'")
+        }
+        #expect(p.affirmative == "Yes, they match")
+        #expect(p.dismissive == "They don't match")
+        // ⚠ The digits are not interpolated into a sentence — they are rendered
+        // at their own size and grouped by `BootstrapDigits.grouped`, because a
+        // string in a sentence is a string somebody reformats and 11.7d requires
+        // both peers to group identically.
+        #expect(p.body.contains("313") == false)
+    }
+
+    @Test("⛔ 11.9c — a mismatch offers NO affirmative control at all")
+    func aMismatchInvitesNothing() {
+        for why in [BootstrapAbortReason.rejected,
+                    .commitmentMismatch,
+                    .invalidKey,
+                    .malformed] {
+            let p = GuidedPairingPrompt.ended(
+                Self.closed(.attemptAbortedOrRejected, why))
+            // ⛔ Not a disabled control and not one behind a confirmation — none.
+            #expect(p.affirmative == nil, "\(why) must offer nothing affirmative")
+            #expect(p.offersRetry == false, "\(why)")
+            #expect(p.body.lowercased().contains("do not try again"), "\(why)")
+        }
+    }
+
+    @Test("11.9c — a timeout or a closed connection is the ordinary failure it is")
+    func anOrdinaryFailureMayInviteARetry() {
+        for close in [Self.closed(.attemptAbortedOrRejected, .timeout),
+                      Self.closed(.timedOut),
+                      Self.closed(.userClosed)] {
+            let p = GuidedPairingPrompt.ended(close)
+            #expect(p.offersRetry, "\(close.reason) carries no implication of an attack")
+            // ⚠ 11.9b still binds: this control starts a NEW attempt, it does not
+            // reopen the window that closed.
+            #expect(p.affirmative == "Open a new window")
+        }
+    }
+
+    @Test("11.9d1 / 11.4e — an unsupported version offers the pairing code, and says why in terms a user can act on")
+    func unsupportedVersionOffersTheCode() {
+        let p = GuidedPairingPrompt.ended(
+            Self.closed(.attemptAbortedOrRejected, .unsupportedVersion))
+        #expect(p.offersThePairingCode)
+        #expect(p.offersRetry == false, "a second attempt is guaranteed to fail identically")
+        // 11.4e — "reports to its USER that the counterpart requires a newer
+        // version of the application, not a generic failure".
+        #expect(p.heading.lowercased().contains("newer version"))
+    }
+
+    @Test("A completed pairing is not reported as a failure, and offers no retry")
+    func completionReadsAsCompletion() {
+        let p = GuidedPairingPrompt.ended(Self.closed(.pairingCompleted))
+        #expect(p.heading == "Paired")
+        #expect(p.offersRetry == false)
+        #expect(p.affirmative == nil)
+    }
+}
