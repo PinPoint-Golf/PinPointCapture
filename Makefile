@@ -300,10 +300,18 @@ test-app: gen
 #   1. `--probe order-acceptor`  ⛔ 11.5c. Withholds `bs_reveal` and checks that
 #      `pk_a` had ALREADY arrived — that this peer committed BLIND. Trap 2 is
 #      invisible on the wire and no static test in this repository can see it.
-#   2. `--peer initiator`        an honest counterpart, so a full five-frame
-#      exchange completes. ⚠ Runs with PPCP_RV6_AFFIRM=1, which makes the harness
-#      affirm its own comparison in software — the one thing 11.1d forbids a real
-#      peer to do. It is evidence the exchange RUNS, not that it authenticates.
+#   2. `--probe decline`         RT-20b(iii)/(iv). The relay reaches the digits
+#      and refuses; neither end may pair (11.5g), and a SECOND dial must find no
+#      window (3.7b, 11.9b). ⛔ (iv) had never been run against anything before
+#      this application — team L withheld it rather than manufacture a green
+#      against a stand-in that has no window to reopen. So a red here is as
+#      likely to be the probe as the peer, and is reported rather than designed
+#      around.
+#   3. `--peer initiator`        an honest counterpart, so a full five-frame
+#      exchange completes. ⚠ Runs with PPCP_RV6_MODE=pair, which makes the
+#      harness affirm its own comparison in software — the one thing 11.1d
+#      forbids a real peer to do. It is evidence the exchange RUNS, not that it
+#      authenticates.
 #
 # ⛔ **`--selftest` FIRST, and it is not a formality.** Its sixth row is a
 # negative control: the same probe against a stand-in built to carry trap 2 must
@@ -338,10 +346,13 @@ rv6: gen
 		-derivedDataPath $(DERIVED) \
 		-jobs $(JOBS) \
 		| $(XCB)
-	@$(MAKE) --no-print-directory _rv6_run RV6_AFFIRM=0 \
+	@$(MAKE) --no-print-directory _rv6_run RV6_MODE=order \
 		RV6_ARGS="--probe order-acceptor --connect 127.0.0.1:$(RV6_PORT)" \
 		RV6_WHAT="11.5c — the acceptor committed BLIND (RT-20b(ii))"
-	@$(MAKE) --no-print-directory _rv6_run RV6_AFFIRM=1 \
+	@$(MAKE) --no-print-directory _rv6_run RV6_MODE=decline \
+		RV6_ARGS="--probe decline --connect 127.0.0.1:$(RV6_PORT)" \
+		RV6_WHAT="RT-20b(iii)/(iv) — a declined comparison pairs nothing, and the window stays shut"
+	@$(MAKE) --no-print-directory _rv6_run RV6_MODE=pair \
 		RV6_ARGS="--peer initiator --connect 127.0.0.1:$(RV6_PORT)" \
 		RV6_WHAT="a full guided pairing against the relay's honest initiator"
 
@@ -349,7 +360,7 @@ rv6: gen
 _rv6_run:
 	@set -e; \
 	mkdir -p $(DERIVED); \
-	log=$(DERIVED)/rv6-$(RV6_AFFIRM).log; \
+	log=$(DERIVED)/rv6-$(RV6_MODE).log; \
 	rm -f "$$log"; \
 	echo ""; \
 	echo "=== $(RV6_WHAT) ==="; \
@@ -360,7 +371,7 @@ _rv6_run:
 		lsof -nP -iTCP:$(RV6_PORT) -sTCP:LISTEN; exit 1; \
 	fi; \
 	TEST_RUNNER_PPCP_RV6_PORT=$(RV6_PORT) \
-	TEST_RUNNER_PPCP_RV6_AFFIRM=$(RV6_AFFIRM) \
+	TEST_RUNNER_PPCP_RV6_MODE=$(RV6_MODE) \
 	$(GUARD) $(TEST_TIMEOUT_S) xcodebuild test-without-building \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \

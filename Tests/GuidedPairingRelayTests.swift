@@ -30,7 +30,7 @@
 //
 //  ## ⛔ What is measured here and what is NOT
 //
-//  ⛔ **`PPCP_RV6_AFFIRM=1` MAKES THIS A NON-CONFORMANT PEER, exactly as
+//  ⛔ **`PPCP_RV6_MODE=pair` MAKES THIS A NON-CONFORMANT PEER, exactly as
 //  `ppcp-relay --peer` says of itself.** 11.7c requires an affirmative act by
 //  **this device's own user**, and 11.1d says the comparison has value only
 //  because it crosses a channel the attacker is not on — a person looking at two
@@ -67,9 +67,13 @@ struct GuidedPairingRelayTests {
             print("RV6 SKIP — no PPCP_RV6_PORT. Run `make rv6`.")
             return
         }
-        // ⛔ See the header. This is the one knob that makes this peer
-        // non-conformant, and it is off unless a harness asks for it.
-        let affirmInSoftware = env["PPCP_RV6_AFFIRM"] == "1"
+        // Which probe is on the other end. ⛔ `pair` is the one knob that makes
+        // this peer non-conformant, and nothing else sets it.
+        //   order   — `--probe order-acceptor`: withholds `bs_reveal` (11.5c)
+        //   decline — `--probe decline`: reaches the digits and then refuses
+        //   pair    — `--peer initiator`: an honest counterpart, end to end
+        let mode = env["PPCP_RV6_MODE"] ?? "order"
+        let affirmInSoftware = (mode == "pair")
 
         let advertiser = try BootstrapAdvertiser(timeoutNs: Self.windowTimeoutNs)
         let events = await advertiser.events()
@@ -79,7 +83,7 @@ struct GuidedPairingRelayTests {
             distinctFrom: nil,
             on: port)
 
-        print("RV6 listening on \(opened.port) as \(opened.instanceName)"
+        print("RV6 mode \(mode) listening on \(opened.port) as \(opened.instanceName)"
               + (affirmInSoftware ? "  [AFFIRM-IN-SOFTWARE — not a conformant peer]" : ""))
 
         var sawCompare = false
@@ -115,13 +119,35 @@ struct GuidedPairingRelayTests {
         #expect(window.isOpen == false)
         print("RV6 window closed: \(String(describing: window.lastClose))")
 
-        if affirmInSoftware {
+        switch mode {
+        case "pair":
             // The honest stand-in's leg completes: five frames, both users, a
-            // pairing at each end. ⚠ Evidence that the exchange runs, NOT that
-            // the comparison authenticated anything.
+            // pairing at each end. ⚠ Evidence that the exchange RUNS, not that
+            // the comparison authenticated anything — the affirmation was this
+            // harness's, and 11.7c wants a person's.
             #expect(sawCompare, "no comparison was reached")
             #expect(sawPaired, "the exchange did not complete")
-        } else {
+
+        case "decline":
+            // ⛔ RT-20b(iii) — the counterpart's user declines. 11.5g needs BOTH
+            // ends, so a declined comparison pairs NEITHER, and 11.9a leaves no
+            // pairing at either peer.
+            #expect(sawCompare, "the decline probe declines AT the comparison")
+            #expect(sawPaired == false, "⛔ a declined comparison must pair nothing")
+            let ended = try #require(abort, "the attempt never ended")
+            // 11.4f — a user's refusal and a failed MAC are the same code, and
+            // this side cannot tell which it met. Either way 11.9c forbids
+            // reporting it in terms that invite a retry.
+            #expect(ended.0 == .rejected, "expected `rejected`, got \(ended.0)")
+            #expect(ended.1 == .doNotRetry)
+            #expect(window.lastClose?.abortReason == .rejected)
+            #expect(window.lastClose?.advice == .doNotRetry)
+            // ⛔ RT-20b(iv)'s half that lives HERE — 11.9b. Nothing in this
+            // application reopens a window on its own, and the relay's second
+            // dial is the other half. The listener is gone with the window.
+            #expect(window.advertisement == nil)
+
+        default:
             // ⛔ `--probe order-acceptor` withholds `bs_reveal` after seeing
             // `bs_accept`, so this side never derives and never displays. Reaching
             // the comparison here would mean the probe had not withheld anything.
