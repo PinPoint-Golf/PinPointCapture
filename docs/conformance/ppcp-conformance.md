@@ -933,8 +933,8 @@ question; it does not propose an answer.
 capture device and connecting to it, with no per-session scan. Stated 24 August
 2026 as an MVP goal.
 
-**Why it cannot be built today — two independent clauses, and only one of them is
-a specification question.**
+**Why it cannot be built today — two independent clauses. Only the first is an
+open question; the second was settled by erratum on 23 August.**
 
 **(1) `RV` 2c (MUST)** — *"There is no unauthenticated **rendezvous** path."* 2a
 makes the pairing-code path REQUIRED and §2's table calls it Primary; §2's other
@@ -950,28 +950,49 @@ mechanism here would invert the commitment in requirements §14.2 that the
 specification is normative and precedes implementation, and a plausible-looking
 scheme invented in passing is harder to discard than none at all.
 
-**(2) `RV` 3.5d (MUST NOT), erratum E23** — a peer must not *"advertise for
-reconnection where its platform cannot resolve a PSK identity server-side"*.
-5.3b requires the accepting side to recompute `tag` with the `K_id` of each
-pairing it holds; `Network.framework`'s listener has no such hook and answers
-`PSK_IDENTITY_NOT_FOUND`. That erratum exists because of **F-D1-1, raised from
-this application in session S1**.
+**(2) The *reconnection* half is not a question — `RV` already settled it, and
+this finding must not be read as reopening it.**
 
-⛔ **The two are independent, and the interaction is the substance of this
-finding.** Grant the change request in full — an authenticated in-band bootstrap
-lands in `RV` tomorrow — and *first contact* would work without a code. **Every
-reconnection after it still fails 3.5d**, because 5.3a's identity is fresh per
-connection and still has nowhere to be resolved on this platform. The change
-request on its own therefore moves the first handshake and leaves the steady state
-exactly where it is.
+> **(3.5d) MUST NOT** *Erratum E23.* A peer **advertise for reconnection where
+> its platform cannot resolve a PSK identity server-side** … the roles reverse
+> under 3.5c, and **that reversal is the conformant shape for such a peer rather
+> than a deviation from a SHOULD**.
 
-**What would reach the steady state**, none of which this document recommends:
+> **(3.4d2) SHOULD** *Erratum E27.* A peer holding several pairings **browse as
+> well as advertise**, and prefer what it discovers … This is 3.5c's reversal
+> … **which for a peer that cannot advertise usefully anyway (3.5d) settles the
+> question entirely.**
 
-| Direction | Cost |
-|---|---|
-| Reverse the roles — the host advertises, the capture peer browses and dials | **None to the specification.** 3.5c already calls this conformant *"and is the shape a 'reconnect to a discovered host' interaction needs"*; 3.5d says the reversal is the conformant shape for such a peer rather than a deviation. `PpcpAdvertiser.browse(against:)` and B1's discovered-host screen are already built for it. The cost is that the host supplies the responder — 3.5c calls that a platform question rather than a protocol one |
-| A non-rotating PSK identity for reconnection | Weakens 3.4a's unlinkability, which 3.2b and 3.4 exist to protect. A larger RV change than the bootstrap, and in the opposite direction from the privacy work |
-| Embed a TLS library to obtain a server-side resolver | No specification change at all. ⚠ Changes the App Store export-compliance answer, adds a patching obligation, and is the route [`RV` 5.4b1's measurement](#the-tls-version-question-settled-before-the-run-and-not-by-a-failed-one) already identified as the only way past Apple's PSK limits |
+So the shape for this platform is fixed: **the host advertises, the capture peer
+browses and dials.** 5.3b needs the accepting side to recompute `tag` with the
+`K_id` of each pairing it holds, and `Network.framework`'s listener has no such
+hook — it answers `PSK_IDENTITY_NOT_FOUND`. E23 exists because of **F-D1-1, raised
+from this application in session S1**; E27 then made browsing the better shape
+rather than merely a permitted one.
+
+⚠ This side is already built for it: `PpcpAdvertiser.browse(against identityKeys:)`
+resolves every held pairing per 3.4b and refuses an unresolvable `rid` per 3.4c,
+and B1 was designed around a discovered *host*. ⛔ **What is not confirmed is
+whether PinPointStudio will advertise `_ppcp._tcp` with `role: host`** — 3.5c calls
+that a platform question rather than a protocol one, and the reconnection story
+depends on it.
+
+⛔ **The interaction, and the reason it is stated here.** The two clauses are
+independent. Grant the change request in full — an authenticated bootstrap lands
+in `RV` tomorrow — and *first contact* works without a code, while **every
+reconnection after it is still on the device-browses path**, because 5.3a's
+identity is fresh per connection and has nowhere to be resolved on this platform.
+A reader who conflates the two answers half the requirement and re-opens a clause
+that closed on 23 August. An earlier revision of this finding made exactly that
+mistake, offering the reversal as one of three "directions" as though it were
+undecided; it is not, and the other two — a non-rotating identity, or embedding a
+TLS library for a server-side resolver — are **regressions against 3.4a's
+unlinkability and against App Store export compliance respectively**, recorded
+here only so nobody proposes them as fresh ideas.
+
+⚠ **Issued to the protocol team as `PPCP-RV` change request 01, 24 August 2026**,
+as a standalone document quoting the clauses in full so it stands without this
+repository.
 
 **What this application does in the meantime.** The pairing-code path, unchanged —
 REQUIRED by 2a, working, and measured 30/30 two-sided against PinPointStudio's real
