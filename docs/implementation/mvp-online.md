@@ -18,12 +18,27 @@
 
 | | Requirement |
 |---|---|
-| **(a)** | PinPointStudio **discovers** the capture device and connects to it |
+| **(a)** | The capture device **finds PinPointStudio and connects to it** — by QR code the first time, or by guided pairing; and by neither on the days after |
 | **(b)** | The device captures video, and supports **preview** and **hi-res capture** |
 | **(c)** | After every shot and every candidate, the data reaches Studio |
 | **(d)** | **Online only** — no offline catch-up, no store-and-forward |
 
 ⚠ **(d) is a scope reduction, not a product decision.** It removes E9 entirely, most of E4, `SessionOfferService` and the offline half of E21. ⛔ It does **not** remove the bundle: `CORE`'s *live bytes are bundle bytes* means the same records go to the wire and to disk, so the writer stays and the device keeps its own session library. §4.2 makes that a demo step precisely so "online only" cannot quietly become "online or nothing".
+
+### ⛔ (a) was stated backwards until 24 August, and the table below always had it right
+
+An earlier revision read *"PinPointStudio discovers the capture device and connects to it"*. **PinPointCapture is never a TLS server**, and cannot be: App Store and export-compliance considerations aside, `RV` 3.5d already forbids it on measured grounds — Apple's TLS listener has no server-side PSK resolver, which is finding **F-D1-1, raised from this repository in session S1**.
+
+So the constraint is not new. What was new was a sentence in this document that never got reconciled with it, taken from CR-01's framing and left standing beside a table in §2.2 that stated the direction correctly all along. ⚠ Same shape as the day's other corrections: the precise thing was right and the prose beside it was wrong.
+
+**There are two connections and only one of them is *the* connection:**
+
+| | What it is | Who dials |
+|---|---|---|
+| The **bootstrap** (`RV` §11, guided pairing only) | ⚠ **plaintext, momentary, carries no PPCP and no TLS** (11.2c, 1.3c1) — two ephemeral public keys, a hash and two MACs | PinPointStudio dials a window the device opened |
+| **The session** — every PPCP byte that ever crosses | TLS-PSK, `RV` §5 | ⛔ **always the capture device** |
+
+⛔ The device accepting a *bootstrap* socket is not the device being a server in the sense that matters: nothing confidential crosses it, and `95add3e` implements 11.2b's role swap so that the moment a pairing exists the device dials. **Every PPCP session in this product is outbound from the phone.**
 
 ### Where each requirement stands
 
@@ -67,8 +82,9 @@ This is the part most easily got wrong, so it is stated as a table rather than a
 
 | | Who advertises | Who dials | Governed by |
 |---|---|---|---|
-| **First contact** | the **capture device** opens a bootstrap window | **PinPointStudio** | `RV` 11.2a — no PSK is involved, so 3.5d does not reach it |
-| **Every session after** | **PinPointStudio** (`role: host`) | the **capture device** | `RV` 3.5d, 3.4d2, 3.5e — Apple's listener cannot resolve a rotating PSK identity |
+| **First contact**, guided pairing | the **capture device** opens a bootstrap window | **PinPointStudio** dials it | `RV` 11.2a — ⚠ plaintext and PSK-free, so 3.5d does not reach it. Not a PPCP connection |
+| **First contact**, QR code | **PinPointStudio** publishes its endpoint in the code | the **capture device** scans and dials | `RV` §2's table — REQUIRED by 2a, and proved 30/30 two-sided |
+| **Every session after** | **PinPointStudio** (`role: host`) | the **capture device** | `RV` 3.5d, 3.4d2, 3.5e — ⛔ Apple's listener cannot resolve a rotating PSK identity, so the device must be the dialler |
 
 ⛔ **The peers swap roles between the two connections** (11.2b), and neither direction contradicts the other. "Studio finds the phone" is true at first contact, which is where the operator is standing and where the requirement came from. It is *not* true of reconnection, and `F-MVP-1` records why that is settled rather than open.
 
@@ -97,7 +113,7 @@ That section argued 3.6a's *"it will not work at a range"* made RV-6 *"a feature
 | Repository | Owes |
 |---|---|
 | **libppcp** | The five bootstrap frames on `PPCP-ENC` channel `255`; the derivation chain of §11.6 including E34's transcript binding; §10.4 as vectors; conformance rows RT-18, RT-20, RT-21, RT-24, RT-25, RT-26. ⛔ **Not X25519** — B17's seam takes it from the embedding |
-| **PinPointCapture** | The **acceptor** role (see below); opening and advertising the window (§3.7); the plaintext bootstrap connection — ⛔ **not** TLS, 11.2c; `CryptoKit` X25519 behind B17's seam; the six-digit comparison UI (11.7d) and abort copy (11.9c), now assertable under RT-26; then the swap to §5. **Plus RT-20's relay** |
+| **PinPointCapture** | The **bootstrap acceptor** role (see below) — ⛔ and never a TLS server; opening and advertising the window (§3.7); the plaintext bootstrap connection — ⛔ **not** TLS, 11.2c; `CryptoKit` X25519 behind B17's seam; the six-digit comparison UI (11.7d) and abort copy (11.9c), now assertable under RT-26; then the swap to §5. **Plus RT-20's relay** |
 | **PinPointStudio** | The **initiator** role; the same comparison UI; and — separately, still unanswered — **advertising `_ppcp._tcp` with `role: host`** for reconnection (3.5e) |
 
 ⛔ **This repository must implement the acceptor, and it is not a preference.** R-05/9e1 records that **PinPointStudio will ship initiator-only**, and *two initiator-only peers cannot pair*. 11.2b already puts the capture device on the acceptor side of first contact, so the two agree — but it means an acceptor-only build here and an initiator-only build there is the whole of the interoperable set, with no slack if either is descoped.
@@ -142,9 +158,11 @@ The only piece with nothing to compose. `PreviewProducer` exists and is uncalled
 
 ### 4.1 The demo
 
-1. Studio browses, finds the device's open bootstrap window, and dials it. Six digits on both screens; the operator confirms at each end. **No code is carried between screens.**
-   - ⚠ On a home or studio network, which is where E53 says the two peers actually meet. A discovery-disabled run is **not** required — see §2.3, and the premise question in it.
-2. The pairing exists. The device dials Studio under §5. Link up, both ends reporting `TLS 1.2 / TLS_PSK_WITH_AES_128_GCM_SHA256 / no forward secrecy`.
+1. **Pair.** Either route, and both end in the same place:
+   - *Guided pairing* — Studio browses, finds the device's open bootstrap window and dials it. Six digits on both screens, confirmed at each end. **Nothing is carried between screens.**
+   - *QR* — Studio displays a code, the device scans it and dials. ⚠ REQUIRED of every implementation by `RV` 2a, working today, and measured 30/30 two-sided. It is the fallback whenever guided pairing aborts twice (11.9d1).
+   - ⚠ On a home or studio network, which is where E53 says the two peers meet.
+2. **The device dials Studio under §5**, and from here it always will. Link up, both ends reporting `TLS 1.2 / TLS_PSK_WITH_AES_128_GCM_SHA256 / no forward secrecy`. ⛔ On the guided route this is the role swap of 11.2b — the peer that accepted the bootstrap is the peer that now makes the connection, because the device can never be the TLS server (§1).
 3. Sync burst runs. The device reports `.connected` with a real offset and uncertainty on B3 — **not** the fixture it shows today.
 4. Preview appears in Studio.
 5. Hit a ball. Within a second: `candidate` on control, then `shot`, then `capture_announce`, then the clip on bulk — and the device's own row turning `In Studio` when the host confirms.
