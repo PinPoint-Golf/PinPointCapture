@@ -26,6 +26,28 @@ DEVICE_APP  := $(DERIVED)/Build/Products/$(CONFIG)-iphoneos/$(APP)
 # target cannot forget.
 JOBS        := 3
 
+# ⛔ **A WALL-CLOCK CEILING ON EVERY UNATTENDED xcodebuild.** On 24 August 2026 a
+# hung test held `xcodebuild` for 25 minutes at 0% CPU. Nothing killed it:
+# `-default-test-execution-time-allowance 120` and `-maximum-test-execution-time-
+# allowance 300` are both set below and **neither fired** — they do not apply to a
+# hang inside a Swift Testing async case, which is precisely what hung. It was
+# noticed only because someone happened to be watching, and **a hang reads as
+# "still running", so nothing about it looks wrong.**
+#
+# ⚠ macOS ships no `timeout(1)`. `perl -e 'alarm shift; exec @ARGV'` is the
+# portable equivalent: the alarm survives `exec`, so the timer belongs to
+# xcodebuild itself rather than to a wrapper it could outlive. Exit status is
+# 142 (128 + SIGALRM).
+#
+# Sizing, from the run of 2026-08-24 (`Test-PinPointCapture-2026.08.24_17-56-33`):
+# 74 cases, **median 0.001s**, slowest **14.0s**, whole suite ~55s. The ceiling is
+# an order of magnitude above that on purpose — it is a backstop against a hang,
+# not a performance budget, and it must never fire on a slow-but-honest machine.
+GUARD        := /usr/bin/perl -e 'alarm shift; exec @ARGV'
+GUARD_STATUS := 142
+TEST_TIMEOUT_S  ?= 600
+BUILD_TIMEOUT_S ?= 600
+
 # `libppcp`'s conformance tools. A sibling checkout during co-development.
 LIBPPCP     ?= ../libppcp
 PPCP_SIM    ?= $(LIBPPCP)/build/dev/tools/ppcp-sim/ppcp-sim
@@ -110,7 +132,7 @@ $(PROJECT):
 # stale project that omits it — surfacing as "cannot find X in scope".
 # xcodegen takes well under a second; correctness is worth more than that.
 build: gen
-	set -o pipefail && xcodebuild build \
+	set -o pipefail && $(GUARD) $(BUILD_TIMEOUT_S) xcodebuild build \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -215,7 +237,16 @@ test-app: gen
 	@# ⚠ NOT piped through `xcbeautify --quieter`, which swallows swift-testing's
 	@# output entirely and leaves only XCTest's "Executed 0 tests" summary — so a
 	@# passing suite looks like an empty one. Filter to the result lines instead.
-	set -o pipefail && xcodebuild test \
+	@# ⚠ The two allowances below are kept because they catch a SLOW test, but
+	@# they did NOT catch a HUNG one on 2026-08-24 — $(GUARD) is what does.
+	@# ⚠ xcodebuild's status is written to a FILE, not read from the pipeline.
+	@# `set -o pipefail` reports the RIGHTMOST non-zero status, and `grep` exits 1
+	@# when a killed xcodebuild printed nothing to match — so the timeout's 142 is
+	@# masked by grep's 1 and a hang reports itself as "no test output". Measured
+	@# while adding this guard, which is exactly the class of bug it exists for.
+	@set -o pipefail; \
+	mkdir -p $(DERIVED); rm -f $(DERIVED)/.xcodebuild-status; \
+	{ $(GUARD) $(TEST_TIMEOUT_S) xcodebuild test \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -224,8 +255,21 @@ test-app: gen
 		-jobs $(JOBS) \
 		-default-test-execution-time-allowance 120 \
 		-maximum-test-execution-time-allowance 300 \
-		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || \
-		(echo "make test-app: no test output — see the xcresult bundle"; exit 1)
+		; echo $$? > $(DERIVED)/.xcodebuild-status; } \
+		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST'; \
+	status=$$(cat $(DERIVED)/.xcodebuild-status 2>/dev/null || echo 1); \
+	if [ $$status -eq $(GUARD_STATUS) ]; then \
+		echo ""; \
+		echo "make test-app: TIMED OUT after $(TEST_TIMEOUT_S)s and was killed."; \
+		echo "  This suite runs in ~55s (74 cases, median 1ms, slowest 14s), so this"; \
+		echo "  is a hang, not a slow machine. The last test named above is where it"; \
+		echo "  stopped — a hang prints its start line and never its result."; \
+		echo "  Raise the ceiling with: make test-app TEST_TIMEOUT_S=<seconds>"; \
+		exit 1; \
+	elif [ $$status -ne 0 ]; then \
+		echo "make test-app: no test output — see the xcresult bundle"; \
+		exit 1; \
+	fi
 
 # D9 — the device peer driven by a counterpart this repository did not write.
 #
