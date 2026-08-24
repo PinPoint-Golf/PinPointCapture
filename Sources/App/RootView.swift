@@ -111,8 +111,19 @@ struct RootView: View {
         })
         .preferredColorScheme(.dark)
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .background else { return }
-            Task { await model.linkDidEnterBackground() }
+            switch phase {
+            case .background:
+                Task { await model.linkDidEnterBackground() }
+            case .active:
+                // ⛔ **`RV` §3, and this is where (b) starts.** Foreground only,
+                // and only with no link up: the coordinator reads what pairings
+                // this device holds, browses for a host that resolves against one
+                // of them (3.4b/3.4c), and dials it. No code, no pairing step.
+                // ⚠ It does nothing at all on a device that has never paired.
+                model.beginSearchingForHost()
+            default:
+                break
+            }
         }
     }
 

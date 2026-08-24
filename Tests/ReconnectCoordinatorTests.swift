@@ -351,6 +351,87 @@ struct ReconnectCoordinatorTests {
         #expect(count == 1)
     }
 
+    @Test("⛔ The host is on DHCP — a failed dial re-browses, it does not retry the address")
+    func aFailedDialReResolves() async throws {
+        let (held, _) = try Fixture.held(count: 1)
+
+        /// Sweep 1 offers the address the host used to be at; sweep 2 offers
+        /// where it is now. ⚠ This is the DHCP case exactly: the instance name
+        /// and the pairing are unchanged, only the record behind them moved.
+        actor Sweeps {
+            var count = 0
+            func next() -> Int { count += 1; return count }
+        }
+        struct MovingHost: HostBrowsing {
+            let sweeps: Sweeps
+            func browse(against identityKeys: [Data], seconds: Double) async
+            -> [PpcpBrowser.Found] {
+                let sweep = await sweeps.next()
+                return [Fixture.found(instance: sweep == 1 ? "PPCP-OLD" : "PPCP-NEW",
+                                      pairingIndex: 0)]
+            }
+        }
+
+        let log = DialLog()
+        let coordinator = ReconnectCoordinator(
+            browser: MovingHost(sweeps: Sweeps()),
+            // The stale endpoint is not there any more; the fresh one answers.
+            connector: StubConnector(log: log,
+                                     failures: [TransportError.endpointUnreachable("no route")]),
+            held: held,
+            cadence: Fixture.brisk)
+
+        var outcomes: [ReconnectOutcome] = []
+        for await outcome in await coordinator.search() { outcomes.append(outcome) }
+
+        // ⛔ The recovery is a **new browse**, so the second dial went somewhere
+        // the second browse resolved — not to the address that just failed.
+        #expect(log.endpoints.count == 2)
+        guard case .service(let first, _, _, _) = try #require(log.endpoints.first),
+              case .service(let second, _, _, _) = try #require(log.endpoints.last) else {
+            Issue.record("expected .service endpoints"); return
+        }
+        #expect(first == "PPCP-OLD")
+        #expect(second == "PPCP-NEW")
+        guard case .couldNotReachHost = outcomes.first,
+              case .connected = outcomes.last else {
+            Issue.record("expected an unreachable host and then a link"); return
+        }
+    }
+
+    @Test("⛔ Nothing about an endpoint survives a sweep — there is no address to go stale")
+    func noEndpointIsCarriedBetweenSweeps() async throws {
+        let (held, _) = try Fixture.held(count: 1)
+        // A browser that finds the host once and then never again. If anything
+        // cached the endpoint, the second sweep would dial it a second time.
+        actor Sweeps {
+            var count = 0
+            func next() -> Int { count += 1; return count }
+        }
+        struct OnceOnly: HostBrowsing {
+            let sweeps: Sweeps
+            func browse(against identityKeys: [Data], seconds: Double) async
+            -> [PpcpBrowser.Found] {
+                await sweeps.next() == 1
+                    ? [Fixture.found(instance: "PPCP-GONE", pairingIndex: 0)] : []
+            }
+        }
+        let log = DialLog()
+        let coordinator = ReconnectCoordinator(
+            browser: OnceOnly(sweeps: Sweeps()),
+            connector: StubConnector(log: log,
+                                     failures: [TransportError.endpointUnreachable("no route")]),
+            held: held,
+            cadence: Fixture.brisk)
+
+        _ = await coordinator.attempt()
+        guard case .notFound = await coordinator.attempt() else {
+            Issue.record("expected notFound — the host is no longer advertising"); return
+        }
+        // ⛔ One dial, from the one sweep that resolved something.
+        #expect(log.endpoints.count == 1)
+    }
+
     @Test("⚠ The cadence widens and then holds steady")
     func cadenceWidens() {
         let standard = ReconnectCadence.standard

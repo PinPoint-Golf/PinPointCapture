@@ -407,9 +407,112 @@ public final class AppModel {
     /// connection and a link that claimed to be up on return would be exactly the
     /// dishonesty these screens were just cleared of. Reconnection is E3.5.
     public func linkDidEnterBackground() async {
+        // ⛔ And the search stops with it. A browse behind a suspended app spends
+        // radio on `RV` §3's convenience path and could only produce a link the
+        // next suspension drops again.
+        stopSearchingForHost()
         guard link != nil else { return }
         await disconnect(.cancelled)
         hostLink = HostLink(state: .lost)
+    }
+
+    // MARK: Reconnection without a code (RV §3)
+
+    /// Whether a browse is running. ⚠ Not "whether a host exists" — see
+    /// ``reconnectSilence`` for what the search has actually found out.
+    public private(set) var isSearchingForHost = false
+
+    /// ⛔ **3.6a — this is NOT an error and must never be rendered as one.** What
+    /// the last completed sweep had to say: how many sweeps, how long, and how
+    /// many pairings were offered to the resolver. `nil` before the first sweep
+    /// completes and whenever a host was reached.
+    ///
+    /// ⚠ **The wording is deliberately absent.** "Looking for your host" and
+    /// "your host has not appeared — the network may not carry it" are the same
+    /// outcome to §3 and different sentences to a person, and where the line
+    /// falls is a UX decision. This property is the seam that makes the decision
+    /// possible; it does not make it.
+    public private(set) var reconnectSilence: Silence?
+
+    /// ⛔ Set when a discovered host answered and refused the pairing (7.4d, most
+    /// often a revocation at the other end) or could not be reached. Distinct
+    /// from silence: something was there.
+    public private(set) var reconnectDiagnosis: String?
+
+    private var reconnectTask: Task<Void, Never>?
+
+    /// ⚠ **When this runs, and it is a decision.** On the app becoming active
+    /// with no link up. Not in the background, and not while a link exists —
+    /// `search()` stops of its own accord the moment one does.
+    ///
+    /// ⛔ Idempotent. Two searches would be two browses and, worse, two dials to
+    /// the same host.
+    public func beginSearchingForHost() {
+        guard reconnectTask == nil, link == nil else { return }
+        isSearchingForHost = true
+        reconnectDiagnosis = nil
+        let coordinator = ReconnectCoordinator()
+        reconnectTask = Task { [weak self] in
+            for await outcome in await coordinator.search() {
+                guard let self else { return }
+                if await self.adopt(outcome) { break }
+            }
+            await self?.searchEnded()
+        }
+    }
+
+    public func stopSearchingForHost() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        isSearchingForHost = false
+    }
+
+    /// - Returns: whether the search is over.
+    private func adopt(_ outcome: ReconnectOutcome) async -> Bool {
+        switch outcome {
+        case .connected(let host):
+            // ⚠ A code may have been scanned while this was browsing. The link
+            // that is already up wins; dropping it to install this one would be
+            // the search fighting the user.
+            guard link == nil else {
+                await host.transport.close(.cancelled)
+                return true
+            }
+            reconnectSilence = nil
+            // ⛔ Exactly the seam the pairing-code walk uses. §5 does not know
+            // which of §3 or §4 found the host, and 11.1a is the clause that
+            // says it must not.
+            await connect(transport: host.transport,
+                          sessionId: host.sessionId,
+                          hostDisplayName: host.hostDisplayName)
+            return true
+
+        case .notFound(let silence):
+            // ⛔ 3.6a — recorded, never raised. `hostLink` is untouched: a search
+            // that found nothing has not lost anything.
+            reconnectSilence = silence
+            return false
+
+        case .noPairingsHeld:
+            // Nothing has ever been paired, so there is nothing to reconnect to
+            // and no amount of waiting changes it. ⚠ Not a silence: the network
+            // was never asked.
+            reconnectSilence = nil
+            return true
+
+        case .hostRefusedThePairing(_, let reason):
+            reconnectDiagnosis = reason
+            return false
+
+        case .couldNotReachHost(_, let reason):
+            reconnectDiagnosis = reason
+            return false
+        }
+    }
+
+    private func searchEnded() {
+        reconnectTask = nil
+        isSearchingForHost = false
     }
 
     /// Refreshes the observable link state from the session. ⚠ Called on the

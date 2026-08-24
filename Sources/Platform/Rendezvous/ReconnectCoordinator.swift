@@ -30,6 +30,29 @@
 //  made here**: this type reports how long and how hard it has looked and offers
 //  no words for it.
 //
+//  ⛔ **THE HOST IS ON DHCP AND ITS ADDRESS WILL CHANGE, so no address is ever
+//  written down.** What survives a session is the pairing — `PRK`, and the
+//  `K_tls`/`K_id` re-derived from it (5.1c) — and a pairing has nothing to do
+//  with an address. §3 is built for this: the instance name and the SRV target
+//  are stable while the A/AAAA record moves underneath them, and 3.4b recognises
+//  a host by resolving its rotating `rid` against a held `K_id`. So a host that
+//  changes address, changes subnet, or is rebuilt on new hardware keeps its
+//  pairing, and four rules follow that are easy to break by accident:
+//
+//   1. **No host address is persisted or cached, here or in
+//      `PairingSecretStore`.** The endpoint is resolved fresh on every sweep. A
+//      cached address is correct until the day it silently is not, and the
+//      failure then reads as "the studio is offline".
+//   2. **`rid` is not cached either** — 3.4d rotates it by design. What is held
+//      across sessions is `K_id`; `rid` is whatever is on the wire this time.
+//   3. **A failed dial re-browses; it does not retry the address.** ``attempt()``
+//      holds nothing between sweeps but a counter and a start time, so a retry
+//      *is* a new browse by construction rather than by remembering to. The most
+//      likely reason a resolved endpoint failed is that it moved.
+//   4. **The platform resolves the name, not this file.** `.service` re-resolves
+//      on every dial; a host and port extracted once does not. That is the
+//      strongest of the reasons `Found` carries the endpoint whole.
+//
 //  ⚠ **WHEN THIS RUNS, decided here and written down rather than left implicit.**
 //
 //   * **On an explicit entry to the connect flow, and on the app becoming
