@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; ⛔ **guided pairing removed from scope** the same day, which removed the gate that had been in front of everything else |
+| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; guided pairing removed from scope the same day. ⛔ **(a) is mechanism-complete and journey-incomplete** — §2.2a |
 | Date | 24 August 2026 |
 | Scope of this document | Delivery order for one demonstrable outcome. [`delivery-scope.md`](delivery-scope.md) remains the authority on *what the product is*; this says what is built next, in what order, and what is deliberately left out |
 | Source of truth | [`capture-companion-requirements.md`](../design/capture-companion-requirements.md) · [`ppcp-conformance.md`](../conformance/ppcp-conformance.md) · `PPCP-RV` revision 9 |
@@ -44,7 +44,7 @@ So the constraint is not new. What was new was a sentence in this document that 
 
 | | Built | Missing |
 |---|---|---|
-| **(a)** | ✅ **All of it.** Pairing by code, proved 30/30 two-sided; the persisted pairing; and day-two reconnect by discovery, across a change of host address (`0b62394`) | — |
+| **(a)** | The **mechanisms**, all of them: pairing by code, proved 30/30 two-sided; the persisted pairing; day-two reconnect by discovery across a change of host address (`0b62394`) | ⛔ **The journey.** The scan path cannot produce a persisted pairing, so reconnect has nothing to work with — §2.2 |
 | **(b)** | Hi-res: the ring, clip extraction, the sidecar, thumbnails — `8a371c3`. Unverified on a camera | **Preview**: no `preview` Stream is opened and nothing produces frames for one |
 | **(c)** | `LiveDetectionSink`, `HostLinkDriver`, `TransferQueue`, `PayloadTransferQueue`, `SessionResume` — all tested | **Every one of them has no caller.** Composition only, which is the shape E1.1 was |
 | **(d)** | — | Nothing. It is a subtraction |
@@ -63,9 +63,9 @@ So the constraint is not new. What was new was a sentence in this document that 
 |---|---|---|
 | **First pairing** | The **pairing code**, `RV` §4. Studio displays it, the device scans and dials, Studio listens | ✅ **REQUIRED of every implementation by 2a**, working, and measured **30/30 two-sided** against Studio's real listener on 23 Aug |
 | **Every session after** | The persisted pairing of `RV` §7.4 — `PRK` in the Keychain, opt-in and revocable | ✅ built |
-| **Finding Studio again** | Studio advertises `_ppcp._tcp` `role: host`; the device browses, resolves the `rid` against its held pairings and dials (§2.2) | ✅ **built both sides, 24 Aug**, and survives the host changing address |
+| **Finding Studio again** | Studio advertises `_ppcp._tcp` `role: host`; the device browses, resolves the `rid` against its held pairings and dials (§2.2) | ⚠ **Built both sides, 24 Aug**, and survives the host changing address — ⛔ but unreachable today, §2.2 |
 
-⛔ **The consequence worth stating plainly: the MVP is no longer gated on RV-6, on `libppcp`, or on RT-20c** — and as of 24 August requirement **(a) is complete**. What was Phase 0 across three repositories is a path that was already proved against the real Studio before today began. Nothing is owed by another team.
+⛔ **The consequence worth stating plainly: the MVP is no longer gated on RV-6, on `libppcp`, or on RT-20c.** What was Phase 0 across three repositories is a path that was already proved against the real Studio before today began, and nothing is owed by another team. ⚠ Requirement (a) is **not** finished, but what remains is a design question in this repository rather than a dependency — §2.2.
 
 ⚠ **9g still binds when RV-6 does ship.** A conformance claim to §11 must name RT-20c and state its result, and must not report an aggregate pass while it is unrun. Out of the MVP does not mean out of the claim — this repository will simply not be claiming §11 yet.
 
@@ -80,11 +80,23 @@ Both halves landed the same evening:
 
 ⚠ **Discovery failure is still not an error** (3.6a), and `ReconnectCoordinator` says so in its own header. On a network where multicast is dropped the device falls back to the code, which is why 2a makes that path REQUIRED.
 
+### ⛔ 2.2a — and none of it is reachable yet
+
+The integration test on 24 August **aborted before it could exercise any of the above**, and the reason is not in the reconnect code, which behaved as designed. **It was never given a pairing to work with.**
+
+> The phone cannot produce a persisted pairing on the path a normal user takes: the consent toggle lives only on the enter-a-code screen, while the primary screen pairs the moment the camera sees a code.
+
+⚠ **The constraint underneath is real.** At scan time the code has not been read, `mu` is unknown, and `RV` 7.4f forbids offering persistence that might then be refused. So consent cannot be asked *before* the scan — it has to come after, as Studio already does.
+
+⛔ **The UX that is there now is not the answer and is to be replaced rather than patched.** This is a **design** task, taken together, and the first thing to check is [the design handoff](../design/mockup%20v1/README.md): seventeen screens are specified there, B2 is the pairing view, and its copy is treated as decisions rather than suggestions. If it has a position on where persistence consent sits, that is the starting point — and if it has none, that absence is worth knowing before anything is drawn.
+
+**Until then requirement (a) is mechanism-complete and journey-incomplete**, and the demo's step 7 cannot pass.
+
 ### 2.3 What each repository owes
 
 | Repository | Owes |
 |---|---|
-| **PinPointCapture** | ⚠ **Nothing for (a) — it is built.** §3 — everything in (b) and (c) |
+| **PinPointCapture** | ⛔ §2.2a — the persistence-consent design, together. Then §3 — everything in (b) and (c) |
 | **PinPointStudio** | ✅ **Advertising for reconnection — delivered 24 August.** Nothing outstanding for the MVP |
 | **libppcp** | ⚠ **Nothing the MVP waits on.** Its RV-6 work continues on its own timetable |
 
@@ -128,7 +140,7 @@ The only piece with nothing to compose. `PreviewProducer` exists and is uncalled
 4. Preview appears in Studio.
 5. Hit a ball. Within a second: `candidate` on control, then `shot`, then `capture_announce`, then the clip on bulk — and the device's own row turning `In Studio` when the host confirms.
 6. Five shots, no reconnect.
-7. Close the app and reopen it. The device reconnects **with no pairing step and no code**. ⚠ Worth running once with the host's address deliberately changed, since that is the case the mechanism was chosen for.
+7. Close the app and reopen it. The device reconnects **with no pairing step and no code**. ⛔ **Cannot pass today** — §2.2a. ⚠ Worth running once with the host's address deliberately changed, since that is the case the mechanism was chosen for.
 
 ### 4.2 The check that (d) stayed honest
 
@@ -166,4 +178,4 @@ The only piece with nothing to compose. `PreviewProducer` exists and is uncalled
 
 ⛔ **There is no Phase 0 any more.** It was RV-6 across three repositories and it gated everything; the MVP now rests on the pairing-code path, which was already working before today. Phase 2 can start immediately.
 
-⚠ **No cross-team dependencies remain.** Requirement (a) is built and (d) is a subtraction, so the whole of the remaining MVP is (b) and (c) in this repository.
+⚠ **No cross-team dependencies remain.** (d) is a subtraction and (a)'s mechanisms are built, so everything left — §2.2a's design, (b) and (c) — is in this repository.
