@@ -154,6 +154,44 @@ public actor PpcpBrowser {
         public let protocolVersions: String
         /// The index into the pairing list whose `K_id` resolved it (3.4b).
         public let pairingIndex: Int
+        /// ⛔ **The browse result's own endpoint, carried rather than rebuilt,
+        /// and 3.4c is the reason it is not a host and a port.**
+        ///
+        /// A `NWBrowser` result carries no address at all — `.service(name:type:
+        /// domain:interface:)` is a *name*, and resolution happens when something
+        /// dials it. So "reconstruct host and port" is not a cheaper alternative
+        /// to this; it is a second resolution this file would have to perform
+        /// itself, and three things go wrong in it:
+        ///
+        ///  1. **The instance we resolved is not the instance a name re-resolves
+        ///     to.** 3.4a rotates `rn` at least every fifteen minutes and 3.2a
+        ///     derives the instance name from `rid`, so an instance name has a
+        ///     bounded life and is reused by whoever registers it next. 3.4c says
+        ///     a browsing peer must not connect to an instance it cannot resolve;
+        ///     dialling *this* endpoint keeps the gap between resolving and
+        ///     dialling as short as the platform allows, where a name looked up
+        ///     again later could reach a different registration entirely.
+        ///  2. A host publishes several addresses. `NWConnection` walks all of
+        ///     them from a `.service` endpoint; a single reconstructed host
+        ///     string picks one and fails if that one is the wrong family.
+        ///  3. A link-local address needs its interface scope, which this
+        ///     endpoint carries in its `interface` and a host string drops.
+        ///
+        /// ⚠ It is `NWEndpoint` and therefore Platform-only, which is why `Found`
+        /// lives here and not in `CaptureCore` — `LayerPurityTests` forbids
+        /// `import Network` in Core, correctly.
+        public let endpoint: NWEndpoint
+
+        public init(instanceName: String, rn: Data, rid: Data, role: DiscoveryRole,
+                    protocolVersions: String, pairingIndex: Int, endpoint: NWEndpoint) {
+            self.instanceName = instanceName
+            self.rn = rn
+            self.rid = rid
+            self.role = role
+            self.protocolVersions = protocolVersions
+            self.pairingIndex = pairingIndex
+            self.endpoint = endpoint
+        }
     }
 
     private var browser: NWBrowser?
@@ -199,8 +237,12 @@ public actor PpcpBrowser {
                 else { continue }
                 collected.mutate {
                     guard $0.contains(where: { $0.instanceName == name }) == false else { return }
+                    // ⛔ `result.endpoint`, not a host and port assembled from
+                    // `name`. See `Found.endpoint` for why that is a 3.4c
+                    // question and not a convenience.
                     $0.append(Found(instanceName: name, rn: rn, rid: rid, role: role,
-                                    protocolVersions: versions, pairingIndex: index))
+                                    protocolVersions: versions, pairingIndex: index,
+                                    endpoint: result.endpoint))
                 }
             }
         }

@@ -617,13 +617,37 @@ struct PpcpConnector: PeerTransportConnector {
         guard let port = NWEndpoint.Port(rawValue: endpoint.port) else {
             throw TransportError.endpointUnreachable("port \(endpoint.port)")
         }
+        // `RV` 4.3 hands over a host and a port as written in the code, so this
+        // is the one place that turns them into an endpoint. Everything below
+        // dials an `NWEndpoint` and does not care where it came from.
+        return try await connect(to: .hostPort(host: NWEndpoint.Host(endpoint.host),
+                                               port: port),
+                                 credentials: credentials, channels: channels)
+    }
+
+    /// The same dial, from an endpoint the platform produced rather than one a
+    /// pairing code spelled out.
+    ///
+    /// ⛔ **This exists for `RV` §3's reconnection path and `.service` is the
+    /// point of it.** An `NWBrowser` result is a *name*, not an address; handing
+    /// that endpoint straight to `NWConnection` keeps the resolution the browser
+    /// established, walks every address the host publishes, and preserves the
+    /// interface scope a link-local address needs. Flattening it to a host string
+    /// and a port would throw all three away and re-resolve a name that 3.4a
+    /// rotates out from under it — see `PpcpBrowser.Found.endpoint`.
+    ///
+    /// ⚠ Nothing else differs. The same `link_id`, the same concurrent channels,
+    /// the same `RendezvousCredentials`: §5 does not know which of §3 or §4 found
+    /// the counterpart, and 11.1a is the clause that insists it must not.
+    func connect(to endpoint: NWEndpoint,
+                 credentials: any PpcpCredentials,
+                 channels: [PpcpChannel] = PpcpChannel.required) async throws -> any PeerTransport {
 
         // `ENC` 2.1a — one `link_id` for the whole link, minted here because the
         // dialler mints it, and used unchanged on every stream including the ones
         // 2.1d lets us open later.
         let linkId = try PpcpLinkIdSource.mint()
-        let dial = Self.dialler(host: endpoint.host, port: port,
-                                credentials: credentials, queue: queue)
+        let dial = Self.dialler(endpoint: endpoint, credentials: credentials, queue: queue)
 
         // ⚠ **Concurrent, and E1 is what allowed it.** S1 dialled sequentially
         // because the listener assembled a link from arrival order and a
@@ -674,7 +698,7 @@ struct PpcpConnector: PeerTransportConnector {
 
     /// One dial, reusable: the task group uses it, and so does `openChannel` for
     /// a `preview` stream opened after the session is established (2.1d).
-    private static func dialler(host: String, port: NWEndpoint.Port,
+    private static func dialler(endpoint: NWEndpoint,
                                 credentials: any PpcpCredentials,
                                 queue: DispatchQueue)
         -> @Sendable (PpcpChannel) async throws -> (PpcpByteChannel, NegotiatedSecurity) {
@@ -687,9 +711,7 @@ struct PpcpConnector: PeerTransportConnector {
             let parameters = PpcpTlsProfile.parameters(tlsKey: credentials.tlsKey,
                                                        identity: identity,
                                                        isListener: false)
-            let connection = NWConnection(host: NWEndpoint.Host(host),
-                                          port: port,
-                                          using: parameters)
+            let connection = NWConnection(to: endpoint, using: parameters)
             return try await PpcpByteChannel.open(connection, channel: channel, on: queue)
         }
     }
