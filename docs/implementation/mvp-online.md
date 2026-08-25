@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; guided pairing removed from scope the same day. ✅ **(a)'s journey is built and half-proven on hardware, 25 Aug** — §2.2a, §2.2b. ⛔ **(b) and (c) are blocked on [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)** — §3.0 |
+| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; guided pairing removed from scope the same day. ✅ **(a) is DONE and proven end to end on hardware, 25 Aug** — [#96](https://github.com/PinPoint-Golf/PinPointCapture/issues/96) closed, both ends showing connected. ✅ **Phase 0 is clear** — [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98), [#101](https://github.com/PinPoint-Golf/PinPointCapture/issues/101), [#102](https://github.com/PinPoint-Golf/PinPointCapture/issues/102) closed the same day. ⛔ **Next: (b), preview — §3.3** |
 | Date | 24 August 2026 · **revised 25 August** |
 | Scope of this document | Delivery order for one demonstrable outcome. [`delivery-scope.md`](delivery-scope.md) remains the authority on *what the product is*; this says what is built next, in what order, and what is deliberately left out |
 | Source of truth | [`capture-companion-requirements.md`](../design/capture-companion-requirements.md) · [`ppcp-conformance.md`](../conformance/ppcp-conformance.md) · `PPCP-RV` revision 9 |
@@ -115,21 +115,29 @@ A screenshot from the phone shows the C1 host chip reading `PinPointStudio` over
 
 | Repository | Owes |
 |---|---|
-| **PinPointCapture** | ✅ §2.2a answered and built. ⛔ Now: [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98) first, then (b) and (c) — §3 |
+| **PinPointCapture** | ✅ §2.2a answered and built; Phase 0 clear. ⛔ Now: (b) preview — §3.3 |
 | **PinPointStudio** | ✅ **Advertising for reconnection — delivered 24 August.** Nothing outstanding for the MVP |
 | **libppcp** | ⚠ **Nothing the MVP waits on.** Its RV-6 work continues on its own timetable |
 
 ## 3. Phases
 
-### 3.0 ⛔ Blocking everything — Shots with nothing behind them ([#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98))
+### 3.0 ✅ Phase 0 — cleared, 25 August, and what it cost
 
-**Observed on a phone, 25 August.** The capture screen showed `Nothing is being recorded — libppcp: output buffer too small` while the same screen held `Session · 4`, a Shot 47 seconds old, and a ring reporting `20/20 · 239 fps`.
+A day on a phone. Five issues closed, four of them found while fixing the first.
 
-⛔ **Three subsystems disagreeing, and only one of them says so.** Detection and minting are working, the ring is filling, and the hostless session is failing — so the app is producing Shots that have **no Capture behind them**. `CORE` §9.2 makes capture the thing that must not be quietly wrong; this is the loud half working while the quiet half fails.
+| | | |
+|---|---|---|
+| [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98) | Shots minted with nothing recorded | `libppcp` originates nothing over a 64 KiB per-channel queue, and both `ENC` 6f's SHOULD `chunk_bytes` of 262144 **and** a conformant `AchievedFrames` at 240 fps exceed it. The call site was following the specification. Chunk lowered to 32 KiB as a recorded deviation; **F-E1-1** and **F-E1-2** raised for `libppcp` |
+| [#101](https://github.com/PinPoint-Golf/PinPointCapture/issues/101) | Arming stalled the sensor up to nine seconds | `sessionPreset` was inherited rather than stated. `.inputPriority` removed it: 1080p120 went from a 8854 ms gap and 85.9 fps to **8.34 ms and 119.9 fps, zero drops**. `arm()` also now waits for the ring before claiming `armed` |
+| [#102](https://github.com/PinPoint-Golf/PinPointCapture/issues/102) | Every rate but the fastest discarded | Enumeration keyed on geometry, so 1080p120 did not exist and *Use 120 fps* silently gave 4K60 on the ultra-wide. 28 → 40 modes; one ranking rule; Streams now name a profile that was actually declared |
+| [#96](https://github.com/PinPoint-Golf/PinPointCapture/issues/96) | Remember / forget / reconnect | Closed — the dial completes, confirmed at **both** ends |
+| [#97](https://github.com/PinPoint-Golf/PinPointCapture/issues/97) | The four-screen opening | Closed |
 
-**Why it is first and not merely next.** Everything in (b) and (c) hangs off a session that opens: preview needs a `preview` Stream on it (§3.3), and shots crossing need a Capture to announce (§3.2). A session that cannot allocate its buffers has neither.
+⛔ **And a crash on `arm()`** — `Int64(NaN)` reading `exposureDuration` before it settled, symbolicated off the device. It had been a race the user was winning by hand.
 
-⚠ **Check our own call site before reporting upstream** — `libppcp` is another team's repository and read-only here. A length passed where a capacity was wanted is ours; a fixed encode buffer overrun by 1080p240 is theirs.
+⚠ **What §3.1's contradiction turned out to be.** The `↕100.2 ms` reading was a **startup transient**, not a sustained defect: over 38 s at 1080p240 the distribution is 8994 inter-arrivals under 5 ms and one over 10 ms. `maxInterArrivalNs` could say how bad and not *when*, so `RingStats` now buckets every gap and timestamps the largest. E1.1 holds the claimed rate for a whole session at both rates.
+
+⚠ **Still open from that day, and none of it blocks preview:** [#103](https://github.com/PinPoint-Golf/PinPointCapture/issues/103) minting stops after ~31 candidates — the one that bites a real range session soonest; [#99](https://github.com/PinPoint-Golf/PinPointCapture/issues/99) the primary button's label and the Session's state are decided separately; [#100](https://github.com/PinPoint-Golf/PinPointCapture/issues/100) nothing can be deleted and a four-shot session is 44 MB; [#19](https://github.com/PinPoint-Golf/PinPointCapture/issues/19) the intrinsics overclaim, now unblocked because 1080p120 exists; and [#17](https://github.com/PinPoint-Golf/PinPointCapture/issues/17)'s last item, the encoded profile/level at the provisional 50 Mbps.
 
 ### 3.0a ⚠ What 25 August says about *how* this codebase fails
 
@@ -251,9 +259,9 @@ A day of work on a phone. Two commits — `0d0df74`, `af3d80c` — and the plan 
 ```
    §2.2's answer          ✅ DONE 25 Aug — built, deployed, walked on a phone
         ·
-   0    #98 + #17's gap   ⛔ BLOCKS EVERYTHING — a session that cannot open
-        ▼                    has no Streams for preview and no Capture to announce
-   1    device session    ✅ DONE 24 Aug — ⚠ and contradicted by a 25 Aug run (§3.1)
+   0    #98 + #17's gap   ✅ CLEARED 25 Aug — see §3.0
+        ▼
+   1    device session    ✅ DONE — and the 25 Aug contradiction is resolved (§3.1)
         ▼
    2    preview  (+ Studio's viewer and config surface)        = (b)
         ▼         ⚠ order reversed 25 Aug — §3.3. Check the sync dependency FIRST
@@ -262,7 +270,7 @@ A day of work on a phone. Two commits — `0d0df74`, `af3d80c` — and the plan 
    4    demo — step 7 needs Studio on a multicast-carrying network
 ```
 
-⛔ **Phase 0 is back, and it is not RV-6.** The old Phase 0 was guided pairing across three repositories; this one is a single defect in this repository ([#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)) that stops a Session opening at all. It is smaller and it is genuinely blocking.
+✅ **Phase 0 is clear, 25 August.** It was a single defect in this repository ([#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)) that stopped a Session writing its payloads, and it brought three more out with it — see §3.0. All closed the same day. **Preview (§3.3) is next and nothing blocks it.**
 
 ⚠ **One cross-team dependency has reappeared.** Preview's Studio half — a viewer, and whatever "config from PPS" means — is PinPointStudio's to scope (§3.3). §2.3's *"nothing outstanding"* held for one day.
 
