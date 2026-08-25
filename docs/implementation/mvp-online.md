@@ -4,11 +4,11 @@
 
 | | |
 |---|---|
-| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; guided pairing removed from scope the same day. ⛔ **(a) is mechanism-complete and journey-incomplete** — §2.2a |
-| Date | 24 August 2026 |
+| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; guided pairing removed from scope the same day. ✅ **(a)'s journey is built and half-proven on hardware, 25 Aug** — §2.2a, §2.2b. ⛔ **(b) and (c) are blocked on [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)** — §3.0 |
+| Date | 24 August 2026 · **revised 25 August** |
 | Scope of this document | Delivery order for one demonstrable outcome. [`delivery-scope.md`](delivery-scope.md) remains the authority on *what the product is*; this says what is built next, in what order, and what is deliberately left out |
 | Source of truth | [`capture-companion-requirements.md`](../design/capture-companion-requirements.md) · [`ppcp-conformance.md`](../conformance/ppcp-conformance.md) · `PPCP-RV` revision 9 |
-| Cross-repository | ✅ **None outstanding.** Studio's advertising landed 24 Aug; `libppcp`'s RV-6 work is out of MVP scope (§2) |
+| Cross-repository | ⚠ **One, reopened 25 Aug.** Preview's Studio half — a viewer, and whatever *config from PPS* means — is PinPointStudio's to scope (§3.3). Studio's advertising landed 24 Aug; `libppcp`'s RV-6 work is out of MVP scope (§2) |
 
 **Why this document exists.** The delivery scope is organised by capability level, which is right for deciding what a level means and wrong for deciding what to do on Monday. Everything through 24 August built foundations — the ring, clip extraction, the sidecar, one multi-source timeline — and none of it is demonstrable, because nothing crosses to Studio. This is the shortest honest path to something a person can watch work.
 
@@ -44,9 +44,9 @@ So the constraint is not new. What was new was a sentence in this document that 
 
 | | Built | Missing |
 |---|---|---|
-| **(a)** | The **mechanisms**, all of them: pairing by code, proved 30/30 two-sided; the persisted pairing; day-two reconnect by discovery across a change of host address (`0b62394`) | ⛔ **The journey.** The scan path cannot produce a persisted pairing, so reconnect has nothing to work with — §2.2 |
-| **(b)** | Hi-res: the ring, clip extraction, the sidecar, thumbnails — `8a371c3`. Unverified on a camera | **Preview**: no `preview` Stream is opened and nothing produces frames for one |
-| **(c)** | `LiveDetectionSink`, `HostLinkDriver`, `TransferQueue`, `PayloadTransferQueue`, `SessionResume` — all tested | **Every one of them has no caller.** Composition only, which is the shape E1.1 was |
+| **(a)** | The mechanisms *and* the journey (`0d0df74`, `af3d80c`, 25 Aug). A pairing is kept by default; the four-screen opening pairs at the Mac before the phone is set down. ✅ **A phone held a pairing and browsed for it** — §2.2b | ⛔ **The last step: the dial completing.** Reaching Studio with no code has still never happened |
+| **(b)** | Hi-res: the ring, clip extraction, the sidecar, thumbnails — `8a371c3`. ⚠ Ring counters now read off a phone, and they are **not** the clean 24 Aug figures — §3.1 | **Preview**: no `preview` Stream is opened and nothing produces frames for one. ⛔ And nothing can open one while [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98) stands |
+| **(c)** | `LiveDetectionSink`, `HostLinkDriver`, `TransferQueue`, `PayloadTransferQueue`, `SessionResume` — all tested | **Every one of them has no caller.** Composition only, which is the shape E1.1 was — and the shape three defects found on 25 Aug also had (§3.0a) |
 | **(d)** | — | Nothing. It is a subtraction |
 
 ---
@@ -101,23 +101,61 @@ What landed:
 
 ⛔ **Requirement (a) is still journey-incomplete until a phone proves it.** The mechanism is now reachable end to end and no unit test in this target can show that: the 24 August defect was a missing call site, and `RendezvousTeardownTests` explains at length why a suite cannot see one. What closes it is the run — pair, kill the app, reopen, reach Studio with no code — and until that happens the demo's step 7 is unproven rather than passing.
 
+### 2.2b ✅ On hardware, 25 August — three of the four steps
+
+A screenshot from the phone shows the C1 host chip reading `PinPointStudio` over `not found · 62s`. That chip names a Studio **only when exactly one pairing is held**, and `ReconnectCoordinator` browses only when `identityKeys()` is non-empty. So, evidenced rather than reasoned:
+
+- ✅ **The phone persisted a pairing on the path a normal user takes.** This is the thing that could not happen on 24 August and the reason that test aborted.
+- ✅ The sweep runs on foreground, resolves against the held pairing, and reports honestly for 62 seconds.
+- ⛔ **The dial did not complete.** `not found` is 3.6a — Studio was not running, or that network does not carry discovery between its clients. Nothing here says the mechanism is wrong; it says the counterpart was absent.
+
+⚠ **So demo step 7 needs a session with Studio running on a network that carries multicast**, and nothing more from this repository. That is the whole of what (a) still owes.
+
 ### 2.3 What each repository owes
 
 | Repository | Owes |
 |---|---|
-| **PinPointCapture** | ⛔ §2.2a — the persistence-consent design, together. Then §3 — everything in (b) and (c) |
+| **PinPointCapture** | ✅ §2.2a answered and built. ⛔ Now: [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98) first, then (b) and (c) — §3 |
 | **PinPointStudio** | ✅ **Advertising for reconnection — delivered 24 August.** Nothing outstanding for the MVP |
 | **libppcp** | ⚠ **Nothing the MVP waits on.** Its RV-6 work continues on its own timetable |
 
 ## 3. Phases
 
-### 3.1 The device session — ✅ done, 24 August
+### 3.0 ⛔ Blocking everything — Shots with nothing behind them ([#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98))
+
+**Observed on a phone, 25 August.** The capture screen showed `Nothing is being recorded — libppcp: output buffer too small` while the same screen held `Session · 4`, a Shot 47 seconds old, and a ring reporting `20/20 · 239 fps`.
+
+⛔ **Three subsystems disagreeing, and only one of them says so.** Detection and minting are working, the ring is filling, and the hostless session is failing — so the app is producing Shots that have **no Capture behind them**. `CORE` §9.2 makes capture the thing that must not be quietly wrong; this is the loud half working while the quiet half fails.
+
+**Why it is first and not merely next.** Everything in (b) and (c) hangs off a session that opens: preview needs a `preview` Stream on it (§3.3), and shots crossing need a Capture to announce (§3.2). A session that cannot allocate its buffers has neither.
+
+⚠ **Check our own call site before reporting upstream** — `libppcp` is another team's repository and read-only here. A length passed where a capacity was wanted is ours; a fixed encode buffer overrun by 1080p240 is theirs.
+
+### 3.0a ⚠ What 25 August says about *how* this codebase fails
+
+Three defects landed and were fixed in one day, and they share one shape worth naming before planning the next tranche:
+
+| Defect | Shape |
+|---|---|
+| *Arm* dead on every launch after the first, on every device | `refreshCapability()` had no caller outside onboarding |
+| `endPairing`, `revoke`, `pairings`, `bind` | all written, all correct, **none called** (findings F-D12-1, and #96) |
+| B3's full-width button | six titles wired to one behaviour |
+
+⛔ **This target cannot test for a missing call site**, and `RendezvousTeardownTests` says so at length. Worse, the suites *hide* it: every test that touches arming calls `refreshCapability()` in its own setup, doing for the model exactly what the application forgot to do — so a green run said nothing about the app.
+
+⚠ **The practical consequence for planning:** budget a **wiring pass** at the end of each level in (b) and (c) — read the call sites, on a phone — rather than trusting a green suite. And when a guard can refuse, make it say why: *Arm* shipped dead for weeks because `warmUp` returned silently, and became findable within an hour of being given a sentence.
+
+### 3.1 The device session — ✅ done 24 August, ⚠ contradicted 25 August
 
 ✅ **Run on 24 August** (`42e92d0`). E1.1's exit criterion met on an iPhone 16: 239.5 fps realised against a claimed 240, **max inter-arrival 4.18 ms against a 4.17 ms frame period**, zero drops of any kind, 20/20 fragments held, and the REQ-OPT locks holding through the run. A real clip decoded and a thumbnail generated at the impact anchor.
 
-⛔ **Three findings came out of it and two are still open**: `warmUp` crashed on its first hardware execution and is fixed; the declaration **overclaims `intrinsics: per_frame`** at 1080p240 where the connection delivers none ([#19](https://github.com/PinPoint-Golf/PinPointCapture/issues/19), planned, blocked on one measurement whose first attempt had a focus-position confound); and the on-device `make conform` run that closes [#17](https://github.com/PinPoint-Golf/PinPointCapture/issues/17) and [#18](https://github.com/PinPoint-Golf/PinPointCapture/issues/18) has not been done.
+⛔ **The same instrument said something different on 25 August**, on a different phone and a different run: `20/20 · 239 fps · ↕100.2 ms`, with the gap flagged. At 239 fps a frame period is ~4.2 ms, so that is **twenty-four frame periods** — against the 4.18 ms measured on 24 August. Twenty fragments still rolled and the rate was still achieved, so this is not the ring failing; something stalled delivery for a tenth of a second. ⚠ **E1.1's criterion says *at the claimed rate*, and one clean run plus one stalled run is not a pass.** Recorded on [#17](https://github.com/PinPoint-Golf/PinPointCapture/issues/17); it may well be the same cause as [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98) and should be looked at together.
+
+⛔ **Three findings came out of the 24 August run and two are still open**: `warmUp` crashed on its first hardware execution and is fixed; the declaration **overclaims `intrinsics: per_frame`** at 1080p240 where the connection delivers none ([#19](https://github.com/PinPoint-Golf/PinPointCapture/issues/19), planned, blocked on one measurement whose first attempt had a focus-position confound); and the on-device `make conform` run that closes [#17](https://github.com/PinPoint-Golf/PinPointCapture/issues/17) and [#18](https://github.com/PinPoint-Golf/PinPointCapture/issues/18) has not been done.
 
 ### 3.2 (c) — shots and candidates crossing
+
+⚠ **Numbered before (b) and now sequenced after it** — the section numbers are historical, the order in §6 is current. See §3.3 for why, and for the one dependency that could reverse it back.
 
 **Sync first** ([#25](https://github.com/PinPoint-Golf/PinPointCapture/issues/25), E3.2). Compose `HostLinkDriver.pump(nowNs:throughputMbitPerSecond:)` into `HostLinkSession`'s tick — the burst, the filtering, the settle to heartbeat cadence are all written. ⛔ Required before anything else in (c): `.connected` is deliberately unreachable without a settled clock estimate.
 
@@ -127,9 +165,15 @@ What landed:
 
 ⚠ **The hosted-session question, unresolved and flagged.** `AppModel.arm()` builds a `HostlessRecordingSession` unconditionally. Online mode wants a hosted Session carrying the host's arbitration parameters. The type may generalise or may need a sibling — resolve at implementation time. ⛔ 7.3b's *records no `arm`* is the **hostless** case's rule and must not leak into the hosted one.
 
-### 3.3 (b) — preview
+### 3.3 (b) — preview, and configuring the device from Studio
 
-The only piece with nothing to compose. `PreviewProducer` exists and is uncalled; nothing produces frames and no `preview` Stream is opened — `HostlessRecordingSession.streams` builds video, audio and metadata only.
+⛔ **Promoted to the next tranche after [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)** — Mark, 25 August: *"preview and config in PPS (from preview stream in PPC) and then actual capture and transmission post shot."* That reverses this document's earlier order, which put (c) before (b), and the reason is sound: **preview is the first thing that makes the link visible to a human.** A frame arriving in Studio proves the session, the Streams and the transport in one glance, and it is what an operator needs in order to aim and configure the device at all.
+
+⚠ **The dependency to check before committing to that order.** `.connected` is deliberately unreachable without a settled clock estimate (§3.2's sync, [#25](https://github.com/PinPoint-Golf/PinPointCapture/issues/25)), and the B3 panel will keep saying `pairing` until it settles. Whether a `preview` Stream may usefully flow *before* sync settles is an open question for implementation time — preview frames need timestamps, but not necessarily agreed ones. ⛔ Resolve it deliberately rather than discovering it: if preview needs sync, then sync leads and this order is unchanged from the old one in practice.
+
+**The Studio half is new scope in this document.** Preview is not merely frames leaving the phone: it is frames *arriving somewhere a person is looking*, and a device the operator can then configure. What that costs on the Studio side — a view, a decoder, and whatever control surface "config" turns out to mean — has not been scoped here and is **PinPointStudio's to size**. ⚠ This is the first cross-repository dependency to reappear since 24 August; §2.3's "nothing outstanding" no longer holds.
+
+**On the device side**, the only piece with nothing to compose. `PreviewProducer` exists and is uncalled; nothing produces frames and no `preview` Stream is opened — `HostlessRecordingSession.streams` builds video, audio and metadata only.
 
 - Declare and open the `preview` Stream (§5.11's table fixes it `continuous`).
 - Downscale and JPEG off the **existing** sample callback, ~10 fps. ⛔ Not on the 6.7 ms frame path — hop to its own queue and **drop** rather than queue, because 5.11j makes preview never-queued and §9.2 makes the capture path the one that must not lose a frame to it.
@@ -149,11 +193,42 @@ The only piece with nothing to compose. `PreviewProducer` exists and is uncalled
 4. Preview appears in Studio.
 5. Hit a ball. Within a second: `candidate` on control, then `shot`, then `capture_announce`, then the clip on bulk — and the device's own row turning `In Studio` when the host confirms.
 6. Five shots, no reconnect.
-7. Close the app and reopen it. The device reconnects **with no pairing step and no code**. ⛔ **Cannot pass today** — §2.2a. ⚠ Worth running once with the host's address deliberately changed, since that is the case the mechanism was chosen for.
+7. Close the app and reopen it. The device reconnects **with no pairing step and no code**. ⚠ **Three of its four steps are proven on hardware** (§2.2b) — a pairing is held, the sweep runs, it resolves against what is held. What has never happened is the dial completing, and that needs Studio running on a network that carries multicast between its clients. ⚠ Worth running once with the host's address deliberately changed, since that is the case the mechanism was chosen for.
 
 ### 4.2 The check that (d) stayed honest
 
 ⚠ On the device afterwards: five clips in the session library with thumbnails, and a bundle carrying the same records that went over the wire. If this step fails, "online only" has become "online or nothing", which is a different product.
+
+---
+
+## 4a. What changed on 25 August, and what it adds
+
+A day of work on a phone. Two commits — `0d0df74`, `af3d80c` — and the plan above absorbs most of it. What follows is what a reader returning to this document needs that is not already in §§1–4.
+
+### The specification moved twice, both on 25 August
+
+| Erratum | Change | What it costs us |
+|---|---|---|
+| **E56** | `RV` 7.2c becomes a SHOULD — storage is the application's decision | The `PRK` left the Keychain for a backup-excluded file this app owns. ⚠ **Side effect worth knowing: deleting the app now really does forget every pairing**, which was not true of the Keychain. It is also why the reconnection sweep stopped reporting *no pairings held* while the phone was locked |
+| **E57** | `RV` 7.4b becomes a SHOULD — opt-in/visible/revocable describes screens, and §1.3 excludes those | Lets this app decline *opt-in* deliberately (#96). ⛔ **Read together, nothing normative protects a persisted `PRK` any more** — not where it is kept, not that a user can see or remove it. 7.4c, 7.4d and 7.4f are unchanged MUSTs |
+
+### A UI workstream appeared that (a)–(d) does not describe
+
+⚠ **This document is organised by protocol capability and the day's work was mostly not.** Recorded so it is not rediscovered as unplanned:
+
+- **A design pass** — [`opening-v2`](../design/opening-v2/README.md), published as a canvas. Supersedes the A-series and B1 of `mockup v1`, with three departures named in its README.
+- **The opening is four screens, not seven** ([#97](https://github.com/PinPoint-Golf/PinPointCapture/issues/97), closed): Welcome → What it needs → Pair my phone → Now set it down. The order follows where the golfer is standing, because the code is on the Studio screen and framing first meant carrying a framed phone to the Mac.
+- **A vocabulary settled** for four things that were tangled: **End session** closes the Session, **Disconnect** drops the link, **Forget** ends the pairing, deleting the app ends all of it. Each now does only its own job.
+- **The host chip renders `RV` §3** — looking, not found with how long, nothing paired, refused. `AppModel` had published that state since D7 with nothing reading it.
+
+### Open questions this raised, for the next planning session
+
+| Question | Why it matters |
+|---|---|
+| ⛔ Should **Disarm pause** rather than end? | Today one arm is one Session, and *End session* says so honestly. But a golfer between buckets has no pause — re-arming splits the round in two and the halves do not merge. A real change to the Session lifecycle and to what Studio receives |
+| ⚠ Is there a **framing check per session**, not just per install? | The phone is re-placed every session. *Check framing* now reaches A6 from the capture screen, but nothing prompts it |
+| ⚠ What does **"config from PPS"** actually cover? | Named on 25 Aug as part of the next tranche (§3.3) and not yet scoped on either side. Capture format? Retention? Viewpoint? |
+| ⚠ **iPad** is unbroken, not designed | Fixed heights are gone and screens no longer render wrong on a 13-inch ([#54](https://github.com/PinPoint-Golf/PinPointCapture/issues/54) still owns the two-pane) |
 
 ---
 
@@ -174,17 +249,21 @@ The only piece with nothing to compose. `PreviewProducer` exists and is uncalled
 ## 6. Order
 
 ```
-   §2.2's answer          ⚠ needed by demo step 7, not by anything before it
+   §2.2's answer          ✅ DONE 25 Aug — built, deployed, walked on a phone
         ·
-   1    device session    ✅ DONE — E1.1's criterion met on hardware, 24 Aug
+   0    #98 + #17's gap   ⛔ BLOCKS EVERYTHING — a session that cannot open
+        ▼                    has no Streams for preview and no Capture to announce
+   1    device session    ✅ DONE 24 Aug — ⚠ and contradicted by a 25 Aug run (§3.1)
         ▼
-   2    sync (#25) → fan-out sink → shots crossing (#27)      = (c)
+   2    preview  (+ Studio's viewer and config surface)        = (b)
+        ▼         ⚠ order reversed 25 Aug — §3.3. Check the sync dependency FIRST
+   3    sync (#25) → fan-out sink → shots crossing (#27)       = (c)
         ▼
-   3    preview                                               = (b)
-        ▼
-   4    demo
+   4    demo — step 7 needs Studio on a multicast-carrying network
 ```
 
-⛔ **There is no Phase 0 any more.** It was RV-6 across three repositories and it gated everything; the MVP now rests on the pairing-code path, which was already working before today. Phase 2 can start immediately.
+⛔ **Phase 0 is back, and it is not RV-6.** The old Phase 0 was guided pairing across three repositories; this one is a single defect in this repository ([#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)) that stops a Session opening at all. It is smaller and it is genuinely blocking.
 
-⚠ **No cross-team dependencies remain.** (d) is a subtraction and (a)'s mechanisms are built, so everything left — §2.2a's design, (b) and (c) — is in this repository.
+⚠ **One cross-team dependency has reappeared.** Preview's Studio half — a viewer, and whatever "config from PPS" means — is PinPointStudio's to scope (§3.3). §2.3's *"nothing outstanding"* held for one day.
+
+⚠ **Budget a wiring pass per level** (§3.0a). Three defects on 25 August were all "written, correct, never called", and this target cannot test for that.
