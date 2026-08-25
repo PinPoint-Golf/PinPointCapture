@@ -140,8 +140,11 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
                     // walk to fill in `optical` later would be a second chance to
                     // read a different format than the one that won.
                     pixelFormat: Self.fourCC(format.formatDescription),
-                    exposureRangeNs: Self.nanoseconds(format.minExposureDuration)
-                        ... Self.nanoseconds(format.maxExposureDuration),
+                    // ⚠ Both halves or neither — a range built from one
+                    // readable end and a substituted other end would declare an
+                    // exposure capability this camera does not have.
+                    exposureRangeNs: Self.range(format.minExposureDuration,
+                                                format.maxExposureDuration),
                     // ⚠ ISO is a `Float` on this platform and an int64 on the
                     // wire (`CORE` 5.7 `optical`). Rounded toward the interior of
                     // the range — up at the bottom, down at the top — so the
@@ -183,8 +186,37 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         return String(decoding: bytes, as: UTF8.self)
     }
 
-    private static func nanoseconds(_ time: CMTime) -> Int64 {
-        Int64((CMTimeGetSeconds(time) * 1_000_000_000).rounded())
+    /// A `CMTime` the platform gave us, in nanoseconds — or `nil` where it is
+    /// not a number.
+    ///
+    /// ⛔ **`Int64(_:)` TRAPS on NaN, AND THIS CRASHED THE APP ON ARM**
+    /// (25 August 2026, reproduced on an iPhone 16). `CMTimeGetSeconds` returns
+    /// NaN for an invalid or indefinite `CMTime`, and `AVCaptureDevice.
+    /// exposureDuration` is exactly that in the window between `warmUp()`
+    /// locking exposure and the device settling. `AppModel.arm()` calls
+    /// `warmUp()` and `startRetaining()` back to back with no settle, so the
+    /// window is entered on every arm and the crash is a race the user wins most
+    /// of the time. The device tests never saw it because they sleep two seconds
+    /// between the two calls.
+    ///
+    /// ⚠ **`FrameTimeline.nanoseconds` has guarded this since it was written**
+    /// — `guard time.isValid, time.isNumeric`. Two helpers with the same name
+    /// doing the same job, one hardened and one not.
+    ///
+    /// ⚠ Optional rather than `?? 0`: zero nanoseconds is a *measurement* of an
+    /// exposure no camera ever had, and `CORE` 5.8f is explicit that a value
+    /// must not be used to mean "unknown". Absent means unknown.
+    private static func nanoseconds(_ time: CMTime) -> Int64? {
+        guard time.isValid, time.isNumeric else { return nil }
+        return Int64((CMTimeGetSeconds(time) * 1_000_000_000).rounded())
+    }
+
+    /// A closed range from two platform `CMTime`s, or `nil` where either end is
+    /// unreadable. See `nanoseconds(_:)`.
+    private static func range(_ low: CMTime, _ high: CMTime) -> ClosedRange<Int64>? {
+        guard let lowNs = nanoseconds(low), let highNs = nanoseconds(high),
+              lowNs <= highNs else { return nil }
+        return lowNs ... highNs
     }
 
     private static func lens(for type: AVCaptureDevice.DeviceType) -> Lens {
@@ -358,6 +390,10 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
                                     fps: mode.fps, bitrate: Self.provisionalBitrate)
         // REQ-OPT-3. The lock is the shipping configuration, so the exposure
         // numbers are `locked_constant` rather than `sampled` (5.8h).
+        // ⛔ `nil` where the lock is not held OR the duration is not yet a
+        // number — see `nanoseconds(_:)`. A `nil` here is not a degradation: it
+        // makes the Capture's exposure `sampled` per frame rather than
+        // `locked_constant`, which is 5.8h's weaker and truer claim.
         recorder.lockedExposureNs = activeDevice.flatMap {
             $0.exposureMode == .locked ? Self.nanoseconds($0.exposureDuration) : nil
         }

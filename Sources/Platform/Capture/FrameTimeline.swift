@@ -96,7 +96,27 @@ final class FrameTimeline {
         if let device {
             exposureNs.append(Self.nanoseconds(device.exposureDuration))
             // ISO is a `Float` here and an int64 on the wire (`CORE` 5.7/5.8).
-            isoValues.append(Int64(device.iso.rounded()))
+            //
+            // ⛔ **AND IT IS NOT ALWAYS A NUMBER, WHICH CRASHED THE APP ON A
+            // PHONE** (25 August 2026). `Int64(_:)` **traps** on NaN and on
+            // infinity, this line runs on the frame path at 240 fps, and the
+            // value belongs to AVFoundation rather than to us — it reads NaN
+            // while the device is being reconfigured, which is exactly what
+            // starting the microphone's `.record` audio session does to a
+            // running capture session. `arm()` starts the microphone *after*
+            // `startRetaining`, so the two overlap by construction.
+            //
+            // ⚠ `nanoseconds(_:)` above already guards the same class of read
+            // (`isValid`, `isNumeric`) — the CMTime half was protected and the
+            // Float half was not.
+            //
+            // ⚠ **Skipped rather than substituted.** A short series is already
+            // the honest outcome: `CaptureBuilder` emits `iso` only where it is
+            // exactly as long as `frames.ns` and otherwise omits it, which 5.8f
+            // makes "unknown". A zero here would be a *measurement* of an ISO
+            // this camera never had.
+            let iso = device.iso
+            if iso.isFinite { isoValues.append(Int64(iso.rounded())) }
         }
         if let matrix = Self.intrinsicMatrix(of: sampleBuffer) {
             intrinsics.append(matrix)

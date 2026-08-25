@@ -149,6 +149,373 @@ struct DeviceSessionTests {
         }
     }
 
+    // MARK: #17 — where the 100 ms gap comes from
+
+    /// ⛔ **The control run above mints no Shots, and that is the difference.**
+    /// `ringRollsOnHardware` reports a max inter-arrival of one frame period on
+    /// this phone, twice (24 and 25 August). The app reported **100.2 ms** — 24
+    /// frame periods — on a run that minted four. This test is the same ring
+    /// with the one thing the app does that the control does not.
+    ///
+    /// ⚠ **What the instrument actually measures matters here.**
+    /// `RingStats.observeArrival` is fed `CMSampleBufferGetPresentationTimeStamp`
+    /// — SENSOR time, not delivery time. A stalled delegate queue leaves the PTS
+    /// series contiguous and would be invisible to it. So a gap in this number
+    /// means frames the sensor produced never reached the counter, and the two
+    /// candidates are `didDrop` and the `framesDroppedNotRetaining` guard.
+    ///
+    /// ⛔ **The mechanism under test.** `extractClip` and `retainedClip` both run
+    /// `sampleQueue.sync` (`AVFoundationCaptureDevice.swift:592, 612`), and
+    /// `sampleQueue` IS the sample-buffer delegate queue (`:281`). `pumpMint` is
+    /// `@MainActor`, so every minted Shot blocks frame delivery from the main
+    /// actor for as long as the extraction takes. With
+    /// `alwaysDiscardsLateVideoFrames = false` the frames queue rather than
+    /// discard — until the system drops them, which is a PTS gap.
+    @Test("#17 — does extracting a clip stall the frame path?")
+    func extractionStallsTheFramePath() async throws {
+        guard let capability = Self.liveCapability(), let mode = capability.bestMode else {
+            print("SKIP — no physical camera"); return
+        }
+        let device = AVFoundationCaptureDevice()
+        try device.warmUp(mode: mode)
+        try await Task.sleep(for: .seconds(2))
+        try device.startRetaining(mode: mode)
+        // Fill the ring before asking it for anything.
+        try await Task.sleep(for: .seconds(6))
+
+        let before = device.ringStats
+        print("""
+
+        ── before any extraction ───────────────────────────────
+        framesAppended            \(before.framesAppended)
+        maxInterArrival           \(String(format: "%.2f", Double(before.maxInterArrivalNs) / 1e6)) ms
+        """)
+
+        // Four extractions, as four Shots would — on the MAIN ACTOR, which is
+        // where `pumpMint` calls them from.
+        var blockedMs: [Double] = []
+        var payloadMs: [Double] = []
+        var payloadBytes: [Int] = []
+        for _ in 0..<4 {
+            let t0 = MachClock.hostTimeNs
+            let started = MachClock.hostTimeNs
+            let clip = await MainActor.run {
+                device.retainedClip(aroundNs: t0 - 1_500_000_000,
+                                    preNs: 1_500_000_000, postNs: 1_500_000_000)
+            }
+            blockedMs.append(Double(MachClock.hostTimeNs - started) / 1e6)
+
+            // E1.2's `persist` calls this on the main actor, OUTSIDE the sync.
+            let payloadStart = MachClock.hostTimeNs
+            let bytes = try? clip.payload?()
+            payloadMs.append(Double(MachClock.hostTimeNs - payloadStart) / 1e6)
+            payloadBytes.append(bytes?.count ?? 0)
+
+            try await Task.sleep(for: .seconds(2))
+        }
+
+        let after = device.ringStats
+        device.stopRetaining()
+        device.goCold()
+
+        let periodMs = 1_000.0 / mode.fps
+        func fmt(_ xs: [Double]) -> String {
+            xs.map { String(format: "%.1f", $0) }.joined(separator: ", ")
+        }
+        print("""
+
+        ── after four extractions ──────────────────────────────
+        framesAppended            \(after.framesAppended)
+        ⛔ maxInterArrival           \(String(format: "%.2f", Double(after.maxInterArrivalNs) / 1e6)) ms   (one frame = \(String(format: "%.2f", periodMs)) ms)
+        drop: encoder busy        \(after.framesDroppedEncoderBusy)
+        drop: not retaining       \(after.framesDroppedNotRetaining)
+        frag: write failed        \(after.fragmentsDroppedWriteFailed)
+        non-monotonic             \(after.monotonicityViolations)
+
+        retainedClip blocked (ms) \(fmt(blockedMs))
+        payload() took (ms)       \(fmt(payloadMs))
+        payload bytes             \(payloadBytes.map(String.init).joined(separator: ", "))
+        """)
+
+        // ⚠ No assertion on the gap yet — this run is what decides what the
+        // assertion should be. It asserts only that the extraction worked.
+        #expect(after.framesAppended > before.framesAppended)
+    }
+
+    /// ⛔ **The other thing `arm()` does that the control run does not: it starts
+    /// the microphone, and it starts it AFTER the ring is already retaining.**
+    ///
+    /// `AppModel.arm()` runs `device.startRetaining(mode:)` and then
+    /// `startDetecting()`, and `MicrophoneOnsetSource.start()` sets the shared
+    /// `AVAudioSession` to `.record` / `.measurement` and activates it. Changing
+    /// the audio session's category on a **running** `AVCaptureSession` forces a
+    /// route change, and a route change is one of the few things that can make
+    /// the sensor itself stop producing — which is what a gap in the PTS series
+    /// means.
+    ///
+    /// ⚠ It would produce exactly ONE gap, early in the run, which is consistent
+    /// with a reported **max** of 100.2 ms over a session that was otherwise fine.
+    @Test("#17 — does starting the microphone stall the sensor?")
+    func microphoneStartStallsTheSensor() async throws {
+        guard let capability = Self.liveCapability(), let mode = capability.bestMode else {
+            print("SKIP — no physical camera"); return
+        }
+        let device = AVFoundationCaptureDevice()
+        try device.warmUp(mode: mode)
+        try await Task.sleep(for: .seconds(2))
+        try device.startRetaining(mode: mode)
+        try await Task.sleep(for: .seconds(5))
+
+        let before = device.ringStats
+        let periodMs = 1_000.0 / mode.fps
+
+        // ⛔ The app's own order: retain first, then start detecting.
+        let microphone = MicrophoneOnsetSource { _ in }
+        let started = MachClock.hostTimeNs
+        var micError: String?
+        do { try microphone.start() } catch { micError = String(describing: error) }
+        let startBlockedMs = Double(MachClock.hostTimeNs - started) / 1e6
+
+        try await Task.sleep(for: .seconds(6))
+        let after = device.ringStats
+        microphone.stop()
+        device.stopRetaining()
+        device.goCold()
+
+        print("""
+
+        ── microphone start, mid-run ───────────────────────────
+        mic error                 \(micError ?? "none")
+        start() blocked (ms)      \(String(format: "%.1f", startBlockedMs))
+
+        before mic: frames        \(before.framesAppended)
+        before mic: maxGap        \(String(format: "%.2f", Double(before.maxInterArrivalNs) / 1e6)) ms
+        ⛔ after mic:  maxGap        \(String(format: "%.2f", Double(after.maxInterArrivalNs) / 1e6)) ms   (one frame = \(String(format: "%.2f", periodMs)) ms)
+        after mic:  frames        \(after.framesAppended)
+        drop: encoder busy        \(after.framesDroppedEncoderBusy)
+        drop: not retaining       \(after.framesDroppedNotRetaining)
+        non-monotonic             \(after.monotonicityViolations)
+        """)
+
+        #expect(after.framesAppended > before.framesAppended)
+    }
+
+    /// ⛔ **The whole application, on the phone, for thirty seconds.**
+    ///
+    /// The three experiments above each isolate one thing `arm()` does and the
+    /// ring survived all of them at 4.18 ms. This drives `AppModel` itself, so
+    /// the run carries everything at once: the Session and its bundle, the
+    /// microphone, CoreMotion at 100 Hz, the 1 Hz health tick and its metadata
+    /// segments, minting, the ~19 MB clip written per Shot, and the detached
+    /// thumbnail decode.
+    ///
+    /// ⚠ **Shots are minted from injected audio** — `CONF` §2a's method, and the
+    /// same route the app's own microphone takes into `observe(_:)`. A test
+    /// cannot clap.
+    ///
+    /// ⚠ No assertion on the gap. This run exists to find out whether the
+    /// reported 100.2 ms reproduces at all; what it reports decides what #17
+    /// should assert.
+    ///
+    /// ⚠ **Run at both rates** (Mark, 25 August): if the composition is simply
+    /// past what this device sustains, 120 fps should be clean and 240 should
+    /// not. If both degrade equally, the rate is not the variable and something
+    /// in the composition is.
+    @MainActor
+    @Test("#17/#101 — the whole app composition, at both rates",
+          arguments: [240.0, 120.0])
+    func wholeAppCompositionOnHardware(_ cap: Double) async throws {
+        guard Self.liveCapability() != nil else { print("SKIP — no physical camera"); return }
+
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("e11-\(UUID().uuidString)", isDirectory: true)
+        let model = AppModel(store: SessionStore(root: root))
+        model.refreshCapability()
+        // ⚠ Both arms go through `remeasure` so the self-test it runs is part of
+        // both, and the only difference between them is the rate.
+        await model.remeasure(atMost: cap)
+        let mode = model.activeMode
+        model.arm()
+
+        guard model.captureStatus.state == .armed else {
+            print("""
+
+            ── app composition ─────────────────────────────────────
+            ⛔ did not reach armed — state \(model.captureStatus.state)
+            capabilityError  \(model.capabilityError ?? "none")
+            recordingError   \(model.recordingError ?? "none")
+            """)
+            model.disarm()
+            return
+        }
+
+        // Four swings, spaced, injected as the microphone would deliver them.
+        for index in 0..<4 {
+            try await Task.sleep(for: .seconds(5))
+            model.observe(SyntheticAudio.oneSwing(timebaseId: PpcpTimebases.captureId,
+                                                  startNs: MachClock.hostTimeNs))
+        }
+        try await Task.sleep(for: .seconds(8))
+
+        let stats = model.ringStats
+        let shots = model.shotCount
+        let candidates = model.candidateCount
+        let recordingError = model.recordingError
+        model.disarm()
+
+        let periodMs = stats.meanInterArrivalNs > 0
+            ? Double(stats.meanInterArrivalNs) / 1e6 : 0
+        print("""
+
+        ── the whole app, 28 s on hardware ─────────────────────
+        mode                      \(mode.map { "\($0.width)x\($0.height) @ \($0.fps)" } ?? "none")  (cap \(cap))
+        shots / candidates        \(shots) / \(candidates)
+        recordingError            \(recordingError ?? "none")
+
+        framesAppended            \(stats.framesAppended)
+        realised rate             \(String(format: "%.1f", periodMs > 0 ? 1_000 / periodMs : 0)) fps
+        ⛔ maxInterArrival           \(String(format: "%.2f", Double(stats.maxInterArrivalNs) / 1e6)) ms   (mean period \(String(format: "%.2f", periodMs)) ms)
+        drop: encoder busy        \(stats.framesDroppedEncoderBusy)
+        drop: not retaining       \(stats.framesDroppedNotRetaining)
+        frag: written / evicted   \(stats.fragmentsWritten) / \(stats.fragmentsEvicted)
+        frag: write failed        \(stats.fragmentsDroppedWriteFailed)
+        frag: empty               \(stats.fragmentsDroppedEmpty)
+        non-monotonic             \(stats.monotonicityViolations)
+        """)
+
+        try? FileManager.default.removeItem(at: root)
+        #expect(stats.framesAppended > 0)
+    }
+
+    /// ⛔ **#101's bisect: which of the app's per-Shot side effects costs the
+    /// frames?** The whole-app run reports 156 fps, an 8.9 s gap and 650
+    /// encoder-busy drops; the isolated ring reports 239.5 fps and zero. This
+    /// adds ONE candidate at a time to the otherwise idle ring.
+    ///
+    /// ⚠ The `.atomic` write and the thumbnail decode are the two things a Shot
+    /// triggers that touch the same hardware the encoder is using — the disk and
+    /// the video decoder. Neither is on the frame path, which is exactly why
+    /// they were not suspected first.
+    @Test("#101 — which per-Shot side effect costs the frames?",
+          arguments: ["baseline", "atomicWrite", "thumbnail", "both"])
+    func perShotSideEffects(_ variant: String) async throws {
+        guard let capability = Self.liveCapability(), let mode = capability.bestMode else {
+            print("SKIP — no physical camera"); return
+        }
+        let device = AVFoundationCaptureDevice()
+        try device.warmUp(mode: mode)
+        try await Task.sleep(for: .seconds(2))
+        try device.startRetaining(mode: mode)
+        try await Task.sleep(for: .seconds(6))
+
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("e101-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // Four "Shots", five seconds apart, as the whole-app run had.
+        for index in 0..<4 {
+            let t0 = MachClock.hostTimeNs - 1_500_000_000
+            var clip = device.retainedClip(aroundNs: t0, preNs: 1_500_000_000,
+                                           postNs: 1_500_000_000)
+            let bytes = (try? clip.payload?()) ?? nil
+            let url = dir.appendingPathComponent("clip-\(index).mp4")
+
+            if variant == "atomicWrite" || variant == "both", let bytes {
+                // ⚠ Exactly what `HostlessRecordingSession.persist` does, on the
+                // main actor, with `.atomic`.
+                try await MainActor.run { try bytes.write(to: url, options: .atomic) }
+            }
+            if variant == "thumbnail" || variant == "both" {
+                if let bytes, FileManager.default.fileExists(atPath: url.path) == false {
+                    try bytes.write(to: url, options: .atomic)
+                }
+                // ⚠ Detached at `.utility`, as `adoptClip` does — deliberately
+                // NOT awaited, because the app does not await it either.
+                Task.detached(priority: .utility) {
+                    _ = try? await ClipThumbnail.jpeg(fromClipAt: url,
+                                                      atNs: 1_500_000_000)
+                }
+            }
+            _ = clip
+            try await Task.sleep(for: .seconds(5))
+        }
+        try await Task.sleep(for: .seconds(3))
+
+        let stats = device.ringStats
+        device.stopRetaining()
+        device.goCold()
+        try? FileManager.default.removeItem(at: dir)
+
+        let meanFps = stats.meanInterArrivalNs > 0
+            ? 1_000_000_000.0 / Double(stats.meanInterArrivalNs) : 0
+        print("""
+
+        ── #101 variant: \(variant) ────────────────────────────
+        realised rate             \(String(format: "%.1f", meanFps)) fps
+        ⛔ maxInterArrival           \(String(format: "%.2f", Double(stats.maxInterArrivalNs) / 1e6)) ms
+        drop: encoder busy        \(stats.framesDroppedEncoderBusy)
+        framesAppended            \(stats.framesAppended)
+        """)
+        #expect(stats.framesAppended > 0)
+    }
+
+    /// ⛔ **#102's evidence, dumped rather than reasoned about.** Every format the
+    /// hardware enumerates, beside the list `enumerateCapability()` actually
+    /// keeps, beside what a rate cap then selects. Mark, 25 August: *"you can't
+    /// select 120fps? that doesn't make ANY sense — the native video apps let
+    /// you use 120 fps. Something smells off here."* Quite. So: measure it.
+    @MainActor
+    @Test("#102 — every format the hardware offers, beside the ones we keep")
+    func everyFormatBesideTheOnesWeKeep() async throws {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera,
+                          .builtInTelephotoCamera],
+            mediaType: .video, position: .back)
+        guard discovery.devices.isEmpty == false else {
+            print("SKIP — no physical camera"); return
+        }
+
+        print("\n── every format AVFoundation reports ────────────────────")
+        var rawCount = 0
+        for device in discovery.devices {
+            var rows: [String] = []
+            for format in device.formats {
+                let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                let rates = format.videoSupportedFrameRateRanges
+                    .map { $0.maxFrameRate }.sorted()
+                guard let top = rates.last else { continue }
+                rawCount += 1
+                rows.append("\(d.width)x\(d.height) @ \(Int(top))")
+            }
+            // Collapsed for readability only — the COUNT is what matters.
+            let unique = Array(Set(rows)).sorted()
+            print("  \(device.localizedName): \(device.formats.count) formats, "
+                  + "\(unique.count) distinct geometry@rate")
+            for r in unique.sorted() { print("      \(r)") }
+        }
+
+        let capability = try AVFoundationCaptureDevice().enumerateCapability()
+        print("""
+
+        ── what enumerateCapability() KEEPS ────────────────────
+        raw formats walked        \(rawCount)
+        claimed modes             \(capability.claimed.count)
+        """)
+        for m in capability.claimed.sorted(by: { ($0.fps, $0.height) > ($1.fps, $1.height) }) {
+            print("      \(m.width)x\(m.height) @ \(Int(m.fps))  \(m.lens)")
+        }
+
+        // What a rate cap actually selects, by the same rule `remeasure` uses.
+        for cap in [240.0, 120.0, 60.0] {
+            let picked = capability.claimed.filter { $0.fps <= cap }
+                .max(by: { ($0.fps, $0.height) < ($1.fps, $1.height) })
+            print("  cap \(Int(cap)) fps → "
+                  + (picked.map { "\($0.width)x\($0.height) @ \(Int($0.fps)) \($0.lens)" }
+                     ?? "NOTHING"))
+        }
+        #expect(capability.claimed.isEmpty == false)
+    }
+
     // MARK: E1.2 / E1.3 — a clip, and what describes it
 
     @Test("E1.2 / E1.3 — a real clip plays, and carries a real sidecar")
