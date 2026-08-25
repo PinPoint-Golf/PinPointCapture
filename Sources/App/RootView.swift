@@ -64,6 +64,10 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var path: [AppRoute] = []
     @State private var sheet: AppSheet?
+    /// The SSID whose configuration was just removed, if any (`RV` 6b). ⚠ Not a
+    /// failure and not an error — it is the sentence that makes "left in the
+    /// user's control" true rather than merely technically so.
+    @State private var leftNetwork: String?
     /// 7.4b — persistence is opt-in, so the toggle starts **off**.
     @State private var persistPairing = false
     private let rendezvous = RendezvousCoordinator()
@@ -93,6 +97,18 @@ struct RootView: View {
             #endif
         }
         .sheet(item: $sheet, content: sheetContent(for:))
+        // ⛔ `RV` 6b — the second branch is "leaves the join in the user's
+        // control", and control the user does not know they have is not
+        // control. iOS removed this app's network configuration and cannot
+        // reassociate whatever they were on before, so saying nothing would
+        // leave them on no network wondering why.
+        .alert("Studio network removed",
+               isPresented: Binding(get: { leftNetwork != nil },
+                                    set: { if !$0 { leftNetwork = nil } })) {
+            Button("OK", role: .cancel) { leftNetwork = nil }
+        } message: {
+            Text(NetworkJoin.leftNetworkExplanation)
+        }
         // ⛔ **The injection, and it was missing.** `ArmedScreen` and
         // `FramingCheckScreen` read `\.livePreview` from the environment; with
         // nothing supplying one they silently fall back to `.placeholder` and
@@ -340,7 +356,24 @@ struct RootView: View {
                     failure: model.hostLinkError,
                     onCancel: {
                         self.sheet = nil
-                        Task { await model.disconnect(.cancelled) }
+                        Task {
+                            await model.disconnect(.cancelled)
+                            // ⛔ 6b / 4.4c — the USER ended this session, so the
+                            // network this app configured goes and the decoded
+                            // payload (which carries the Wi-Fi passphrase) is
+                            // released. ⚠ Only here, and deliberately not on the
+                            // backgrounding path: that link is expected back, and
+                            // removing the configuration would drop the phone off
+                            // the studio network exactly when it is reconnecting.
+                            // ⛔ This call did not exist until 25 August 2026, so
+                            // none of it happened — finding F-D12-1.
+                            if let left = await rendezvous.endPairing() {
+                                // 6b is "leaves the join in the user's control",
+                                // and that is only true if they are told they have
+                                // it. iOS cannot reassociate their previous network.
+                                leftNetwork = left
+                            }
+                        }
                     })
             }
             .interactiveDismissDisabled()

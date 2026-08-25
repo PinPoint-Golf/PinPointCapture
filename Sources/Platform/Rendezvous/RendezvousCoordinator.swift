@@ -251,8 +251,27 @@ public actor RendezvousCoordinator {
     /// 4.4c / 7.2d — the payload is not retained after the pairing it established
     /// has ended, and the network this application joined is left in the user's
     /// control (6b).
-    public func endPairing(leaveNetwork: Bool = true) async {
-        if leaveNetwork, let joinedSsid { NetworkJoin.leave(joinedSsid) }
+    ///
+    /// - Returns: the SSID whose configuration was removed, or `nil` if this
+    ///   application had joined none. ⛔ **The caller needs this**: 6b is only
+    ///   satisfied if the user is *told* the network went, and a screen cannot
+    ///   say so honestly without knowing whether anything happened.
+    ///   `NetworkJoin.leftNetworkExplanation` is the copy.
+    ///
+    /// ⚠ **`leaveNetwork: false` is for a link that dropped and is expected
+    /// back** — backgrounding, a transient failure. Removing the configuration
+    /// there would drop the phone off the studio network precisely when it is
+    /// about to reconnect. Pass `true` only where the *user* ended the session.
+    ///
+    /// ⛔ **This had no caller at all until 25 August 2026**, so none of the
+    /// above happened: the configuration stayed on the phone indefinitely, the
+    /// user was never told, and the decoded payload — **including the Wi-Fi
+    /// passphrase** — was retained for the lifetime of the process against 4.4c.
+    /// The conformance document claimed the opposite. Finding F-D12-1.
+    @discardableResult
+    public func endPairing(leaveNetwork: Bool = true) async -> String? {
+        let left = leaveNetwork ? joinedSsid : nil
+        if let left { NetworkJoin.leave(left) }
         joinedSsid = nil
         code = nil
         keys = nil
@@ -260,6 +279,7 @@ public actor RendezvousCoordinator {
         // ownership and the pump is responsible for closing it.
         await transport?.close(.normal)
         transport = nil
+        return left
     }
 
     /// RFC 1918 and the link-local range, which is what a studio host is on.
