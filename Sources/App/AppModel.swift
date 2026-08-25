@@ -317,12 +317,103 @@ public final class AppModel {
         // microphone is (7.2, REQ-PRIV-4): a motion sensor running outside a
         // capture session is something this application must not have.
         recording.startMetadata()
-        captureStatus.state = .armed
         // A real Session, opened now, holding the shots this arm produces.
         session = Session(name: Self.sessionName(for: recording.anchor.wallClock),
                           start: recording.anchor.wallClock,
                           shots: [])
         startHealthPolling()
+        // ⛔ **`.armed` is NOT set here, and that is the whole of #101.**
+        // `CaptureState.armed` means "running, locked, settled and retaining
+        // into the ring buffer", and `startRetaining` returning says only that
+        // the writer opened. Measured on an iPhone 16: the sensor delivers its
+        // first frame ~75 ms later where the format was already active, and
+        // **~8.85 s later where `warmUp` had to change it** — a known
+        // AVFoundation reconfiguration cost. For that whole window the app said
+        // `armed` over a ring receiving nothing, which is the §9.2 failure #98
+        // was also an instance of.
+        beginSettling()
+    }
+
+    // MARK: Settling (#101)
+
+    /// True between `arm()` and the ring actually receiving frames.
+    ///
+    /// ⚠ A separate flag rather than a fourth `CaptureState`: the state means
+    /// what it has always meant, and every screen that reads `.armed` keeps
+    /// being right without being touched.
+    public private(set) var isSettling = false
+
+    /// How long the last arm took to produce frames. ⛔ **A measurement**, and
+    /// the one `assumedSettleMs` was written waiting for.
+    public private(set) var measuredSettleNs: Int64?
+
+    private var settleTask: Task<Void, Never>?
+
+    /// ⚠ 50 ms, so a camera that is already running is armed within ~100 ms and
+    /// the pause is invisible in the ordinary case.
+    nonisolated static let settlePollMs = 50
+    /// ⛔ Longer than the worst measured reconfiguration (8.85 s) with margin. A
+    /// timeout that fired early would turn a slow arm into a failed one.
+    nonisolated static let settleTimeoutNs: Int64 = 15_000_000_000
+
+    /// Reach `.armed` when the ring is receiving, and not before.
+    ///
+    /// ⚠ **Frames must be ARRIVING, not merely non-zero.** A count left over
+    /// from a previous run would satisfy "greater than zero" instantly; two
+    /// consecutive increases is the cheapest evidence that the sensor is
+    /// actually delivering now.
+    private func beginSettling() {
+        settleTask?.cancel()
+        isSettling = true
+        let startedAt = MachClock.hostTimeNs
+        settleTask = Task { @MainActor [weak self] in
+            var previous = -1
+            var rising = 0
+            while Task.isCancelled == false {
+                try? await Task.sleep(for: .milliseconds(Self.settlePollMs))
+                guard let self, self.recording != nil else { return }
+
+                let frames = self.device.ringStats.framesAppended
+                rising = frames > previous && previous >= 0 ? rising + 1 : 0
+                previous = frames
+
+                if rising >= 2 {
+                    self.measuredSettleNs = MachClock.hostTimeNs - startedAt
+                    self.isSettling = false
+                    self.captureStatus.state = .armed
+                    self.reportReadiness()
+                    return
+                }
+                if MachClock.hostTimeNs - startedAt > Self.settleTimeoutNs {
+                    // ⛔ Reported, not waited out and not pretended past. A
+                    // camera that never delivered is a camera that cannot arm.
+                    self.isSettling = false
+                    self.capabilityError = """
+                        The camera did not start delivering frames. Try again, or \
+                        move to a mode this device can sustain.
+                        """
+                    self.disarm()
+                    return
+                }
+            }
+        }
+    }
+
+    /// `CORE` 7.3c — recorded once `settled` is true, which is what settling is.
+    ///
+    /// ⛔ **It used to go out at session open**, before a single frame had
+    /// arrived, carrying `exposureHasSettled: true` and an *assumed* estimate.
+    /// 5.15a makes readiness a measurement; that one was a hope.
+    private func reportReadiness() {
+        guard let recording else { return }
+        let measuredMs = measuredSettleNs.map { UInt32($0 / 1_000_000) }
+        do {
+            try recording.report(ReadinessMeasurement.measuring(
+                .armed, exposureHasSettled: true,
+                settleEstimateMs: measuredMs ?? Self.assumedSettleMs))
+        } catch {
+            recordingError = String(describing: error)
+        }
     }
 
     /// "Wednesday range" — the session title on C3.
@@ -334,6 +425,9 @@ public final class AppModel {
 
     /// The local override of a host-controlled state (REQ-STATE-1).
     public func disarm() {
+        settleTask?.cancel()
+        settleTask = nil
+        isSettling = false
         stopDetecting()
         recording?.stopMetadata()
         stopHealthPolling()
@@ -378,12 +472,10 @@ public final class AppModel {
             recording = session
             recordingError = nil
 
-            // 7.3c — `readiness` is conferred by **Capture**, so a hostless peer
-            // records it without declaring Live. ⛔ A measurement, never a state
-            // name (5.15a): `ReadinessMeasurement.measuring` is one-way.
-            try session.report(ReadinessMeasurement.measuring(
-                .armed, exposureHasSettled: true,
-                settleEstimateMs: Self.assumedSettleMs))
+            // ⚠ **`readiness` is NOT reported here** — see `reportReadiness()`.
+            // 7.3c confers it through Capture, and 5.15a makes it a measurement:
+            // sending it at session open said `settled` before the sensor had
+            // delivered a frame.
 
             // 7.3d — the gap is recorded when the interruption ends.
             device.observeInterruptions { [weak self] interruption in
@@ -771,12 +863,21 @@ public final class AppModel {
 
     /// `CORE` 5.15 `estimated_ready_ms`.
     ///
-    /// ⛔ **Assumed, and it is A12's rule applied to a number nobody measured.**
-    /// Rebuilding a capture session costs roughly a second plus AE/AF settling
-    /// (REQ-STATE-2), and "roughly" is the whole problem: this figure has not been
-    /// through a rig. It is a peer's own estimate, which is what §5.15 asks for,
-    /// and it must be replaced by a measurement before anyone reads it as one.
-    nonisolated static let assumedSettleMs: UInt32 = 1_200
+    /// ⛔ **It has been measured now, and it was wrong by most of an order of
+    /// magnitude** (#101, iPhone 16, 25 August 2026):
+    ///
+    ///     no format change     ~75 ms
+    ///     format change     ~8,850 ms
+    ///
+    /// ⚠ **This constant is now only the fallback**, used where an arm has not
+    /// yet produced a measurement of its own. What actually goes on the wire is
+    /// `measuredSettleNs` from the arm that just happened — see
+    /// `reportReadiness()` — which is what 5.15a asks for and what the previous
+    /// comment here was waiting for.
+    ///
+    /// ⚠ Left at the pessimistic end deliberately: a first arm that under-promises
+    /// and beats it is better than one that promises a second and takes nine.
+    nonisolated static let assumedSettleMs: UInt32 = 9_000
 
     /// Exposed so the preview view can attach. It hands over the *device*, not the
     /// session — `AVCaptureSession` never becomes reachable from a view model.

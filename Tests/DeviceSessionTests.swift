@@ -345,6 +345,23 @@ struct DeviceSessionTests {
         let baseline = model.capability.bestMode
         model.arm()
 
+        // ⛔ #101 — `arm()` no longer claims `.armed` on return; it waits for the
+        // ring. Report what the settle actually cost, which is the number
+        // `assumedSettleMs` was written waiting for.
+        let armStarted = MachClock.hostTimeNs
+        while model.isSettling,
+              MachClock.hostTimeNs - armStarted < AppModel.settleTimeoutNs + 1_000_000_000 {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        print("""
+
+        ── the settle (#101) ───────────────────────────────────
+        measured settle           \(model.measuredSettleNs.map {
+            String(format: "%.0f ms", Double($0) / 1e6) } ?? "never settled")
+        state after settling      \(model.captureStatus.state)
+        capabilityError           \(model.capabilityError ?? "none")
+        """)
+
         guard model.captureStatus.state == .armed else {
             print("""
 

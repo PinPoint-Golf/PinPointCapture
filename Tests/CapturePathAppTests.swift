@@ -587,6 +587,34 @@ struct ArmingRetainsTests {
     // short and reads as though it did not. The refusal path above is testable
     // because it returns before the microphone.
 
+    /// ⛔ **#101 — `armed` claims the ring is receiving, so it must not be set
+    /// until it is.** Measured on an iPhone 16: `startRetaining` returns up to
+    /// **8.85 seconds** before the sensor delivers its first frame when `warmUp`
+    /// had to change the capture format, and for that whole window the app
+    /// reported `armed` over a ring receiving nothing.
+    ///
+    /// ⚠ The stub's `ringStats` never advances, which is exactly the case this
+    /// pins: a device that never delivers must never reach `armed`. The
+    /// *successful* settle is a device-run check for the reason the note below
+    /// gives — `AVAudioEngine.inputNode` aborts the process in a simulator.
+    @Test("#101 — arming does not claim armed while the ring is receiving nothing")
+    func armedWaitsForTheRing() async throws {
+        let device = StubCaptureDevice()
+        let (model, root) = self.model(device)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        model.arm()
+
+        // ⛔ Not armed on return, however the arm went.
+        #expect(model.captureStatus.state != .armed,
+                "startRetaining returning is not the ring receiving")
+        // ⚠ And still not armed a few poll intervals later, because the stub's
+        // frame count never rises.
+        try await Task.sleep(for: .milliseconds(AppModel.settlePollMs * 6))
+        #expect(model.captureStatus.state != .armed)
+        model.disarm()
+    }
+
     /// ⛔ `goCold` removes the session's outputs; a writer left open across that
     /// teardown is one nothing will ever close. `disarm` must therefore stop
     /// retaining first.

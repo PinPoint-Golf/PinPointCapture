@@ -291,6 +291,16 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
+        // ⛔ **Stated, not inherited.** Assigning `device.activeFormat` below is
+        // documented to move the session to `.inputPriority` on its own, and
+        // leaving it implicit means the session spends part of this block still
+        // entitled to re-derive the format from a preset — which is one of the
+        // documented ways to pay the capture-stream teardown twice. Saying it
+        // first costs nothing and removes the question (#101).
+        if session.sessionPreset != .inputPriority {
+            session.sessionPreset = .inputPriority
+        }
+
         session.inputs.forEach { session.removeInput($0) }
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else {
