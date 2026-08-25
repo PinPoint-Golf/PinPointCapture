@@ -42,9 +42,24 @@ public final class MotionMetadataSource: @unchecked Sendable {
 
     /// REQ-BUF's neighbour: how long a segment covers. ⚠ 5.11e makes this "the
     /// producing peer's alone" — it "appears nowhere in the spec (I14) and cannot
-    /// be negotiated in `ppcp/1.0`". One second, which §5.11e1's own sizing note
-    /// uses as its example.
-    public static let segmentSeconds: Double = 1
+    /// be negotiated in `ppcp/1.0`".
+    ///
+    /// ⛔ **Ten seconds, and it was one — which killed a session after two
+    /// minutes** (F-E1-2, 25 August 2026). Each segment is announced as its own
+    /// Capture, and `libppcp` tracks announced Captures in a table 128 deep
+    /// (`PPCP_TRANSFER_MAX`). At one segment a second that table filled at ~124 s
+    /// and every `pumpMetadata` after it failed `PPCP_ERR_LIMIT` — a running
+    /// session quietly ceasing to account for a `continuous` Stream, which is the
+    /// I36 defect the accounting exists to prevent. §5.11e1's one-second example
+    /// is a sizing illustration, not a requirement.
+    ///
+    /// ⚠ **Nothing is sampled less often.** `start(hertz:)` is untouched at
+    /// 100 Hz; this is how often the samples are *wrapped*, so the only cost is
+    /// that up to ten seconds of motion is unwritten when a session ends
+    /// abruptly — which a `partial` Session already asserts (5.11c1). Mark,
+    /// 25 August: phone attitude and gravity are of no analytical interest at
+    /// this point; HackMotion will be a different conversation.
+    public static let segmentSeconds: Double = 10
 
     private let manager = CMMotionManager()
     private let queue = OperationQueue()

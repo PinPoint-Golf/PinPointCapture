@@ -148,8 +148,21 @@ struct LiveLinkTests {
         #expect(queue.pendingCaptureIds.isEmpty)
         #expect(peer.pending(.bulk) > 0)
 
-        // `MSG` 8.3f — the SHOULD value, taken as written rather than tuned.
-        #expect(PayloadTransferQueue.chunkBytes == 262_144)
+        // ⛔ **`MSG` 8.3f's SHOULD is 262144 and this is NOT it** (F-E1-1, #98).
+        // The assertion used to read `== 262_144` on the grounds that the value
+        // is the specification's and not a tuning parameter — which was right,
+        // and which is why the deviation is asserted here rather than quietly
+        // dropped: `libppcp` encodes each originated message into a 64 KiB
+        // per-channel queue, so it cannot send its own specification's
+        // recommendation and every clip payload failed `PPCP_ERR_NOSPACE`.
+        //
+        // ⚠ Pinned as an INEQUALITY, not a second copy of the constant. What
+        // matters is that whatever we send is a size the engine will accept;
+        // when the queue grows, `PayloadTransferQueue.chunkBytes` goes back to
+        // 262144 and this still holds.
+        #expect(Int(PayloadTransferQueue.chunkBytes)
+                    <= SessionBundleWriter.maximumOriginableChunkBytes,
+                "F-E1-1 — a chunk libppcp will not originate is #98 all over again")
     }
 
     /// 8.3d — "resumption restarts from the chunk **after** the last acknowledged

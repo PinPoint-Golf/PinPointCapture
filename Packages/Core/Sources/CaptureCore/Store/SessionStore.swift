@@ -190,6 +190,11 @@ public enum SessionStoreError: Error, Sendable, Equatable {
     /// written to a bundle". CT-I36a's third assertion is that none reaches one,
     /// and this is where that is true rather than remembered.
     case previewIsNotRecordable
+    /// F-E1-1 — a `chunk_bytes` larger than `libppcp` will originate. ⚠ The
+    /// value is carried so the message can name it: the library's own answer is
+    /// `PPCP_ERR_NOSPACE` with no number and no call site in it, which is
+    /// precisely what made #98 take a day to find.
+    case chunkTooLargeToOriginate(Int)
 }
 
 // MARK: - Writing the bundle
@@ -225,6 +230,20 @@ public final class SessionBundleWriter: @unchecked Sendable {
     /// Room for the largest control frame `ENC` §8 permits, so a whole frame
     /// always fits and `PPCP_ERR_NOSPACE` means a bug rather than a big frame.
     private static let scratchCapacity = 1 << 20
+
+    /// The largest `chunk_bytes` `libppcp` will actually **originate** (F-E1-1).
+    ///
+    /// ⛔ **Not what `ENC` §8 says**, and that gap is the whole of #98. §8's table
+    /// permits `chunk_bytes` up to 4 MiB and an 8 MiB bulk frame; the engine
+    /// encodes every originated message into a 64 KiB per-channel queue
+    /// (`PPCP_PEER_TXQ_BYTES`), so the advertised limits are unreachable by any
+    /// sender. Measured on the host, 25 August 2026: 64000 accepted, 65536
+    /// refused — the difference being the frame header and CBOR envelope, which
+    /// grow with the capture id. 48 KiB leaves margin for both.
+    ///
+    /// ⚠ This is a **refusal threshold**, not the value used. See
+    /// `PayloadTransferQueue.chunkBytes` for what this application sends.
+    static let maximumOriginableChunkBytes = 48 * 1024
 
     private let peer: DevicePeer
     private let storage: UnsafeMutableRawPointer
@@ -481,10 +500,22 @@ public final class SessionBundleWriter: @unchecked Sendable {
     /// - Parameter container: `ENC` 6g (erratum E7) — the media type of the
     ///   bytes. ⛔ A bundle is read by another implementation months later, which
     ///   is precisely the reader 6h forbids to guess.
+    /// - Parameter chunkBytes: ⛔ **`PayloadTransferQueue.chunkBytes`, not a
+    ///   second copy of the number.** This defaulted to its own `256 * 1024`
+    ///   while the live path held 262144 in a named constant — the same value
+    ///   written twice, so lowering one for F-E1-1 would have left the bundle
+    ///   path failing exactly as #98 describes. One constant, both paths.
     public func writePayload(captureId: String, clip: Data,
-                             chunkBytes: Int = 256 * 1024,
+                             chunkBytes: Int = Int(PayloadTransferQueue.chunkBytes),
                              container: String? = PpcpMediaType.clip,
                              achievedFrames: PpcpAchievedFrames? = nil) throws {
+        // ⛔ Refused HERE, with the number in it. `libppcp` answers a chunk it
+        // cannot queue with `PPCP_ERR_NOSPACE` — "output buffer too small" —
+        // four frames down and naming nothing, which is the sentence that
+        // reached a golfer's screen in #98 and explained none of this.
+        guard chunkBytes > 0, chunkBytes <= Self.maximumOriginableChunkBytes else {
+            throw SessionStoreError.chunkTooLargeToOriginate(chunkBytes)
+        }
         let digest = Self.digest(of: clip)
         try peer.payloadBegin(captureId: captureId, bytes: UInt64(clip.count),
                               digest: digest, chunkBytes: UInt32(chunkBytes),

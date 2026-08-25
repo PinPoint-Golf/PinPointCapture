@@ -66,10 +66,24 @@ public struct TransferJob: Sendable {
 /// The device's bulk transfer queue.
 public final class PayloadTransferQueue: @unchecked Sendable {
 
-    /// `MSG` 8.3f — "`chunk_bytes` is 262144 (256 KiB). It MUST NOT exceed 4 MiB."
-    /// ⚠ The SHOULD value, taken as written: it is the specification's number and
-    /// not a tuning parameter this application gets to pick.
-    public static let chunkBytes: UInt32 = 262_144
+    /// ⛔ **A DEVIATION FROM `MSG` 8.3f / `ENC` 6f, AND NOT A TUNING CHOICE**
+    /// (F-E1-1, 25 August 2026). Those clauses SHOULD `chunk_bytes` of 262144 and
+    /// permit up to 4 MiB, and this constant WAS 262144 for exactly that reason.
+    /// `libppcp` cannot originate it: every message a peer sends is CBOR-encoded
+    /// into a **64 KiB per-channel queue** (`PPCP_PEER_TXQ_BYTES`,
+    /// `src/ppcp_peer.c:29`), so the first chunk of any real clip came back
+    /// `PPCP_ERR_NOSPACE` and no session ever wrote its payloads (#98). Measured:
+    /// 64000 bytes is accepted, 65536 is refused.
+    ///
+    /// ⚠ **Restore 262144 when `libppcp` grows the queue.** Nothing else here
+    /// needs to change — the value is a SHOULD, so 32 KiB is conformant, and the
+    /// cost is only that a 3 MB clip becomes 96 messages instead of 12 (~0.3% in
+    /// digests and envelopes).
+    ///
+    /// ⚠ Half the queue rather than the measured ceiling, deliberately: the
+    /// envelope grows with the capture id, and a field added to `payload_chunk`
+    /// later must not silently reproduce #98.
+    public static let chunkBytes: UInt32 = 32 * 1024
 
     public enum QueueError: Error, Sendable, Equatable {
         /// 5.11j — a preview Capture has no payload path. ⛔ Not "refused for now":

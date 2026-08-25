@@ -26,23 +26,53 @@ import CPPCP
 /// ⛔ `RV` 7.2b — the message comes from `ppcp_result_str`, which the library
 /// documents as "stable, human-readable, and safe to log: no result code carries
 /// payload". Nothing else about a failed derivation may be reported.
+/// ⛔ **And the call that produced it** (#98). `ppcp_result_str` answers eleven
+/// words — "output buffer too small" — that are true of about thirty call sites
+/// in this package. That sentence reached a golfer's capture screen on 25 August
+/// 2026 as the entire explanation of why nothing was being recorded, and finding
+/// out which call it came from took a day of bisection that the call site's own
+/// name would have answered immediately. `#function` and `#fileID` cost nothing
+/// and are filled in by the compiler at each `check`.
 public struct PpcpLibraryError: Error, Sendable, Equatable, CustomStringConvertible {
     public let code: Int32
     public let name: String
+    /// Where the failing call was made. ⚠ Never part of `==` — see below.
+    public let site: String
 
-    init(_ result: ppcp_result) {
+    init(_ result: ppcp_result,
+         function: String = #function, file: String = #fileID, line: Int = #line) {
         self.code = Int32(result.rawValue)
         self.name = String(cString: ppcp_result_str(result))
+        // `#fileID` is "Module/File.swift"; the module is the same for every one
+        // of these and only lengthens a line a user may end up reading.
+        let fileName = file.split(separator: "/").last.map(String.init) ?? file
+        self.site = "\(function), \(fileName):\(line)"
     }
 
-    public var description: String { "libppcp: \(name)" }
+    /// ⛔ **`code` alone.** Two failures of the same kind from two call sites are
+    /// the same failure, and a comparison that said otherwise would make every
+    /// existing `==` against a `PpcpLibraryError` depend on a line number — which
+    /// is a test that breaks when a comment above it grows.
+    public static func == (a: Self, b: Self) -> Bool { a.code == b.code }
+
+    public func hash(into hasher: inout Hasher) { hasher.combine(code) }
+
+    public var description: String { "libppcp: \(name) (\(site))" }
 }
 
 /// ⚠ Package-wide rather than file-private: `Ppcp/LinkBind.swift` calls into the
 /// same library and must fail the same way. One translation from a
 /// `ppcp_result` to a Swift error, so a caller can never be handed a raw code.
-func check(_ result: ppcp_result) throws {
-    guard result == PPCP_OK else { throw PpcpLibraryError(result) }
+///
+/// ⚠ The three defaulted parameters are filled in by the compiler at the *call
+/// site*, which is the whole point — passing them explicitly would name this
+/// function instead, and every error would say `check, Rendezvous.swift:63`.
+func check(_ result: ppcp_result,
+           function: String = #function, file: String = #fileID,
+           line: Int = #line) throws {
+    guard result == PPCP_OK else {
+        throw PpcpLibraryError(result, function: function, file: file, line: line)
+    }
 }
 
 /// Which `libppcp` is linked, and which wire version it speaks.

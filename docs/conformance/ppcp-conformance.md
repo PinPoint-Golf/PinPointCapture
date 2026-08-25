@@ -954,6 +954,37 @@ F-D3-1's 48 KB stack temporary — the body struct is still built on the heap
 because `PPCP_MAX_MANIFEST` entries do not belong on a stack, but nothing gets or
 sets a union member any more.
 
+### Raised from E1 — the engine's origination queue
+
+Both found on 25 August 2026 while reproducing [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98), *"shots are minted while nothing is recorded"*. Both are `libppcp`'s, both are measured rather than reasoned, and both are pinned by `PayloadSizeTests` so that the day the engine changes we are told by a failing test.
+
+**F-E1-1 — `libppcp` cannot originate `ENC` 6f's SHOULD `chunk_bytes`, nor a spec-legal `AchievedFrames` at 240 fps.**
+
+Every message a peer originates is CBOR-encoded into a **64 KiB per-channel queue** — `PPCP_PEER_TXQ_BYTES`, `src/ppcp_peer.c:29` — and anything larger returns `PPCP_ERR_NOSPACE`. That constant's own comment states the assumption that made this invisible: *"a `declare` carrying a dozen Sources is the largest control frame this engine originates and is a few kilobytes; 64 KiB is room for a burst of them"*. True of **control**. The bulk channel is a different question and was not asked.
+
+Two consequences, both measured on the host:
+
+| | What the specification says | What the engine accepts |
+|---|---|---|
+| `payload_chunk` | `ENC` 6f **SHOULD** 262144; §8's table permits 4 MiB; §8 permits an 8 MiB bulk frame | 64000 accepted, 65536 refused |
+| `payload_begin` + `AchievedFrames` | `ENC` 6a1 sizes the series at *"roughly 44 KB"* for 1080p150 over three seconds | 680 frames accepted, 700 refused, with per-frame intrinsics |
+
+⛔ **The advertised limits are unreachable by any sender.** §8 is written as a decoder's obligation — "a decoder MUST enforce these before allocating" — and a reader meeting a 1 MiB control frame is required to handle it, while no `libppcp` peer can produce one. The `chunk_bytes` row of the same table permits 4 MiB, which is 64× what the engine will queue.
+
+⚠ **The second row has no call-site fix, and that is the important half.** `chunk_bytes` is the sender's to choose, so this application can drop it and did (below). `AchievedFrames` cannot be split: I30 puts the entire per-frame series in one `payload_begin`, deliberately, so no chunk size helps. A camera Capture of three seconds at 239 fps carrying REQ-OPT-7's per-frame intrinsics is a conformant message that this engine cannot send, and the only fix is a larger queue.
+
+⚠ **Why it surfaced now.** At 1080p150 a three-second clip is 450 frames and fits — which is the rate every fixture in this repository used. [#17](https://github.com/PinPoint-Golf/PinPointCapture/issues/17)'s first hardware run measured **239 fps**, making it 717.
+
+**Worked around, not patched.** `PayloadTransferQueue.chunkBytes` is 32 KiB rather than 262144 — a deviation from a SHOULD, which is what a SHOULD permits, recorded at the constant and reverted when the queue grows. Nothing works around the `AchievedFrames` row; it is a latent failure whenever intrinsics genuinely vary frame to frame, and silently dropping REQ-OPT-7's measurements to fit someone's buffer would be worse than the loud failure.
+
+**F-E1-2 — `PPCP_TRANSFER_MAX` caps a Session at 128 announced Captures, and no clause imposes that.**
+
+`ppcp_peer_capture_announce` records every Capture in `ppcp_transfer_table`, which is `PPCP_TRANSFER_MAX` (128) entries deep (`include/ppcp/transfer.h:92`); the 129th announce returns `PPCP_ERR_LIMIT`. `PPCP_MAX_MANIFEST` (256) then caps what `session_manifest` can list. Neither ceiling appears in `CORE` §5.14, `MSG` §8 or `ENC` §7, and a Session's Capture count is unbounded in all three.
+
+⛔ **It is reachable in ordinary use, and it fails a *running* session rather than a long one.** §5.11's table makes `metadata` always `continuous`, and I36 requires a `continuous` Stream to account for its whole open interval — so this application announces one stream-anchored Capture per `metadata` segment. At one segment a second the table filled after ~124 seconds, and every subsequent `pumpMetadata` failed: a session still recording video and still minting Shots, quietly stopping accounting for a Stream, which is the exact defect I36 exists to prevent.
+
+**Worked around.** `MotionMetadataSource.segmentSeconds` is 10 rather than 1 — 5.11e makes the segment duration "the producing peer's alone", so this is a policy choice and a legitimate one, and it takes a session from ~2 minutes to ~21. It does not remove the ceiling; a long range session will still meet it.
+
 ### Raised from MVP scoping — a change request, not a defect
 
 **F-MVP-1 — the product wants a pairing with no code to scan, and `RV` has no
