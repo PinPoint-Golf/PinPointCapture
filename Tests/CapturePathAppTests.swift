@@ -177,7 +177,7 @@ struct CapturePathAppTests {
 
         let streams = HostlessRecordingSession.streams(
             sessionId: "ses:1", declaration: declaration,
-            videoProfileId: nil, openedAtNs: 1_000_000_000)
+            mode: nil, openedAtNs: 1_000_000_000)
 
         let video = try #require(streams.first { $0.kind == PpcpStreamKind.video })
         #expect(video.continuity == .shotWindowed, "§5.11 — video is always shot_windowed")
@@ -191,6 +191,58 @@ struct CapturePathAppTests {
                 "§5.11 — metadata is always continuous, which is what obliges I36")
         // I4 — two Sources on one clock reference the same id.
         #expect(metadata.timebaseId == video.timebaseId)
+    }
+
+    /// ⛔ **5.11a / I5 — the Stream names what the peer declared, and it did not.**
+    /// Read out of a real bundle on 25 August 2026: the `declare` frame carried
+    /// `1920x1080@240` and the `stream_open` carried `1920x1080@240.0-wide`,
+    /// because the caller passed `VideoMode.id` and the declaration emits
+    /// `ProfilePlan.id`. Every bundle this application had ever written named a
+    /// profile that did not exist.
+    ///
+    /// ⚠ **The test above could not catch it**: it passes no mode, so the Stream
+    /// falls back to the Source's own first profile and matches by construction.
+    /// This one passes a mode — and passes an **ultra-wide** one, because that
+    /// also exercises the second half: `streams` used to take
+    /// `sources.first(where: { $0.kind == "camera" })`, which is the *wide*
+    /// Source, so an ultra-wide capture would have been attributed to the wrong
+    /// lens with no trace in the bundle (5.6d, REQ-OPT-5).
+    @Test("#102 — a Stream opened for a mode names that mode's Source and profile")
+    func aStreamNamesTheModesOwnSourceAndProfile() throws {
+        let wide = VideoMode(width: 1920, height: 1080, fps: 240, lens: .wide,
+                             pixelFormat: "420v")
+        let ultra = VideoMode(width: 1920, height: 1080, fps: 120, lens: .ultraWide,
+                              pixelFormat: "420v")
+        let declaration = try PpcpDeclaration(PpcpDeclarationInput(
+            peerId: "peer:test",
+            profiles: PpcpProfileSet.device,
+            timebases: [PpcpTimebaseDeclaration(id: "tb:hosttime", kind: .monotonic,
+                                                epochStable: true, resolutionNs: 42)],
+            captureTimebaseId: "tb:hosttime",
+            capability: DeviceCapability(
+                modelIdentifier: "iPhone17,3", modelName: "iPhone 16",
+                claimed: [wide, ultra], measured: nil),
+            timing: PpcpDeviceTimingProfile(
+                frameStartToExposureOffsetNs: 0, offsetProvenance: .assumed,
+                geometry: [PpcpGeometryEntry(readout: .assumedFractionOfFrameInterval(1.0),
+                                             direction: .topToBottom)]),
+            clipCodec: "hevc"))
+
+        for mode in [wide, ultra] {
+            let streams = HostlessRecordingSession.streams(
+                sessionId: "ses:1", declaration: declaration,
+                mode: mode, openedAtNs: 1_000_000_000)
+            let video = try #require(streams.first { $0.kind == PpcpStreamKind.video })
+
+            #expect(video.sourceId == mode.sourceId,
+                    "\(mode.id) opened its Stream on \(video.sourceId)")
+            let source = try #require(declaration.sources.first { $0.id == video.sourceId })
+            #expect(source.profileIds.contains(video.profileId),
+                    "\(video.sourceId) declares no profile \(video.profileId)")
+            // ⛔ The specific string the bundle had wrong.
+            #expect(video.profileId == mode.profileId)
+            #expect(video.profileId != mode.id, "VideoMode.id is not a profile id")
+        }
     }
 
     /// ⛔ §9.2 — arming is not a claim. A device that could not warm up retains

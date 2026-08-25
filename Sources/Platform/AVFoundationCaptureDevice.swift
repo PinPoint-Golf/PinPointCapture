@@ -110,9 +110,24 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
 
         guard !discovery.devices.isEmpty else { throw CaptureDeviceError.noPhysicalCameraFound }
 
-        // Collapse the format list to the best rate per (lens, resolution). A
-        // device reports dozens of formats that differ only in pixel encoding and
-        // photo capability; the capability card is about geometry and rate.
+        // ⛔ **Collapse pixel encodings, NEVER rates** (#102). The key used to be
+        // (lens, resolution) and kept only the fastest mode for each — so a phone
+        // reporting 1920x1080 at 30, 60, 120 and 240 declared **only 240**, and
+        // every slower rate ceased to exist as far as the rest of the
+        // application was concerned. `Use 120 fps` on the framing check therefore
+        // fell through to 3840x2160 @ 60 on the ultra-wide camera: a different
+        // rate, a different resolution and a different lens than the button said.
+        //
+        // ⚠ The original reasoning was right about the wrong thing. "A device
+        // reports dozens of formats that differ only in pixel encoding and photo
+        // capability" — true, and 110 formats do still collapse to 40 here. But
+        // that argument is about the **capability card**, one sentence built from
+        // `bestMode`, and it was never an argument about what may be *selected*.
+        //
+        // ⛔ 1920x1080 @ 120 is also the only 1080p mode on an iPhone 16 that
+        // delivers per-frame intrinsics (240 delivers none — measured, #19). The
+        // old key discarded the one mode that makes REQ-OPT-7 reachable at a
+        // usable rate.
         var best: [String: VideoMode] = [:]
 
         for device in discovery.devices {
@@ -154,8 +169,11 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
                         ... Int64(format.maxISO.rounded(.down))
                 )
 
-                let key = "\(lens.rawValue)-\(dims.width)x\(dims.height)"
-                if let existing = best[key], existing.fps >= maxRate { continue }
+                // ⚠ `fps` is in the key. Two formats of the same geometry and
+                // rate differing only in pixel encoding still collapse; two
+                // rates never do.
+                let key = "\(lens.rawValue)-\(dims.width)x\(dims.height)@\(maxRate)"
+                if best[key] != nil { continue }
                 best[key] = mode
             }
         }

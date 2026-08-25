@@ -44,6 +44,23 @@ public enum Lens: String, Sendable, CaseIterable {
         case .unknown: 3
         }
     }
+
+    /// `CORE` 5.6 `optics` — an open-registry `Kind`, in the protocol's spelling
+    /// rather than the platform's or this enum's.
+    ///
+    /// ⚠ **Here rather than in `PpcpDeclaration`, because two things need it and
+    /// they must agree.** The declaration names a camera Source
+    /// `src:camera:<optics>`, and `VideoMode.sourceId` has to produce the same
+    /// string or a Stream opens on a Source that was never declared — which is
+    /// the class of defect #102 found in `profile_id`. One spelling, one place.
+    public var opticsName: String {
+        switch self {
+        case .wide: "wide"
+        case .ultraWide: "ultra_wide"
+        case .telephoto: "telephoto"
+        case .unknown: "unknown"
+        }
+    }
 }
 
 /// One capture mode the device advertises.
@@ -84,6 +101,57 @@ public struct VideoMode: Sendable, Hashable, Identifiable {
     public var isoRange: ClosedRange<Int64>?
 
     public var id: String { "\(width)x\(height)@\(fps)-\(lens.rawValue)" }
+
+    /// `CORE` 5.7 — the id of the `CaptureProfile` this mode is declared as.
+    ///
+    /// ⛔ **NOT `id`, and the difference put a lie in every bundle this app has
+    /// written** (#102). `id` names a mode *to this application* and carries the
+    /// lens; a declared profile is scoped to its Source, which already names the
+    /// lens, so its id does not repeat it — and it spells the rate through
+    /// `fpsText` rather than interpolating a `Double`. Read out of a real bundle:
+    /// the `declare` frame carried `1920x1080@240` while the `stream_open`
+    /// carried `1920x1080@240.0-wide`. `CORE` 5.11a / I5 requires a Stream to
+    /// name a profile the peer actually declared, and that one named nothing.
+    ///
+    /// ⚠ Kept in step with `PpcpDeclaration`'s `ProfilePlan.id` by
+    /// `DeclarationTests`, which asserts a Stream's `profile_id` against the
+    /// declaration it came from rather than against this string.
+    public var profileId: String { "\(width)x\(height)@\(Self.fpsText(fps))" }
+
+    /// `CORE` 5.6d — the Source this mode's lens is declared as.
+    ///
+    /// ⚠ One Source per physical lens, so a mode on the ultra-wide belongs to a
+    /// different Source than the same geometry on the wide. Deriving it here is
+    /// what stops a Stream being opened on `sources.first` and landing on the
+    /// wrong camera.
+    public var sourceId: String { "src:camera:\(lens.opticsName)" }
+
+    /// ⛔ **The ONE ranking, and it is one because two of them disagreed.**
+    ///
+    /// `bestMode` ranked on `(fps, height, -captureRank)` and
+    /// `AppModel.remeasure(atMost:)` ranked the same list on `(fps, height)`.
+    /// Ties therefore fell out in dictionary hash order: the #102 format dump
+    /// computed `ultraWide` for a 240 fps cap and a later run of the same code
+    /// chose `wide`. `Lens.captureRank`'s own comment says what that costs —
+    /// "lens choice is calibration-affecting and forbidden to change within a
+    /// session, so picking it by accident is expensive".
+    ///
+    /// ⚠ **Four terms, and `width` is not padding.** `1440x1080@60` and
+    /// `1920x1080@60` tie on rate, height and lens, and would be one more coin
+    /// flip. With all four, no two modes a device can report compare equal, so
+    /// `max(by:)` cannot depend on the order it was handed.
+    ///
+    /// ⚠ Rate first — REQ-RES-1, and see `bestMode` for why resolution-first
+    /// picks the stills format.
+    ///
+    /// - Returns: `true` where `a` is the *worse* capture mode, so this reads
+    ///   correctly as the `by:` of a `max`.
+    public static func isWorseForCapture(_ a: VideoMode, _ b: VideoMode) -> Bool {
+        // The lens term is negated because `captureRank` is lower-is-better and
+        // everything else here is higher-is-better.
+        (a.fps, a.height, a.width, -a.lens.captureRank)
+            < (b.fps, b.height, b.width, -b.lens.captureRank)
+    }
 
     /// "1080p · 150 fps"
     public var displayName: String { "\(resolutionName) · \(Self.fpsText(fps)) fps" }
@@ -265,14 +333,7 @@ public struct DeviceCapability: Sendable {
     /// 1080p at the highest sustainable rate, and do not reach for 4K. Trading
     /// temporal resolution for spatial is the wrong direction when shaft tracking
     /// needs ≥100 fps and measures speed from streak length.
-    public var bestMode: VideoMode? {
-        claimed.max {
-            // Note the inverted lens term: `captureRank` is lower-is-better, so it
-            // is negated to keep the whole comparison higher-is-better.
-            ($0.fps, $0.height, -$0.lens.captureRank)
-                < ($1.fps, $1.height, -$1.lens.captureRank)
-        }
-    }
+    public var bestMode: VideoMode? { claimed.max(by: VideoMode.isWorseForCapture) }
 
     /// The lenses this device offers, in a canonical order.
     ///

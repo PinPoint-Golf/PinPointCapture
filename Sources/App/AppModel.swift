@@ -206,10 +206,15 @@ public final class AppModel {
     public func remeasure(atMost fps: Double) async {
         guard permissions.canCapture else { return }
         let candidates = capability.claimed.filter { $0.fps <= fps }
-        // Best available at or below the cap: rate first, then resolution — the
-        // same ordering `bestMode` uses, for the same reasons (REQ-FPS-1).
-        guard let mode = candidates.max(by: { ($0.fps, $0.height) < ($1.fps, $1.height) })
-        else { return }
+        // ⛔ **`VideoMode.isWorseForCapture`, and it used to be a second
+        // comparator written out here** (#102). This one ranked on
+        // `(fps, height)` while `bestMode` ranked on
+        // `(fps, height, -lens.captureRank)` — so between the wide and the
+        // ultra-wide offering the identical mode, this path picked whichever
+        // the dictionary happened to yield last. Measured: the format dump
+        // computed `ultraWide`, a later run of the same code chose `wide`. A
+        // capture lens decided by hash order.
+        guard let mode = candidates.max(by: VideoMode.isWorseForCapture) else { return }
         preferredMode = mode
         await runSelfTest(mode: mode)
     }
@@ -358,7 +363,13 @@ public final class AppModel {
             let session = try HostlessRecordingSession(
                 store: store, device: device,
                 sessionId: "ses:\(UUID().uuidString.lowercased())",
-                videoProfileId: activeMode?.id,
+                // ⛔ **The mode, not `activeMode?.id`** (#102). `id` names a
+                // mode to this app — `1920x1080@240.0-wide` — and the profile
+                // the declaration actually emits is `1920x1080@240`, so every
+                // Stream this app opened named a profile that did not exist
+                // (5.11a, I5). `HostlessRecordingSession` now derives both the
+                // Source and the profile from the mode itself.
+                mode: activeMode,
                 micToBall: micToBallDistance,
                 // ⛔ A4's setting, finally reaching the thing it names. It has
                 // been user-visible and inert since the first build, and

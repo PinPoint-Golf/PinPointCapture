@@ -333,8 +333,16 @@ struct DeviceSessionTests {
         model.refreshCapability()
         // ⚠ Both arms go through `remeasure` so the self-test it runs is part of
         // both, and the only difference between them is the rate.
+        //
+        // ⛔ **And the lens is now reported, because it is not pinned** (#102).
+        // `remeasure(atMost:)` breaks its tie on `(fps, height)` with no lens
+        // term, while `bestMode` breaks the same tie preferring `wide` — so a
+        // rate cap can silently select the ULTRA WIDE camera. The first version
+        // of this test printed geometry and rate only, and would have compared
+        // two different physical sensors without saying so.
         await model.remeasure(atMost: cap)
         let mode = model.activeMode
+        let baseline = model.capability.bestMode
         model.arm()
 
         guard model.captureStatus.state == .armed else {
@@ -368,7 +376,9 @@ struct DeviceSessionTests {
         print("""
 
         ── the whole app, 28 s on hardware ─────────────────────
-        mode                      \(mode.map { "\($0.width)x\($0.height) @ \($0.fps)" } ?? "none")  (cap \(cap))
+        mode                      \(mode.map { "\($0.width)x\($0.height) @ \($0.fps) \($0.lens)" } ?? "none")  (cap \(cap))
+        bestMode would have been  \(baseline.map { "\($0.width)x\($0.height) @ \($0.fps) \($0.lens)" } ?? "none")
+        ⚠ same lens as baseline?   \(mode?.lens == baseline?.lens ? "yes" : "NO — not comparable")
         shots / candidates        \(shots) / \(candidates)
         recordingError            \(recordingError ?? "none")
 
@@ -505,14 +515,34 @@ struct DeviceSessionTests {
             print("      \(m.width)x\(m.height) @ \(Int(m.fps))  \(m.lens)")
         }
 
-        // What a rate cap actually selects, by the same rule `remeasure` uses.
+        // What a rate cap actually selects. ⛔ **Through the SHARED comparator**,
+        // which is the whole point of #102 — this line held a second copy of the
+        // ranking and, after the fix landed, was still reporting `ultraWide` for
+        // a 240 fps cap while the application chose `wide`. An instrument with
+        // its own copy of the rule measures the rule it holds, not the one that
+        // ships.
         for cap in [240.0, 120.0, 60.0] {
             let picked = capability.claimed.filter { $0.fps <= cap }
-                .max(by: { ($0.fps, $0.height) < ($1.fps, $1.height) })
+                .max(by: VideoMode.isWorseForCapture)
             print("  cap \(Int(cap)) fps → "
                   + (picked.map { "\($0.width)x\($0.height) @ \(Int($0.fps)) \($0.lens)" }
                      ?? "NOTHING"))
         }
+        // ⛔ #102's exit criterion, both halves, on the hardware that showed it.
+        #expect(capability.claimed.contains { $0.width == 1920 && $0.height == 1080
+                                              && $0.fps == 120 && $0.lens == .wide },
+                "1920x1080 @ 120 wide is offered by this camera and must survive enumeration")
+        let atMost120 = capability.claimed.filter { $0.fps <= 120 }
+            .max(by: VideoMode.isWorseForCapture)
+        #expect(atMost120?.height == 1080, "a 120 cap must not fall through to 4K")
+        #expect(atMost120?.fps == 120)
+        #expect(atMost120?.lens == .wide, "REQ-OPT-5 — the rate cap must not change lens")
+
+        // ⚠ Deterministic, not merely correct once: the defect was hash order.
+        let again = try AVFoundationCaptureDevice().enumerateCapability()
+        #expect(again.bestMode?.lens == capability.bestMode?.lens)
+        #expect(again.claimed.filter { $0.fps <= 120 }
+            .max(by: VideoMode.isWorseForCapture)?.lens == atMost120?.lens)
         #expect(capability.claimed.isEmpty == false)
     }
 

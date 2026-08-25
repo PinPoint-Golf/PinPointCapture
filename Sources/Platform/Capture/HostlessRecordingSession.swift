@@ -95,8 +95,12 @@ public final class HostlessRecordingSession {
     ///   - device: asked for its declaration. ⛔ Through the port, so the
     ///     declaration comes from the capability the hardware actually enumerated
     ///     (REQ-FPS-1) and never from a spec sheet.
-    ///   - videoProfileId: which declared `CaptureProfile` the video Stream
-    ///     activates. `nil` takes the first the camera Source offers.
+    ///   - mode: which camera and which declared `CaptureProfile` the video
+    ///     Stream activates. ⛔ **The mode, not a profile id string** (#102):
+    ///     the id a caller would have spelled and the id the declaration emits
+    ///     were different, so the Stream named a profile that did not exist
+    ///     (5.11a, I5). `nil` takes the first profile the first camera Source
+    ///     offers, which is only right when the device has one camera.
     ///   - micToBall: 8.1d — the microphone-to-ball distance and its dispersion.
     ///     ⛔ It reaches every Candidate through `CandidateFactory`; before S4
     ///     nothing supplied one and every device Candidate went out with no
@@ -105,7 +109,7 @@ public final class HostlessRecordingSession {
                 device: any CaptureDevice,
                 sessionId: String,
                 peerId: String = PeerIdentity.current,
-                videoProfileId: String? = nil,
+                mode: VideoMode? = nil,
                 micToBall: MicToBallDistance = MicToBallDistanceStore.load(),
                 retention: CandidateAudioRetention = CandidateAudioRetention()) throws {
         self.micToBall = micToBall
@@ -155,7 +159,7 @@ public final class HostlessRecordingSession {
         // the peer actually declared (5.11a, I5), and a caller assembling them by
         // hand is a caller who can name one that does not exist.
         streams = Self.streams(sessionId: sessionId, declaration: declaration,
-                               videoProfileId: videoProfileId,
+                               mode: mode,
                                openedAtNs: MachClock.hostTimeNs)
         for stream in streams { try recorder.open(stream: stream) }
 
@@ -320,12 +324,29 @@ public final class HostlessRecordingSession {
     /// chosen: `video` is always `shot_windowed`, `metadata` always `continuous`.
     nonisolated static func streams(sessionId: String,
                                     declaration: PpcpDeclaration,
-                                    videoProfileId: String?,
+                                    mode: VideoMode?,
                                     openedAtNs: Int64) -> [PpcpStreamRecord] {
         var built: [PpcpStreamRecord] = []
 
-        if let camera = declaration.sources.first(where: { $0.kind == "camera" }),
-           let profile = videoProfileId ?? camera.profileIds.first {
+        // ⛔ **The camera the MODE is on, not `sources.first`** (#102). 5.6d
+        // declares one Source per physical lens, so with a wide and an
+        // ultra-wide both declared, `first` opens an ultra-wide capture's Stream
+        // on the wide Source — a Capture attributed to the wrong lens, with the
+        // wrong calibration, and nothing in the bundle to show for it.
+        //
+        // ⚠ Both halves fall back only where there is nothing to be precise
+        // about: no mode given, or a mode whose Source or profile the
+        // declaration does not carry. A profile id that names nothing is exactly
+        // what 5.11a / I5 forbid, so the fallback is the Source's own first
+        // profile rather than the caller's string.
+        let camera = mode.flatMap { m in
+            declaration.sources.first { $0.kind == "camera" && $0.id == m.sourceId }
+        } ?? declaration.sources.first { $0.kind == "camera" }
+
+        if let camera,
+           let profile = mode.map(\.profileId).flatMap({ id in
+               camera.profileIds.contains(id) ? id : nil
+           }) ?? camera.profileIds.first {
             built.append(PpcpStreamRecord(
                 id: "str:video:\(camera.id)", sessionId: sessionId,
                 sourceId: camera.id, kind: PpcpStreamKind.video,

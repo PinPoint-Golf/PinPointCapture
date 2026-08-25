@@ -84,7 +84,7 @@ enum InteropBundleFixture {
         // actually declared (5.11a, I5).
         let streams = HostlessRecordingSession.streams(
             sessionId: sessionId, declaration: declaration,
-            videoProfileId: nil, openedAtNs: openedAt)
+            mode: nil, openedAtNs: openedAt)
         for stream in streams { try recorder.open(stream: stream) }
 
         guard let audio = streams.first(where: { $0.kind == PpcpStreamKind.audio }) else {

@@ -693,16 +693,11 @@ public final class PpcpDeclaration: @unchecked Sendable {
         return plans
     }
 
-    /// `CORE` 5.6 `optics` — an open-registry `Kind`, in the protocol's spelling
-    /// rather than the platform's.
-    private static func optics(for lens: Lens) -> String {
-        switch lens {
-        case .wide: "wide"
-        case .ultraWide: "ultra_wide"
-        case .telephoto: "telephoto"
-        case .unknown: "unknown"
-        }
-    }
+    /// `CORE` 5.6 `optics` — ⚠ **`Lens.opticsName`, not a second copy of the
+    /// switch.** `VideoMode.sourceId` builds `src:camera:<optics>` too, and two
+    /// spellings that drifted would open a Stream on a Source that was never
+    /// declared (#102).
+    private static func optics(for lens: Lens) -> String { lens.opticsName }
 
     private static func cameraProfile(_ mode: VideoMode,
                                       input: PpcpDeclarationInput) throws -> ProfilePlan {
