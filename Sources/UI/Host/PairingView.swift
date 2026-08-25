@@ -11,6 +11,23 @@
 //  animation. The burst estimates offset **and rate** (REQ-SYNC-1) and the
 //  estimate is filtered, never stepped (REQ-SYNC-3).
 //
+//  ⛔ **B2 has a settled state as of #96, and until then the screen simply
+//  vanished.** The handshake completed, the sheet was dismissed, and the phone
+//  said nothing — so the only way to know pairing had worked was to look at the
+//  *other* machine. That was the first of the three UX findings from the 24
+//  August integration test. The four rows stay on screen as the evidence, the
+//  eyebrow turns to `CONNECTED`, and the screen states what became of the
+//  pairing.
+//
+//  ⚠ **Departure from the design pack, taken deliberately.** `mockup v1` gives
+//  B2 no completed state. It is the screen the user is already looking at when
+//  the handshake lands, so a confirmation here costs no new route and no new
+//  navigation.
+//
+//  ⛔ **`Remembered` is a UI type, not the platform one.** `RendezvousCoordinator`
+//  owns `PersistOutcome`; this layer never imports Platform, and the presenting
+//  layer maps between them.
+//
 
 import SwiftUI
 import CaptureCore
@@ -31,7 +48,36 @@ public struct PairingView: View {
     private let securitySummary: String?
     /// A handshake that did not complete, shown in place rather than dismissed.
     private let failure: String?
+    /// What became of the pairing once the link settled. ⛔ `nil` while the
+    /// handshake is still running — the screen does not speculate about a
+    /// pairing that does not exist yet.
+    private let remembered: Remembered?
     private let onCancel: () -> Void
+    /// ⛔ 7.4b — *individually revocable*, offered at the moment the user learns
+    /// the Studio was kept. `nil` where there is nothing to forget.
+    private let onForget: (() -> Void)?
+
+    /// What the screen says about persistence — the three answers `RV` §7.4
+    /// allows for a pairing that has just completed.
+    ///
+    /// ⚠ **A statement, never an offer.** Remembering is the default stance as of
+    /// 25 August 2026 (#96), so by the time this screen renders the decision has
+    /// been taken and acted on. What the user is given is the way back out.
+    public enum Remembered: Sendable, Equatable {
+        /// Kept. The next session needs no code.
+        case remembered
+        /// ⛔ 7.4f — the code pairs several devices, so every one of them holds
+        /// identical key material and the pairing is session-scoped by
+        /// construction. Nothing was refused; there was nothing to keep.
+        case multiUseCode
+        /// The store could not be written. ⚠ Said out loud: a phone that claims
+        /// a remembered Studio and holds nothing reconnects to nothing, which is
+        /// exactly how the 24 August test failed.
+        case couldNotWrite
+        /// ⛔ The user forgot it from this screen. ⚠ The **link is untouched** —
+        /// 7.4d ends the pairing, not the session that is already up.
+        case forgotten
+    }
 
     public init(
         link: HostLink,
@@ -40,7 +86,9 @@ public struct PairingView: View {
         viewpoint: Viewpoint? = nil,
         isCameraLocked: Bool = false,
         failure: String? = nil,
-        onCancel: @escaping () -> Void
+        remembered: Remembered? = nil,
+        onCancel: @escaping () -> Void,
+        onForget: (() -> Void)? = nil
     ) {
         self.link = link
         self.securitySummary = securitySummary
@@ -48,8 +96,15 @@ public struct PairingView: View {
         self.viewpoint = viewpoint
         self.isCameraLocked = isCameraLocked
         self.failure = failure
+        self.remembered = remembered
         self.onCancel = onCancel
+        self.onForget = onForget
     }
+
+    /// ⚠ The settled state is driven by the **outcome having arrived**, not by
+    /// `link.state`: the pairing is what this screen is reporting on, and it is
+    /// resolved a moment after the link is.
+    private var hasSettled: Bool { remembered != nil }
 
     public var body: some View {
         ScrollView {
@@ -57,30 +112,22 @@ public struct PairingView: View {
                 header
                 steps
                 failureNotice
-                whyTheWait
+                rememberedNotice
+                if hasSettled == false { whyTheWait }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, PPMetrics.screenMargin)
             .padding(.vertical, PPMetrics.groupGap)
         }
         .background(Color(.systemBackground))
-        .safeAreaInset(edge: .bottom) {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity,
-                       minHeight: PPMetrics.Size.primaryButton)
-                .padding(.horizontal, PPMetrics.screenMargin)
-                .padding(.top, PPMetrics.itemGap)
-                .background(.bar)
-        }
+        .safeAreaInset(edge: .bottom) { bottomAction }
     }
 
     // MARK: - Header
 
     private var header: some View {
         VStack(alignment: .leading, spacing: PPMetrics.itemGap / 2) {
-            EyebrowLabel("Pairing", tone: .accent)
+            EyebrowLabel(hasSettled ? "Connected" : "Pairing", tone: .accent)
 
             // A host name is something the user already knows — not mono.
             Text(link.hostName ?? "Host")
@@ -144,6 +191,75 @@ public struct PairingView: View {
         }
     }
 
+    // MARK: - What became of the pairing (7.4)
+
+    /// ⛔ Three outcomes, three sentences, and the cost stated rather than
+    /// assumed away — *"possession of the device's storage is possession of
+    /// continuing access"* is §7.4's own phrasing of it.
+    @ViewBuilder
+    private var rememberedNotice: some View {
+        switch remembered {
+        case .remembered:
+            // ⚠ Just "Remembered" — the host name is the screen heading two
+            // inches above, and repeating it wrapped the card title.
+            InfoCard("The next session will not need a code. Anyone with this "
+                     + "phone's storage keeps that access until you forget it.",
+                     title: "Remembered",
+                     systemImage: "checkmark.circle.fill",
+                     tone: .accent)
+        case .multiUseCode:
+            // ⛔ 7.4f. Not a failure and not a setting: a multi-use code is a
+            // group credential, and every device that scanned it holds the same
+            // key material.
+            InfoCard("This code can pair several devices, so the connection "
+                     + "lasts for this session only. Ask Studio for a code of "
+                     + "its own to be remembered.",
+                     title: "Not remembered",
+                     systemImage: "person.2.fill",
+                     tone: .neutral)
+        case .couldNotWrite:
+            InfoCard("The connection is up, but this Studio could not be saved, "
+                     + "so the next session will need a new code.",
+                     title: "Not remembered",
+                     systemImage: "exclamationmark.triangle.fill",
+                     tone: .warning)
+        case .forgotten:
+            // ⚠ Present tense about the link, future about the pairing. Both
+            // matter and they are different sentences.
+            InfoCard("You are still connected. The next session will need a new "
+                     + "pairing code from Studio.",
+                     title: "Forgotten",
+                     systemImage: "trash.fill",
+                     tone: .neutral)
+        case nil:
+            EmptyView()
+        }
+    }
+
+    // MARK: - The bottom action
+
+    /// ⚠ *Cancel* while it is happening; *Done* once it has. ⛔ **Forget sits
+    /// beside Done rather than replacing it** — the user came here to connect,
+    /// and the way out of being remembered is secondary to that.
+    @ViewBuilder
+    private var bottomAction: some View {
+        VStack(spacing: PPMetrics.itemGap / 2) {
+            Button(hasSettled ? "Done" : "Cancel", action: onCancel)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity,
+                       minHeight: PPMetrics.Size.primaryButton)
+
+            if remembered == .remembered, let onForget {
+                Button("Forget this Studio", role: .destructive, action: onForget)
+                    .font(.ppSupporting)
+            }
+        }
+        .padding(.horizontal, PPMetrics.screenMargin)
+        .padding(.top, PPMetrics.itemGap)
+        .background(.bar)
+    }
+
     /// "1080p150 accepted · view: DTL".
     private var capabilityDetail: String? {
         guard let agreedMode else { return nil }
@@ -188,6 +304,51 @@ public struct PairingView: View {
         link: PreviewFixtures.pairing,
         agreedMode: PreviewFixtures.capability.measured?.mode,
         viewpoint: PreviewFixtures.framingMarginalLight.viewpoint,
+        onCancel: {}
+    )
+    .preferredColorScheme(.dark)
+}
+
+#Preview("B2 · Connected and remembered") {
+    PairingView(
+        link: HostLink(
+            state: .connected,
+            hostName: PreviewFixtures.hostName,
+            hostVersion: PreviewFixtures.hostVersion,
+            clock: ClockAgreement(offsetMilliseconds: -3.184,
+                                  offsetSigmaMilliseconds: 0.21,
+                                  driftPPM: 18,
+                                  exchangesCompleted: 20,
+                                  exchangesExpected: 20)
+        ),
+        securitySummary: "TLS 1.2 · PSK",
+        agreedMode: PreviewFixtures.capability.measured?.mode,
+        viewpoint: PreviewFixtures.framingMarginalLight.viewpoint,
+        isCameraLocked: true,
+        remembered: .remembered,
+        onCancel: {},
+        onForget: {}
+    )
+    .preferredColorScheme(.dark)
+}
+
+#Preview("B2 · Connected, multi-use code") {
+    PairingView(
+        link: HostLink(
+            state: .connected,
+            hostName: PreviewFixtures.hostName,
+            hostVersion: PreviewFixtures.hostVersion,
+            clock: ClockAgreement(offsetMilliseconds: -3.184,
+                                  offsetSigmaMilliseconds: 0.21,
+                                  driftPPM: 18,
+                                  exchangesCompleted: 20,
+                                  exchangesExpected: 20)
+        ),
+        securitySummary: "TLS 1.2 · PSK",
+        agreedMode: PreviewFixtures.capability.measured?.mode,
+        viewpoint: PreviewFixtures.framingMarginalLight.viewpoint,
+        isCameraLocked: true,
+        remembered: .multiUseCode,
         onCancel: {}
     )
     .preferredColorScheme(.dark)

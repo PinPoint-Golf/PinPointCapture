@@ -83,7 +83,12 @@ public struct WelcomeScreen: View {
                 // A plain green text action: a stock borderless button that
                 // inherits the global accent tint. Never hand-rolled, never
                 // re-tinted by hand.
-                Button("I have a pairing code", action: onHavePairingCode)
+                // ⚠ **"Pair my phone", not "I have a pairing code"** (Mark, 25
+                // August 2026). The old wording asked a golfer to know they hold
+                // a thing they have never seen — the code lives on the Studio
+                // screen, and at this moment they have not looked at it. Name the
+                // outcome, not the credential.
+                Button("Pair my phone", action: onHavePairingCode)
                     .buttonStyle(.borderless)
                     .font(.ppRowLabel.weight(.semibold))
                     .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.minimumTapTarget)

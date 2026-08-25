@@ -78,6 +78,22 @@ enum DebugLaunch {
         }
     }
 
+    /// B3a's list (#96). ⛔ **Fixtures, never `PairingSecretStore.pairings()`** —
+    /// a review screen that read the real store would show a reviewer somebody
+    /// else's pairings, and one that wrote to it could forget a real one.
+    static let rememberedStudios: [StoredPairing] = [
+        StoredPairing(sessionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                      displayName: "Bay 3 — Mac Studio",
+                      counterpartPeerId: "peer:11121314",
+                      networkName: "PinPoint-Bay3",
+                      savedAt: Date(timeIntervalSince1970: 1_756_000_000)),
+        StoredPairing(sessionId: "3f2504e0-4f89-41d3-9a0c-0305e82c3302",
+                      displayName: "Studio — iMac",
+                      counterpartPeerId: nil,
+                      networkName: nil,
+                      savedAt: Date(timeIntervalSince1970: 1_755_120_000))
+    ]
+
     static let reconciliationCandidates: [SessionMatchCandidate] = [
         SessionMatchCandidate(
             title: "Wednesday range · 18:20",
@@ -131,6 +147,11 @@ struct DebugScreenGallery: View {
                                         retainedSecondsPerShot: 3.0,
                                         onStartSession: {}, onConnectHost: {})
 
+        // The pairing STEP (onboarding), as distinct from B1 the screen.
+        case "PAIR": PairStepScreen(onScanPairingCode: {}, onContinue: {}, onSkip: {})
+        case "PAIRED": PairStepScreen(hostName: "Bay 3 — Mac Studio",
+                                      isPaired: true,
+                                      onScanPairingCode: {}, onContinue: {}, onSkip: {})
         case "B1": ConnectHostView(discoveredHostName: PreviewFixtures.hostName,
                                    discoveredHostDetail: "On this network · paired yesterday",
                                    onCancel: {}, onConnectToDiscoveredHost: {},
@@ -140,6 +161,14 @@ struct DebugScreenGallery: View {
                                agreedMode: PreviewFixtures.capability.bestMode,
                                viewpoint: PreviewFixtures.framingMarginalLight.viewpoint,
                                onCancel: {})
+        // B2's settled state (#96) — the confirmation the app did not have.
+        case "B2A": PairingView(link: PreviewFixtures.connected,
+                                securitySummary: "TLS 1.2 · PSK",
+                                agreedMode: PreviewFixtures.capability.bestMode,
+                                viewpoint: PreviewFixtures.framingMarginalLight.viewpoint,
+                                isCameraLocked: true,
+                                remembered: .remembered,
+                                onCancel: {}, onForget: {})
         case "B3": HostPanelView(link: DebugLaunch.link,
                                  capture: PreviewFixtures.armed,
                                  queue: DebugLaunch.queue,
@@ -149,7 +178,18 @@ struct DebugScreenGallery: View {
                                  sessionStart: PreviewFixtures.session.start,
                                  onSelectReviewState: { _ in },
                                  onDone: {}, onPrimaryAction: {},
-                                 onOpenConnectionLog: {}, onExportDiagnostics: {})
+                                 onOpenConnectionLog: {}, onExportDiagnostics: {},
+                                 onOpenMicToBallDistance: {},
+                                 onOpenRememberedStudios: {},
+                                 // The single-Studio case, which is the one a
+                                 // golfer has (#96).
+                                 rememberedHostName: "Bay 3 — Mac Studio",
+                                 onForgetHost: {})
+        // B3a — `RV` 7.4b's revocation list (#96). ⚠ Fixtures, not the real
+        // store: this gallery must not read or write a pairing.
+        case "B3A": RememberedStudiosView(
+                        pairings: DebugLaunch.rememberedStudios,
+                        onForget: { _ in })
         case "B4": JoinNetworkView(ssid: "PinPoint-Bay3", onJoin: {},
                                    onStayOnCurrentNetwork: {})
         case "B5": ReconcileSessionView(
@@ -194,7 +234,7 @@ struct DebugScreenGallery: View {
             ContentUnavailableView(
                 "Unknown screen \"\(screenID)\"",
                 systemImage: "questionmark.square.dashed",
-                description: Text("Try A1–A7, B1–B6, C1–C3 or D9.")
+                description: Text("Try A1–A7, B1–B6 (B2A, B3A), C1–C3 or D9.")
             )
         }
     }

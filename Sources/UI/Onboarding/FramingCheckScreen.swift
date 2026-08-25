@@ -55,6 +55,24 @@ public struct FramingCheckScreen: View {
                     .listRowSeparator(.hidden)
             }
 
+            // ⛔ **A5's four placement rules, folded in here.** They were a
+            // screen of their own, above a 260pt dashed placeholder that was
+            // never drawn — and the checklist below verifies three of the four
+            // live against the camera. One line beats a screen you walk past.
+            Section {
+                Label {
+                    Text("Tripod, hip height, landscape. The whole swing in view, "
+                         + "and leave the lens alone once it is armed.")
+                        .font(.ppSupporting)
+                        .foregroundStyle(Color(.secondaryLabel))
+                } icon: {
+                    Image(systemName: "camera.on.rectangle")
+                        .foregroundStyle(Color(.secondaryLabel))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+            }
+
             Section {
                 headingRow
                     .listRowInsets(EdgeInsets(
@@ -153,7 +171,10 @@ public struct FramingCheckScreen: View {
 
     private var headingRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: PPMetrics.itemGap) {
-            Text("Framing check")
+            // ⚠ "Now set it down", not "Framing check": pairing happens before
+            // this screen, so by the time a golfer arrives the instruction is
+            // physical rather than diagnostic.
+            Text("Now set it down")
                 .font(.ppScreenHeading)
                 .foregroundStyle(Color(.label))
                 .accessibilityAddTraits(.isHeader)

@@ -77,9 +77,12 @@ inside the file that must not have one is exactly the erosion the rule exists to
 prevent.
 
 ⚠ `Rendezvous/` also holds the three things `RV` §5–§7 make the embedding's:
-`PairingSecretStore` (7.2c/7.4 — a backup-excluded file, opt-in and revocable;
-**the Keychain until erratum E56 made 7.2c a SHOULD**, and `isExcludedFromBackup`
-is now what carries 7.4c's *not transferable*), `NetworkJoin` (§6 — `NEHotspotConfiguration` with consent, and 6b's
+`PairingSecretStore` (7.2c/7.4 — a backup-excluded file, **kept by default and
+revocable**; the Keychain until erratum E56 made 7.2c a SHOULD, and
+`isExcludedFromBackup` is now what carries 7.4c's *not transferable*. ⛔ *Opt-in*
+went with erratum E57 and issue #96: 7.4b is a SHOULD, a completed pairing is
+written without being asked for, and forgetting is the deliberate act —
+`RememberedStudiosView` is `revoke(_:)`'s first caller), `NetworkJoin` (§6 — `NEHotspotConfiguration` with consent, and 6b's
 **second** branch because iOS cannot reassociate a previous network), and
 `RendezvousCoordinator` (§4's order: decode, expiry, join, then walk).
 

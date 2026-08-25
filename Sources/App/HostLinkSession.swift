@@ -162,6 +162,20 @@ public final class HostLinkSession {
 
         case .declared(let peerId):
             counterpartPeerId = peerId
+            // ⛔ **7.4c — a persisted pairing is scoped to the counterpart peer
+            // identity learned INSIDE the authenticated channel, and this is that
+            // moment.** `hello` is the first disclosure of `Peer.id` (7.6b), so
+            // nothing earlier could have recorded it honestly.
+            //
+            // ⚠ `bind` was written under D7 and had no caller until #96. It
+            // mattered less while a pairing was kept only on request; now that
+            // every successful pairing is kept, "a pairing scoped to nobody is a
+            // pairing scoped to anybody" is the ordinary case rather than the
+            // rare one.
+            //
+            // ⚠ A no-op where nothing is stored — a `mu > 1` pairing (7.4f) has
+            // no row to bind, and `bind` returns without writing one.
+            try? PairingSecretStore.bind(sessionId: sessionId, toCounterpart: peerId)
 
         case .protocolError(let code):
             // Surfaced. A counterpart refusing this device is the thing a user

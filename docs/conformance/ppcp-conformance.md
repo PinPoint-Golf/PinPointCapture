@@ -156,7 +156,7 @@ for a different reason — re-import being idempotent is not visible from the wi
 |---|---|---|
 | **Pairing code** (`RV` §4) — REQUIRED of any RV implementation | yes | **D7 landed.** The device is the **scanner**, therefore the dialler and the TLS client (`RV` 2d, 5.2g). Decode, the three failure sentences of 4.2b/4.4a/4.4b, and the endpoint walk of 4.3c are in `RendezvousCoordinator`; the §10.3 vectors reproduce in `make test-core`. |
 | **Key derivation and TLS** (`RV` §5) | yes | D0 + D1 landed. The derivation is `libppcp`'s (`ppcp_rv_derive`, `ppcp_rv_psk_identity`); TLS lives in the application and never in the library (plan A7). |
-| **Security model** (`RV` §7) | yes | D1 landed the transport half; **D7 landed the secret-handling half** — `PRK` only (5.1c), opt-in/visible/revocable (7.4b), and refused outright for `mu > 1` through the library's own predicate (7.4f). ⚠ **Storage changed under erratum E56, 25 August 2026**: 7.2c became a SHOULD and the `PRK` moved from the Keychain to a file this app owns, excluded from backup. `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` was **unreadable while the phone was locked**, so the reconnection sweep read nothing and reported *no pairings held* — false, and indistinguishable from the true answer. `isExcludedFromBackup` now carries 7.4c. |
+| **Security model** (`RV` §7) | yes | D1 landed the transport half; **D7 landed the secret-handling half** — `PRK` only (5.1c) and refused outright for `mu > 1` through the library's own predicate (7.4f). ⛔ **7.4b: two of three, deliberately — erratum E57, 25 August 2026.** E57 made 7.4b a SHOULD, on the reasoning that opt-in/visible/revocable is a statement about *screens* and `RV` §1.3 already excludes those. This application therefore **declines *opt-in*** — a completed pairing is kept without being asked for (#96) — and **keeps *visible* and *individually revocable***, which until #96 it did not actually have: `pairings()` and `revoke(_:)` were written under D7 and had no caller anywhere in the app. ⚠ **That is the wrong way round and is recorded rather than tidied**: the half this app met was the one that has now been relaxed, and the half it did not meet was the MUST. ⚠ **Storage changed under erratum E56, 25 August 2026**: 7.2c became a SHOULD and the `PRK` moved from the Keychain to a file this app owns, excluded from backup. `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` was **unreadable while the phone was locked**, so the reconnection sweep read nothing and reported *no pairings held* — false, and indistinguishable from the true answer. `isExcludedFromBackup` now carries 7.4c. |
 | **Service discovery** (`RV` §3) | **advertise yes, accept no** | D7 landed the advertisement: `_ppcp._tcp`, `PPCP-<rid[0..3]>`, 3.3a's five keys, `rn` rotated on registration and within 15 minutes, and 3.4b/c's resolver for the browsing direction 3.5c permits. ⛔ The listener still **refuses every connection**, because F-D1-1 stands: a `Network.framework` listener cannot resolve a rotating PSK identity, so a peer that found this device must still dial the pairing-code path. Advertising is reconnection convenience, which is what §3's own preamble calls it. |
 | **Network join** (`RV` §6) | **yes, with 6b's second branch** | D7. `NEHotspotConfiguration` names the network in a system alert (6a) and the join precedes the endpoint walk (4.3f, 6e). On session end the configuration is removed and the user is told; iOS cannot reassociate a previously-used network, which is the case 6b's disjunction was written for and which it calls conformant. ⛔ **This row claimed all of that while none of it happened — finding F-D12-1, fixed 25 August 2026.** `endPairing()` was written and documented and **had no caller anywhere in the application**, so `NetworkJoin.leave()` was unreachable, `leftNetworkExplanation` was never shown, and the decoded payload — **including the Wi-Fi passphrase** — was retained for the life of the process against 4.4c. Now called from the cancel path, which is the one place the *user* ends a session; deliberately **not** from the backgrounding path, where the link is expected back. ⚠ The removal itself is still unproven on hardware (issue #68). |
 | **Direct path** (`RV` §2, §9a) | **debug builds only** | D9's conformance harness. Plaintext TCP so `ppcp-sim` can drive this peer; see F-D9-1 for why that is a finding as well as a capability. |
@@ -175,7 +175,7 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | RT-7 | static | the TXT record carries 3.3a's five keys and nothing 3.3b forbids | D7 | — | — | pass |
 | RT-8 | static | `rn` rotates on registration and within 15 minutes | D7 | — | — | pass |
 | RT-9 | static | an unresolvable `rid` is not connected to (3.4c) | D7 | — | — | pass |
-| RT-15 | static | `PRK` only, opt-in and revocable; never from `mu > 1` | D7 | — | — | **pass** — `PairingSecretStoreTests`. *Was `impl` while the store was the Keychain and untestable; erratum E56 made it an ordinary file, and the suite asserts the round trip, the 7.4f refusal, `psk` absent from disk, and `isExcludedFromBackup` surviving a rewrite.* ⚠ **A real backup-and-restore is still unproven** and is issue #67's exit criterion |
+| RT-15 | static | `PRK` only, visible and revocable; never from `mu > 1` | D7 | — | — | **pass** — `PairingSecretStoreTests`. *Was `impl` while the store was the Keychain and untestable; erratum E56 made it an ordinary file, and the suite asserts the round trip, the 7.4f refusal, `psk` absent from disk, and `isExcludedFromBackup` surviving a rewrite.* ⚠ **The row's wording lost "opt-in" under erratum E57 and #96**: persistence is now the default and the suite asserts *that* (`savesWithoutBeingAsked`), alongside the revocation this app owes and now provides (`forgettingOneLeavesTheOthersResolvable`). ⚠ **A real backup-and-restore is still unproven** and is issue #67's exit criterion |
 | RT-4 | injected | strongest mode negotiated, never plaintext, outcome surfaced | H1, D1 | n/a | — | impl |
 | RT-10 | injected | `session_resume` refused without a completed handshake | H1, D1 | n/a | — | impl |
 | RT-14 | static | §10.2 PSK identity; differs per connection; empty hint at TLS 1.2 | L12, H1, D1 | — | — | impl |
@@ -617,8 +617,33 @@ unresolvable `rid` returns `nil` (3.4c) rather than a warning a screen could
 ignore.
 
 **RT-15 — `impl`.**
-7.4's three conditions are structural: `PairingSecretStore.save` takes a `consent`
-parameter with no default, `pairings()` is what a settings screen lists, and
+⛔ **This paragraph said "7.4's three conditions are structural", and two things
+about that were wrong.** *Erratum E57 and issue #96, 25 August 2026.*
+
+The first is that the conditions are no longer three. E57 made 7.4b a SHOULD
+because opt-in, visible and individually revocable describes **screens**, which
+`RV` §1.3 excludes; nothing about it is observable between peers. This application
+**declines the opt-in half** — a pairing that completes is kept, because the
+consent gate defaulted shut, the primary pairing screen never offered it, and the
+24 August integration test consequently found the phone holding nothing at the end
+of a working handshake.
+
+⛔ **The second is that one of the three was never actually met.** *Individually
+revocable* had no user-facing existence at all: `pairings()` and `revoke(_:)` were
+written under D7, were correct, and **had no caller in the application** — the
+`RendezvousTeardownTests` shape, where a method is proved and its absence from the
+wiring is not. It was structural in the store and absent from the product, and
+this row asserted it as met. It is met now, by `RememberedStudiosView` reached from
+B3, and by B2's *Forget this Studio* at the moment the user learns the pairing was
+kept.
+
+⚠ **Which leaves this app on the right side of E57's sharp edge, on purpose.** What
+E57 removes is any requirement that a means of revoking *exists*, and 7.4a gives a
+persisted pairing **no expiry** — so a conformant peer may hold a pairing its user
+can neither see nor end. Declining opt-in is what makes keeping the other half
+non-negotiable here.
+
+What remains structural: `pairings()` is what a settings screen lists, and
 `revoke(_:)` deletes the item. 7.4f is the library's predicate — `save` refuses a
 code whose `mu` exceeded 1 rather than re-reading `mu` — and that refusal is
 asserted in `make test-core`. ⚠ **Erratum E56, 25 August 2026 — the store is no
@@ -627,7 +652,9 @@ could not be tested, because `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`
 behaves differently on a simulator. That class was also **unreadable while the
 phone was locked**, which is one of the two failures E56 was raised over. The
 `PRK` now lives in a file this app owns with `isExcludedFromBackup` set, and
-`PairingSecretStoreTests` asserts the round trip, the consent gate, the 7.4f
+`PairingSecretStoreTests` asserts the round trip, **that a completed pairing is
+written without being asked for**, that forgetting one leaves the others
+resolvable and takes the forgotten one out of 3.4b's identity table, the 7.4f
 refusal, that no `psk` reaches the disk, and that the backup-exclusion flag
 survives a rewrite. ⛔ **What is still not asserted** is the property itself — a
 pairing does not ride a backup onto a second phone — which needs a device and a
@@ -1519,6 +1546,7 @@ is a finding rather than a shrug.
 | **E19** | `CONF` 4.4 (1) | The CT-S4 assertion no longer lists `arm`; our test says so. |
 | **E24** | `RV` 4.4a2 | Confirms the build-date test this application already had is sufficient. |
 | **E26** | `RV` 7.4h | A persisted pairing now keeps the network **name**, and has nowhere to put a passphrase. |
+| **E57** | `RV` 7.4b | **Adopted 25 August 2026.** 7.4b becomes a SHOULD. This app declines *opt-in* and keeps *visible* and *individually revocable* — see RT-15 and §7.4 below. ⚠ Read with **E56**: after the two of them nothing normative protects a persisted `PRK`. |
 
 ### E28 — imported frames, and why it is a type rather than a rule
 
@@ -1644,6 +1672,36 @@ which is the outcome a decision-erratum should have.
 a later change that looked reasonable cannot fill one in. It is a hint offered to
 the user, never an instruction: 6a is unchanged, this peer does not join a network
 on its own, and holding no passphrase it could not.
+
+**E57 — 7.4b becomes a SHOULD, and this application takes the decision it hands
+back.** *25 August 2026, the protocol owner.* Opt-in, visible and individually
+revocable is a statement about screens, and `RV` §1.3 already excludes those; two
+peers differing on it produce byte-identical traffic. So the clause was a product
+requirement wearing a protocol's clothes, and E57 hands the decision to the
+application. ⛔ **This application declines *opt-in*.** A pairing that completes is
+kept, and the user forgets it afterwards — issue #96, and the reason is measured
+rather than aesthetic: the gate defaulted shut, the primary pairing screen never
+offered it, and on 24 August the phone reached the end of a working handshake
+holding nothing, so `RV` §3's reconnection had nothing to resolve against and
+requirement (a) was unreachable through the product however well the protocol
+performed.
+
+⛔ **What is kept, and it was not being met before.** *Visible* and *individually
+revocable* now exist as screens — `RememberedStudiosView` from B3, and B2's
+*Forget this Studio* at the moment the pairing is reported. Until #96 they existed
+only as `pairings()` and `revoke(_:)` with no caller, which this document recorded
+as conformance. ⚠ **Read E57 with E56**: after the two, nothing normative protects
+a persisted `PRK` — not where it is kept, and not that a user can see or remove
+it. Keeping the second half is therefore a choice this application makes, and the
+one that makes the first choice defensible.
+
+⚠ **7.4c, 7.4d and 7.4f are unchanged MUSTs and are unchanged here.** 7.4f still
+refuses a `mu > 1` pairing outright through the library's predicate; 7.4d still
+erases on revocation with no soft delete; and **7.4c got its first production
+caller in the same change** — `bind(sessionId:toCounterpart:)` was written under
+D7 and never called, so no persisted pairing had ever recorded the counterpart it
+was scoped to. It is bound now on `hello`, inside the authenticated channel, which
+is where 7.6b first discloses `Peer.id`.
 
 **E19 — CT-S4 assertion 1.** The assertion listed `arm`, and 7.3b forbids a
 hostless bundle containing one. Our test of that refusal is unchanged and still

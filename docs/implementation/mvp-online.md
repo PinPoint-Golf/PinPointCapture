@@ -80,7 +80,7 @@ Both halves landed the same evening:
 
 ⚠ **Discovery failure is still not an error** (3.6a), and `ReconnectCoordinator` says so in its own header. On a network where multicast is dropped the device falls back to the code, which is why 2a makes that path REQUIRED.
 
-### ⛔ 2.2a — and none of it is reachable yet
+### ✅ 2.2a — resolved 25 August 2026: the phone remembers by default
 
 The integration test on 24 August **aborted before it could exercise any of the above**, and the reason is not in the reconnect code, which behaved as designed. **It was never given a pairing to work with.**
 
@@ -88,9 +88,18 @@ The integration test on 24 August **aborted before it could exercise any of the 
 
 ⚠ **The constraint underneath is real.** At scan time the code has not been read, `mu` is unknown, and `RV` 7.4f forbids offering persistence that might then be refused. So consent cannot be asked *before* the scan — it has to come after, as Studio already does.
 
-⛔ **The UX that is there now is not the answer and is to be replaced rather than patched.** This is a **design** task, taken together, and the first thing to check is [the design handoff](../design/mockup%20v1/README.md): seventeen screens are specified there, B2 is the pairing view, and its copy is treated as decisions rather than suggestions. If it has a position on where persistence consent sits, that is the starting point — and if it has none, that absence is worth knowing before anything is drawn.
+✅ **Answered by reversing the default** — Mark, 25 August 2026 (issue #96). **The stance is to remember; forgetting is the deliberate action.** The consent question disappears from the flow entirely, which also dissolves the 7.4f tension above rather than working around it: nothing is promised before the scan, and B2 *states* the outcome afterwards, when `mu` has been read.
 
-**Until then requirement (a) is mechanism-complete and journey-incomplete**, and the demo's step 7 cannot pass.
+What landed:
+
+- **`PairingSecretStore.save` no longer takes a `consent` flag**, and `StoreError.consentNotGiven` is gone. A pairing that completes is written. ⛔ 7.4f is untouched — a `mu > 1` code is still refused outright, through the library's own predicate.
+- **B2 gained a settled state.** The phone says the connection worked and what became of the pairing, in three sentences for three outcomes — remembered, not remembered because the code pairs several devices, not remembered because the store could not be written. ⚠ The last of those used to be a `try?`: a phone could report a remembered Studio while holding nothing.
+- **B3a — Remembered Studios**, reached from the B3 settings list. `pairings()` and `revoke(_:)` had been correct and callerless since D7, so `RV` 7.4b's *individually revocable* had never actually been offered.
+- **7.4c binds for the first time.** `bind(sessionId:toCounterpart:)` also had no caller; it now runs on `hello`, inside the authenticated channel.
+
+⚠ **The specification moved the same day and in the same direction.** [Erratum E57](../../../libppcp/docs/specification/ppcp-rv.md) made `RV` 7.4b a **SHOULD**, on the reasoning that opt-in/visible/revocable describes screens and §1.3 already excludes those. So declining the opt-in half is a decision this application is entitled to take, and it is recorded as one in [the conformance document](../conformance/ppcp-conformance.md). ⛔ E57 also removes any requirement that a means of revoking *exists* — which is exactly why B3a is part of this change rather than a follow-up.
+
+⛔ **Requirement (a) is still journey-incomplete until a phone proves it.** The mechanism is now reachable end to end and no unit test in this target can show that: the 24 August defect was a missing call site, and `RendezvousTeardownTests` explains at length why a suite cannot see one. What closes it is the run — pair, kill the app, reopen, reach Studio with no code — and until that happens the demo's step 7 is unproven rather than passing.
 
 ### 2.3 What each repository owes
 

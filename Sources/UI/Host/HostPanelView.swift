@@ -47,6 +47,17 @@ public struct HostPanelView: View {
     private let measuredMethod: MeasuredCapability.Method?
     /// A8's permanent route. B3 is the app's settings sheet.
     private let onOpenMicToBallDistance: (() -> Void)?
+    /// ⛔ `RV` 7.4b's *individually revocable* — B3a. The list, for the several-
+    /// Studios case; ``rememberedHostName`` is the one-tap route for the single
+    /// one that a golfer actually has.
+    private let onOpenRememberedStudios: (() -> Void)?
+    /// The name of the pairing behind **this** link, when one is held.
+    ///
+    /// ⛔ `nil` where the host is connected but not remembered — a `mu > 1` code
+    /// (7.4f), or a save that failed. Offering to forget what was never kept
+    /// would be a lie, and a row that is sometimes a lie is worse than no row.
+    private let rememberedHostName: String?
+    private let onForgetHost: (() -> Void)?
 
     // MARK: Reviewer controls
 
@@ -74,6 +85,9 @@ public struct HostPanelView: View {
     private let onExportDiagnostics: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// ⛔ Forgetting is confirmed. It is a destructive act sitting one tap from
+    /// the chip a golfer taps to check on the host.
+    @State private var isConfirmingForget = false
 
     public init(
         link: HostLink,
@@ -91,10 +105,16 @@ public struct HostPanelView: View {
         onPrimaryAction: @escaping () -> Void,
         onOpenConnectionLog: (() -> Void)? = nil,
         onExportDiagnostics: (() -> Void)? = nil,
-        onOpenMicToBallDistance: (() -> Void)? = nil
+        onOpenMicToBallDistance: (() -> Void)? = nil,
+        onOpenRememberedStudios: (() -> Void)? = nil,
+        rememberedHostName: String? = nil,
+        onForgetHost: (() -> Void)? = nil
     ) {
         self.measuredMethod = measuredMethod
         self.onOpenMicToBallDistance = onOpenMicToBallDistance
+        self.onOpenRememberedStudios = onOpenRememberedStudios
+        self.rememberedHostName = rememberedHostName
+        self.onForgetHost = onForgetHost
         self.link = link
         self.capture = capture
         self.queue = queue
@@ -199,6 +219,37 @@ public struct HostPanelView: View {
             .padding(.vertical, PPMetrics.itemGap / 2)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Text(spokenStatus))
+
+            // ⛔ **Forget belongs where the Studio is named** (Mark, 25 August
+            // 2026). It was four taps away in the settings list below, which is
+            // built for the several-Studios case; one Studio is the case every
+            // golfer has. Same card as the name, its own row rather than inside
+            // the status readout — that block is a single combined
+            // accessibility element and a button inside it would be unreachable.
+            if let rememberedHostName, let onForgetHost {
+                Button(role: .destructive) {
+                    isConfirmingForget = true
+                } label: {
+                    Text("Forget \(rememberedHostName)")
+                        .font(.ppRowLabel)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: PPMetrics.Size.minimumTapTarget)
+                .confirmationDialog("Forget \(rememberedHostName)?",
+                                    isPresented: $isConfirmingForget,
+                                    titleVisibility: .visible) {
+                    Button("Forget", role: .destructive, action: onForgetHost)
+                    Button("Keep", role: .cancel) { }
+                } message: {
+                    // ⚠ 7.4d — the pairing ends, not the session that is up.
+                    Text("You stay connected. The next session will need a new "
+                         + "pairing code from Studio.")
+                }
+            }
+        } footer: {
+            if rememberedHostName != nil {
+                Text("Remembered, so the next session needs no code.")
+            }
         }
     }
 
@@ -385,6 +436,15 @@ public struct HostPanelView: View {
             // navigated to it.
             if let onOpenMicToBallDistance {
                 HostDisclosureRow(title: "Phone to ball", action: onOpenMicToBallDistance)
+            }
+
+            // ⛔ A fourth row, where `mockup v1` specifies three — a deliberate
+            // departure. Forgetting a Studio is the deliberate act that pays for
+            // remembering by default (#96), and a control nobody can find is not
+            // one. `RV` 7.4b, kept as a choice after erratum E57 made it a SHOULD.
+            if let onOpenRememberedStudios {
+                HostDisclosureRow(title: "Remembered Studios",
+                                  action: onOpenRememberedStudios)
             }
 
             // ⛔ Disabled and *told*. These were live rows wired to `{}` — a

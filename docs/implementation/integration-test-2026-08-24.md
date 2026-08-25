@@ -41,6 +41,12 @@
 
 ## 4. Recommended shape
 
+> ✅ **Resolved 25 August 2026 — and not by the shape recommended below.** Mark's decision (issue #96): **the default stance is to remember, and forgetting is the deliberate action.** So the phone is not asked after the pairing either — it is told. B2 gained a settled state that reports what became of the pairing, and a *Remembered Studios* screen under B3 is where a Studio is forgotten. Findings **1** and **2** are closed; finding **3** is not. ⚠ The specification moved with it: erratum E57 made `RV` 7.4b a SHOULD, so declining its opt-in half is the application's decision to take. See [`mvp-online.md` §2.2a](mvp-online.md) and [the conformance document](../conformance/ppcp-conformance.md).
+>
+> ⛔ **The abort itself is not closed.** The journey below has still never run to completion on a phone; what changed is that it now can.
+
+The shape recommended on the day, kept as the record of what was thought before the decision:
+
 **Ask after the pairing succeeds, not before it starts** — which is what PinPointStudio already does, and it resolves the 7.4f tension because `mu` is known by then. A "Remember this Studio" affordance on the connected-host row, plus a confirmation that the connection worked, plus a way out of the scanner. That also makes the two ends symmetrical, which they currently are not: **the host asks afterwards and keeps the button; the phone asks beforehand and the offer vanishes with the screen.**
 
 ## 5. Fixed in passing

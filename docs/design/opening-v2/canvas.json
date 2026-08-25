@@ -1,0 +1,150 @@
+{
+  "pages": [
+    {
+      "id": "page-1",
+      "name": "The flow"
+    },
+    {
+      "id": "page-2",
+      "name": "First run"
+    },
+    {
+      "id": "page-3",
+      "name": "Every run after"
+    },
+    {
+      "id": "page-4",
+      "name": "As built"
+    }
+  ],
+  "artboards": [
+    {
+      "file": "Flow.dc.html",
+      "page": "page-1",
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 760,
+      "title": "Seven become three, then none"
+    },
+    {
+      "file": "Welcome.dc.html",
+      "page": "page-2",
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "1 · Welcome"
+    },
+    {
+      "file": "Permissions.dc.html",
+      "page": "page-2",
+      "x": 470,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "2 · What it needs"
+    },
+    {
+      "file": "Framing.dc.html",
+      "page": "page-2",
+      "x": 1410,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "4 · Now set it down"
+    },
+    {
+      "file": "Main.dc.html",
+      "page": "page-3",
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Opening — every run after"
+    },
+    {
+      "file": "Connect.dc.html",
+      "page": "page-3",
+      "x": 1410,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Connect a Studio"
+    },
+    {
+      "file": "Pairing.dc.html",
+      "page": "page-4",
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Pairing — settled"
+    },
+    {
+      "file": "Remembered.dc.html",
+      "page": "page-4",
+      "x": 470,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Remembered Studios"
+    },
+    {
+      "file": "HostPanel.dc.html",
+      "page": "page-3",
+      "x": 470,
+      "y": 0,
+      "w": 390,
+      "h": 1180,
+      "title": "Host panel — full length"
+    },
+    {
+      "file": "Pair.dc.html",
+      "page": "page-2",
+      "x": 940,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "3 · Pair my phone"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "decisions",
+      "page": "page-1",
+      "x": 1280,
+      "y": 0,
+      "w": 300,
+      "text": "Three things I decided rather than asked, and would happily lose:\n\n1. A3 goes entirely. The app browses; asking a golfer to declare studio-or-alone is asking for something it finds out a second later.\n\n2. A1 says CLAIMED, not measured — nothing has been measured at that point. The measured number appears on screen 3, where it is true.\n\n3. Arm is live in all four host states. That is the colour rule made structural: capture never waits for a host."
+    },
+    {
+      "id": "first-run",
+      "page": "page-2",
+      "x": 1880,
+      "y": 0,
+      "w": 300,
+      "text": "FIRST RUN — four screens, and the order is the point\n\nPAIR BEFORE FRAMING. The code is on the Studio screen, so scanning it means carrying the phone to the Mac. Framing first meant clamping it to a tripod, getting the ball in shot, then picking it up again and losing all of it. Pair while you are still standing at the Mac; then walk over and set it down.\n\nPermissions stay second because pairing needs the camera and the local network, so they cannot come after it.\n\nWelcome lost its secondary action. 'Pair my phone' as a shortcut from screen 1 would jump past permissions to a screen that cannot pair — it is a step now, not a branch. (The live app's A1 button is renamed to that wording all the same.)\n\nFlip the State tweak above screen 4 for good vs marginal light."
+    },
+    {
+      "id": "every-run",
+      "page": "page-3",
+      "x": 1880,
+      "y": 0,
+      "w": 320,
+      "text": "EVERY RUN AFTER — no screens at all\n\nThe opening screen is the capture screen. The host chip carries the reconnection state the app already publishes and has never shown: looking, connected, nothing held, could not reach.\n\nFlip the State tweak above the first artboard to step through all four. The caption under Arm changes and the button does not — capture never waits for a host.\n\nFORGET LIVES ON THE NAME. The chip names the Studio, the panel is titled with it, so the Forget action sits on that card — one tap from the chip. The list below it is for the several-Studios case (yours, testing); a golfer has one, and it should not cost four taps through a settings list built for plurals.\n\nThe panel artboard is drawn full-length; on the phone the settings list is below the fold."
+    },
+    {
+      "id": "as-built",
+      "page": "page-4",
+      "x": 940,
+      "y": 0,
+      "w": 320,
+      "text": "These two are as built on 25 August, not proposals — they are here so the connect path reads end to end.\n\nThe change worth noticing: B2 no longer vanishes when the handshake lands. It states what became of the pairing, and carries the way back out of it.\n\nRemembered Studios is the screen that pays for remembering by default."
+    }
+  ],
+  "launch": {
+    "view": "canvas",
+    "page": "page-1"
+  }
+}

@@ -236,16 +236,48 @@ public actor RendezvousCoordinator {
 
     // MARK: Persistence (7.4)
 
-    /// 7.4a/7.4b — persists `PRK` **only** with the user's explicit agreement, and
-    /// ⛔ never from a `mu > 1` code (7.4f).
-    public func persistPairing(consent: Bool) throws {
-        guard let code, let keys else { return }
-        try PairingSecretStore.save(code: code, keys: keys,
-                                    displayName: code.displayName, consent: consent)
+    /// What became of the pairing when the link came up.
+    ///
+    /// ⛔ **Three answers and not a `Bool`, because the screen says a different
+    /// sentence for each** — and because the third one used to be invisible. The
+    /// call site swallowed a failed save in a `try?`, so a phone could report a
+    /// remembered Studio while holding nothing, and then find nothing to
+    /// reconnect with. That is the 24 August abort with a friendlier face on it.
+    public enum PersistOutcome: Sendable, Equatable {
+        case remembered
+        /// ⛔ 7.4f — the code pairs several devices, so its `PRK` reached all of
+        /// them and the pairing is session-scoped by construction. Not a failure
+        /// to work around and not a setting: there is nothing to keep.
+        case notRememberedMultiUseCode
+        /// The store could not be written. ⚠ Named rather than absorbed into
+        /// "not remembered": the remedy is different and so is the sentence.
+        case couldNotWrite(String)
     }
 
-    /// Whether the screen may even offer persistence. ⛔ `false` for a multi-use
-    /// code: the offer itself would be a lie.
+    /// 7.4a/7.4b — persists `PRK` for a pairing that completed, and ⛔ never from
+    /// a `mu > 1` code (7.4f).
+    ///
+    /// ⚠ **No `consent` parameter as of 25 August 2026** (#96, and `RV` 7.4b is a
+    /// SHOULD since erratum E57). Remembering is the default stance; forgetting
+    /// is a deliberate act on a screen, which is `PairingSecretStore.revoke`.
+    @discardableResult
+    public func persistPairing() -> PersistOutcome {
+        guard let code, let keys else {
+            return .couldNotWrite("there was no pairing to keep")
+        }
+        do {
+            try PairingSecretStore.save(code: code, keys: keys,
+                                        displayName: code.displayName)
+            return .remembered
+        } catch PairingSecretStore.StoreError.multiUseCodeMayNotBePersisted {
+            return .notRememberedMultiUseCode
+        } catch {
+            return .couldNotWrite(String(describing: error))
+        }
+    }
+
+    /// Whether this pairing is one that can be kept at all. ⛔ `false` for a
+    /// multi-use code (7.4f).
     public var mayOfferPersistence: Bool { code?.mayPersistPairing ?? false }
 
     /// 4.4c / 7.2d — the payload is not retained after the pairing it established

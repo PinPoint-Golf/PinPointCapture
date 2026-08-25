@@ -17,6 +17,15 @@
 //  is beside it, for a simulator and for a code that arrives as a link. There is
 //  no document picker anywhere in this application.
 //
+//  ⛔ **This screen says NOTHING about remembering the Studio, in either
+//  direction, and that is deliberate** (#96, 25 August 2026). It carried a
+//  *Remember this Studio* toggle until then, and the toggle could not be honest:
+//  at the moment it is shown the code has not been decoded, so `mu` is unknown,
+//  and 7.4f may yet forbid keeping the pairing at all. A promise made before the
+//  scan is a promise the scan can invalidate. The sentence moved to B2, where the
+//  pairing exists and `mu` has been read — and where it is a statement of what
+//  happened rather than an offer.
+//
 //  ⚠ **`dn` is untrusted display text** (4.4d): it is shown before anything has
 //  been authenticated, so it is escaped and truncated by `PpcpPairingCode` and is
 //  never used as an identifier or a trust signal. The screen says "the code says"
@@ -35,10 +44,6 @@ public struct ScanPairingCodeView: View {
     private let onCancel: () -> Void
     /// The failure to show, if a previous attempt produced one.
     private let failure: Failure?
-    /// 7.4b — offered only where 7.4f permits it.
-    private let mayPersist: Bool
-    @Binding private var persistPairing: Bool
-
     @State private var typed = ""
     @State private var cameraAuthorised = AVCaptureDevice
         .authorizationStatus(for: .video) == .authorized
@@ -99,13 +104,9 @@ public struct ScanPairingCodeView: View {
     }
 
     public init(failure: Failure? = nil,
-                mayPersist: Bool = false,
-                persistPairing: Binding<Bool> = .constant(false),
                 onCode: @escaping (String) -> Void,
                 onCancel: @escaping () -> Void) {
         self.failure = failure
-        self.mayPersist = mayPersist
-        _persistPairing = persistPairing
         self.onCode = onCode
         self.onCancel = onCancel
     }
@@ -155,27 +156,6 @@ public struct ScanPairingCodeView: View {
                 EyebrowLabel("Or paste it")
             }
 
-            if mayPersist {
-                Section {
-                    Toggle("Remember this Studio", isOn: $persistPairing)
-                } footer: {
-                    // 7.4b — visible, and the cost stated rather than assumed away
-                    // (§7.4's own words).
-                    Text("Reconnects next time without a new code. Anyone with this "
-                         + "phone's storage keeps that access until you remove it, "
-                         + "which you can do at any time in Settings.")
-                }
-            } else {
-                Section {
-                    // ⛔ 7.4f. The offer itself would be a lie for a multi-use code.
-                    Text("This code can pair several devices, so the connection lasts "
-                         + "for this session only.")
-                        .font(.ppSupporting)
-                        .foregroundStyle(Color(.secondaryLabel))
-                }
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -280,7 +260,6 @@ struct PairingCodeScannerView: UIViewControllerRepresentable {
 #Preview("B1a · Scan the pairing code") {
     NavigationStack {
         ScanPairingCodeView(failure: .needsANewerApplication,
-                            mayPersist: true,
                             onCode: { _ in }, onCancel: {})
     }
     .preferredColorScheme(.dark)

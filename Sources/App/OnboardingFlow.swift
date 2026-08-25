@@ -1,16 +1,28 @@
 //  OnboardingFlow.swift
-//  A1–A7 as a linear push stack.
+//  Four screens as a linear push stack — A1, A4, B1, A6.
+//
+//  ⛔ **The order follows where the golfer is standing** (Mark, 25 August 2026):
+//  pair at the Mac, then walk over and set the phone down. See `OnboardingStep`
+//  for why framing used to be third and why that was wrong.
 //
 //  ⚠ There is no skip on A4 or A6. Both have a "carry on anyway" out instead: a
 //  refused permission and a marginal light reading are decisions, not blocks.
+//  B1 does have one, and it means something different — see `PairStepScreen`.
 
 import SwiftUI
 import CaptureCore
 
 struct OnboardingFlow: View {
     @Bindable var model: AppModel
-    /// Presents B1 modally, per the handoff: B1 is modal from A7.
+    /// Presents B1 modally — still used by A1's *Pair my phone*, which is a
+    /// shortcut rather than the sequence.
     let onConnectHost: () -> Void
+    /// ⛔ B1a directly, not B1. The pairing STEP already lists the choices, so
+    /// routing it through another list would be a screen showing itself.
+    let onScanPairingCode: () -> Void
+    /// The host, once a link has settled — what the pairing step reports.
+    let hostName: String?
+    let isPaired: Bool
     /// A8. ⚠ Onboarding runs its own `NavigationStack` over `OnboardingStep`, so
     /// it cannot push an `AppRoute` — the shell presents it instead.
     let onOpenMicToBallDistance: () -> Void
@@ -42,16 +54,6 @@ struct OnboardingFlow: View {
                           onGetStarted: { advance(from: .welcome) },
                           onHavePairingCode: onConnectHost)
 
-        case .howItWorks:
-            HowItWorksScreen(onContinue: { advance(from: .howItWorks) })
-
-        case .hostOrStandalone:
-            HostOrStandaloneScreen(
-                selection: model.captureContext,
-                onSelect: { model.captureContext = $0 },
-                onContinue: { advance(from: .hostOrStandalone) }
-            )
-
         case .permissions:
             PermissionsScreen(
                 permissions: model.permissions,
@@ -67,14 +69,28 @@ struct OnboardingFlow: View {
                 await model.requestCapturePermissions()
             }
 
-        case .placement:
-            PlacementGuidanceScreen(onCheckFraming: { advance(from: .placement) })
+        case .pairing:
+            PairStepScreen(
+                hostName: hostName,
+                isPaired: isPaired,
+                onScanPairingCode: onScanPairingCode,
+                onContinue: { advance(from: .pairing) },
+                onSkip: { advance(from: .pairing) }
+            )
 
         case .framingCheck:
+            // ⛔ **The last screen, so this is where onboarding ends.** It used
+            // to advance to A7, whose five numbers are a receipt shown on a
+            // screen a golfer immediately leaves; they live on the capture
+            // screen and in the host panel now, where they can be acted on.
             FramingCheckScreen(
                 framing: model.framing,
                 onUse120fps: dropTo120,
-                onArm: { advance(from: .framingCheck) }
+                onArm: {
+                    model.hasCompletedOnboarding = true
+                    model.arm()
+                    onFinish()
+                }
             )
             .task {
                 // Warm the session so A6 has something to show and A7's measured
@@ -83,23 +99,6 @@ struct OnboardingFlow: View {
                 await model.runSelfTest()
             }
 
-        case .ready:
-            ReadyToCaptureScreen(
-                capability: model.capability,
-                storage: model.storage,
-                // ⛔ Was a hardcoded `3.0`. The clip window is the detector's,
-                // and it is 4.5 s — pre-roll plus post-roll.
-                retainedSecondsPerShot: DetectAndMint.Configuration
-                    .defaultClipWindowSeconds,
-                micToBall: model.micToBallDistance,
-                onStartSession: {
-                    model.hasCompletedOnboarding = true
-                    model.arm()
-                    onFinish()
-                },
-                onConnectHost: onConnectHost,
-                onOpenMicToBallDistance: onOpenMicToBallDistance
-            )
         }
     }
 

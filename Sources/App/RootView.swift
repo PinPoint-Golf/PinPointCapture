@@ -20,6 +20,9 @@ enum AppRoute: Hashable {
     /// A8 — the microphone-to-ball distance (D7). ⚠ A push rather than a sheet:
     /// it is a setting a golfer returns to, not a decision blocking a flow.
     case micToBallDistance
+    /// B3a — `RV` 7.4b's revocation list (#96). ⚠ A push for the same reason A8
+    /// is one: a setting, returned to, not a step in a flow.
+    case rememberedStudios
 }
 
 /// Modally presented screens.
@@ -68,8 +71,24 @@ struct RootView: View {
     /// failure and not an error — it is the sentence that makes "left in the
     /// user's control" true rather than merely technically so.
     @State private var leftNetwork: String?
-    /// 7.4b — persistence is opt-in, so the toggle starts **off**.
-    @State private var persistPairing = false
+    /// ⛔ **What became of the pairing, and the sentence B2 shows for it** (#96).
+    /// `nil` until the handshake settles — a screen that reported on a pairing
+    /// before one existed would be guessing. `RootView` maps the platform
+    /// outcome onto the UI one; `PairingView` never sees `RendezvousCoordinator`.
+    @State private var remembered: PairingView.Remembered?
+    /// The Session whose pairing was just written, so B2's *Forget* has something
+    /// to revoke. ⚠ Not the code and not the keys — `RV` 4.4c releases those.
+    @State private var rememberedSessionId: String?
+    /// B3a's list. ⚠ Re-read from the store rather than mutated in place: the
+    /// store is the truth and a stale screen here is a screen that offers to
+    /// forget something already gone.
+    @State private var rememberedStudios: [StoredPairing] = []
+    /// The stored pairing behind the link that is currently up, if there is one
+    /// — what puts *Forget this Studio* on B3's status card beside its name.
+    ///
+    /// ⚠ Read when the panel opens rather than computed per render: it is a file
+    /// read, and SwiftUI would repeat it on every layout pass.
+    @State private var rememberedForCurrentLink: StoredPairing?
     private let rendezvous = RendezvousCoordinator()
     /// Held only between the consent sheet and the resumed walk. ⛔ `RV` 4.4c —
     /// the payload is not retained after the pairing it establishes has ended.
@@ -147,6 +166,14 @@ struct RootView: View {
         OnboardingFlow(
             model: model,
             onConnectHost: { sheet = .connectHost },
+            // ⛔ Straight to B1a. The pairing step is B1 for this purpose, so
+            // sending it through B1 again would be a screen presenting itself.
+            onScanPairingCode: { sheet = .scanPairingCode(failure: nil) },
+            // ⚠ Named from the LINK, not from the pairing store: this reports
+            // what is connected right now, and a remembered Studio that is not
+            // on the network is neither.
+            hostName: model.hostLink.hostName,
+            isPaired: model.link?.hasSettled == true,
             onOpenMicToBallDistance: { sheet = .micToBallDistance },
             onFinish: {}
         )
@@ -226,6 +253,14 @@ struct RootView: View {
                 onOpenMicToBallDistance: { path.append(.micToBallDistance) }
             )
 
+        case .rememberedStudios:
+            // ⛔ B3a — `RV` 7.4b's *individually revocable*. `pairings()` and
+            // `revoke(_:)` were written under D7 and had no caller until #96.
+            RememberedStudiosView(
+                pairings: rememberedStudios,
+                onForget: { forget(sessionId: $0.sessionId) },
+                onDone: { path.removeLast() })
+
         case .micToBallDistance:
             // ⚠ 8.1d — the setting Mark asked for on 23 August 2026. It reaches
             // every Candidate's `tof_correction` through `CandidateFactory`, and
@@ -282,8 +317,27 @@ struct RootView: View {
                     onOpenMicToBallDistance: {
                         self.sheet = nil
                         path.append(.micToBallDistance)
+                    },
+                    // ⛔ 7.4b — the several-Studios case. The single one a golfer
+                    // actually has is the row below, on the status card.
+                    onOpenRememberedStudios: {
+                        self.sheet = nil
+                        reloadRememberedStudios()
+                        path.append(.rememberedStudios)
+                    },
+                    // ⛔ **Forget, where the Studio is named** (Mark, 25 August
+                    // 2026). 4.4d — untrusted display text, so it names a row and
+                    // is never an identifier; the identity is the `sessionId`.
+                    rememberedHostName: rememberedForCurrentLink
+                        .map { $0.displayName ?? "this Studio" },
+                    onForgetHost: rememberedForCurrentLink.map { held in
+                        {
+                            forget(sessionId: held.sessionId)
+                            rememberedForCurrentLink = nil
+                        }
                     }
                 )
+                .task { refreshRememberedForCurrentLink() }
             }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
@@ -302,6 +356,14 @@ struct RootView: View {
                 onCancel: { self.sheet = nil },
                 onConnectToDiscoveredHost: {},
                 onEnterCode: { self.sheet = .scanPairingCode(failure: nil) },
+                // ⛔ The list belongs here too: this is the screen a golfer
+                // reaches when the Studio they expected has not appeared.
+                // ⚠ Offered only when something is held — a list of nothing is
+                // not a destination.
+                onOpenRememberedStudios: rememberedStudios.isEmpty ? nil : {
+                    self.sheet = nil
+                    path.append(.rememberedStudios)
+                },
                 onCode: { uri in Task { await scan(uri) } },
                 onUseCable: {},
                 onCaptureWithoutHost: { self.sheet = nil }
@@ -309,12 +371,10 @@ struct RootView: View {
 
         case .scanPairingCode(let failure):
             NavigationStack {
+                // ⛔ The screen says nothing about remembering: `mu` is unknown
+                // until the code is decoded, so B2 carries that sentence (#96).
                 ScanPairingCodeView(
                     failure: failure,
-                    // ⛔ 7.4f — the offer is withheld for a `mu > 1` code rather
-                    // than shown and then refused.
-                    mayPersist: persistPairing || failure == nil,
-                    persistPairing: $persistPairing,
                     onCode: { uri in Task { await scan(uri) } },
                     onCancel: { self.sheet = nil })
             }
@@ -354,7 +414,19 @@ struct RootView: View {
                     viewpoint: model.framing.viewpoint,
                     isCameraLocked: model.captureStatus.state != .cold,
                     failure: model.hostLinkError,
+                    remembered: remembered,
+                    // ⛔ **Cancel and Done are the same button and NOT the same
+                    // act.** While the handshake is running this ends the session;
+                    // once it has settled the user is finished with the screen and
+                    // the link is the thing they came for. Tearing it down on
+                    // *Done* would disconnect the Studio they just paired with.
                     onCancel: {
+                        guard remembered == nil else {
+                            self.sheet = nil
+                            remembered = nil
+                            rememberedSessionId = nil
+                            return
+                        }
                         self.sheet = nil
                         Task {
                             await model.disconnect(.cancelled)
@@ -374,6 +446,15 @@ struct RootView: View {
                                 leftNetwork = left
                             }
                         }
+                    },
+                    // ⛔ 7.4b — offered at the one moment the user is certain to
+                    // learn the Studio was kept. ⚠ It revokes the pairing and
+                    // leaves the *link* alone: this session is already up and
+                    // forgetting is about the next one.
+                    onForget: {
+                        guard let rememberedSessionId else { return }
+                        forget(sessionId: rememberedSessionId)
+                        remembered = .forgotten
                     })
             }
             .interactiveDismissDisabled()
@@ -403,6 +484,51 @@ struct RootView: View {
 
     // MARK: Rendezvous (RV §4, §6, §7.4)
 
+    /// The platform outcome as B2's sentence. ⛔ `RendezvousCoordinator.PersistOutcome`
+    /// does not cross into `Sources/UI`; this is the seam.
+    private static func remembered(from outcome: RendezvousCoordinator.PersistOutcome)
+        -> PairingView.Remembered {
+        switch outcome {
+        case .remembered: .remembered
+        case .notRememberedMultiUseCode: .multiUseCode
+        case .couldNotWrite: .couldNotWrite
+        }
+    }
+
+    /// 7.4b/7.4d — revocation, honoured immediately by this side. ⛔ The bytes go;
+    /// there is no soft delete, and the other end's next handshake fails.
+    private func forget(sessionId: String) {
+        try? PairingSecretStore.revoke(sessionId: sessionId)
+        reloadRememberedStudios()
+    }
+
+    /// ⚠ Re-read rather than mutated. `PairingSecretStore` is the truth, and a
+    /// list held in a `@State` diverges from it the first time anything else
+    /// writes.
+    private func reloadRememberedStudios() {
+        rememberedStudios = (try? PairingSecretStore.pairings()) ?? []
+    }
+
+    /// Matches the live link to the pairing it was established from.
+    ///
+    /// ⛔ **`HostLinkSession.sessionId` IS the stored pairing's key on both
+    /// paths, and that is worth stating because 7.4e invites the opposite
+    /// assumption.** A scanned code stores under `code.sessionId` and connects
+    /// with it; `ReconnectCoordinator` hands back `ReconnectedHost.sessionId`,
+    /// documented as *the Session the pairing was established for* — the held
+    /// pairing's id, not a fresh one. 7.4e governs the `sid` **transmitted**
+    /// inside the channel, which this app never reuses: `PpcpTransport` draws a
+    /// fresh PSK identity per connection under 5.3a1.
+    private func refreshRememberedForCurrentLink() {
+        reloadRememberedStudios()
+        guard let sessionId = model.link?.sessionId else {
+            rememberedForCurrentLink = nil
+            return
+        }
+        rememberedForCurrentLink = rememberedStudios
+            .first { $0.sessionId == sessionId }
+    }
+
     /// The whole of `RV` §4.4 in one place: decode, expiry, the network, then the
     /// endpoints — in that order, because 4.3f puts the join **before** the walk.
     ///
@@ -410,8 +536,12 @@ struct RootView: View {
     private func scan(_ uri: String) async {
         switch await rendezvous.scan(uri) {
         case .connected:
-            // 7.4b — persisted only where the user asked and 7.4f permits.
-            try? await rendezvous.persistPairing(consent: persistPairing)
+            // ⛔ **Remembered by default as of 25 August 2026** (#96; `RV` 7.4b is
+            // a SHOULD since erratum E57). ⚠ The outcome is *kept*, not discarded
+            // into a `try?` as it was — a phone that reports a remembered Studio
+            // while holding nothing reconnects to nothing, which is precisely how
+            // the 24 August integration test failed.
+            let outcome = await rendezvous.persistPairing()
             // ⛔ **Take the link.** This is where the socket used to be dropped:
             // the state was set to `.pairing`, the sheet dismissed, and the
             // handshaken transport left for `endPairing` to close. Ownership now
@@ -425,8 +555,14 @@ struct RootView: View {
             await model.connect(transport: established.transport,
                                 sessionId: established.sessionId,
                                 hostDisplayName: established.hostDisplayName)
-            // Settled, or failed in place — B2 shows which.
-            if model.link?.hasSettled == true { sheet = nil }
+            // ⛔ **B2 stays up and says so.** It used to be dismissed here, so a
+            // successful pairing was silent and the only confirmation was on the
+            // other machine — the first of the 24 August UX findings. A failure
+            // still shows in place, which is why this is not an `else`.
+            if model.link?.hasSettled == true {
+                rememberedSessionId = established.sessionId
+                remembered = Self.remembered(from: outcome)
+            }
         case .needsANewerApplication:
             sheet = .scanPairingCode(failure: .needsANewerApplication)
         case .invalidCode:

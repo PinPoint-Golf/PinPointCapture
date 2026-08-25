@@ -104,16 +104,16 @@ public actor GuidedPairingCoordinator {
         await advertiser.window
     }
 
-    /// ⛔ 7.4b — consent, and it starts off. A pairing the user did not ask to
-    /// keep is one they cannot remember agreeing to.
+    /// ⛔ 7.4b — kept without asking, as the code path is (#96). 11.1a is the
+    /// reason there is no second policy here: from 11.6e onward a guided pairing
+    /// is indistinguishable from a scanned one.
     ///
     /// ⚠ 7.4f's `mu` predicate has no counterpart here and needs none: there is
     /// no code, so there is no multi-use code to refuse.
-    public func persist(displayName: String?, consent: Bool) throws {
+    public func persist(displayName: String?) throws {
         guard let pairing else { throw Failure.noPairingYet }
         try PairingSecretStore.save(guidedPairing: pairing,
-                                    displayName: displayName,
-                                    consent: consent)
+                                    displayName: displayName)
     }
 
     /// ⛔ **11.2b — the swap.** The peer that just accepted a bootstrap

@@ -39,6 +39,11 @@ public struct ConnectHostView: View {
     private let onCancel: () -> Void
     private let onConnectToDiscoveredHost: () -> Void
     private let onEnterCode: () -> Void
+    /// ⛔ B3a, reached from here as well as from the host panel. This is where a
+    /// golfer arrives when the Studio they expected has not appeared — so it is
+    /// where the list of the ones this phone holds belongs. `nil` where nothing
+    /// is held: a list of nothing is not a destination.
+    private let onOpenRememberedStudios: (() -> Void)?
     /// A code read by the reticle. ⚠ Same handler B1a uses — one rendezvous walk,
     /// not two.
     private let onCode: (String) -> Void
@@ -51,6 +56,7 @@ public struct ConnectHostView: View {
         onCancel: @escaping () -> Void,
         onConnectToDiscoveredHost: @escaping () -> Void = {},
         onEnterCode: @escaping () -> Void,
+        onOpenRememberedStudios: (() -> Void)? = nil,
         onCode: @escaping (String) -> Void = { _ in },
         onUseCable: @escaping () -> Void,
         onCaptureWithoutHost: @escaping () -> Void
@@ -60,6 +66,7 @@ public struct ConnectHostView: View {
         self.onCancel = onCancel
         self.onConnectToDiscoveredHost = onConnectToDiscoveredHost
         self.onEnterCode = onEnterCode
+        self.onOpenRememberedStudios = onOpenRememberedStudios
         self.onCode = onCode
         self.onUseCable = onUseCable
         self.onCaptureWithoutHost = onCaptureWithoutHost
@@ -99,6 +106,14 @@ public struct ConnectHostView: View {
                     systemImage: "cable.connector",
                     action: onUseCable
                 )
+                if let onOpenRememberedStudios {
+                    HostDisclosureRow(
+                        title: "Remembered Studios",
+                        detail: "The ones this phone can reconnect to",
+                        systemImage: "clock.arrow.circlepath",
+                        action: onOpenRememberedStudios
+                    )
+                }
             }
 
             Section {

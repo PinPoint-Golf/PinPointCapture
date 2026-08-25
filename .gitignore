@@ -39,3 +39,8 @@ tools/interop/ocrtext
 tools/interop/winid
 tools/interop/*-results.tsv
 tools/interop/*.log
+
+# The design canvas is a 2.2 MB generated file — the artboards with the whole
+# editor baked in — and rebuilds from the .dc.html sources beside it. Those are
+# the design; this is a build of it. See docs/design/opening-v2/README.md.
+docs/design/opening-v2/pinpoint-opening-flow.html

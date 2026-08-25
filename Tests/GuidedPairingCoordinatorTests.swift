@@ -23,7 +23,7 @@ struct GuidedPairingCoordinatorTests {
     func nothingBeforeThePairing() async throws {
         let coordinator = try GuidedPairingCoordinator()
         await #expect(throws: GuidedPairingCoordinator.Failure.noPairingYet) {
-            try await coordinator.persist(displayName: "Studio", consent: true)
+            try await coordinator.persist(displayName: "Studio")
         }
         await #expect(throws: GuidedPairingCoordinator.Failure.noPairingYet) {
             _ = try await coordinator.connectToHost(

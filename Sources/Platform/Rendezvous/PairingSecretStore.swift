@@ -41,12 +41,30 @@
 //  that code holds identical key material — `save` refuses it and takes the
 //  predicate from `ppcp_rv_may_persist` rather than re-deriving it.
 //
-//  ⚠ **7.4b — opt-in, visible, individually revocable.** The three are one
-//  requirement: a store that persisted by default, or that could not list what it
-//  held, or that could only be cleared wholesale, would meet none of it. Hence
-//  `save(_:consent:)`, `pairings()` and `revoke(_:)`.
+//  ⛔ **7.4b's three conditions were one requirement, and this store now keeps
+//  two of them** — *erratum E57, 25 August 2026, and Mark's decision the same
+//  day.* E57 made 7.4b a SHOULD on the reasoning that opt-in, visible and
+//  individually revocable is a statement about **screens**, which `RV` §1.3
+//  already excludes; two peers differing on it produce byte-identical traffic.
+//  So the choice is the application's to make, and it is made here:
 //
-//  Spec: `RV` §5.1c, §7.2b–d, §7.4, erratum E56. Plan D7.
+//    - ⛔ **Opt-in is declined.** A successful pairing is written, and `save` no
+//      longer takes a `consent` flag to refuse without. The reason is the 24
+//      August integration test: the consent gate defaulted shut, the primary
+//      pairing screen never offered it, and the phone reached the end of a
+//      working handshake holding nothing — so reconnection was unreachable
+//      however well §3 performed.
+//    - ✅ **Visible and individually revocable are kept, and are now real.**
+//      `pairings()` and `revoke(_:)` were both written under D7 and neither had
+//      a caller in the application until this change. That is what E57's sharp
+//      edge asks for: what it removes is any requirement that a means of
+//      revoking *exists*, and 7.4a gives a persisted pairing **no expiry**.
+//
+//  ⚠ **7.4c, 7.4d and 7.4f are untouched MUSTs.** In particular `save` still
+//  refuses a `mu > 1` pairing outright — declining opt-in is not a licence to
+//  keep a group credential.
+//
+//  Spec: `RV` §5.1c, §7.2b–d, §7.4, errata E56 and E57. Plan D7; issue #96.
 
 import Foundation
 import CaptureCore
@@ -93,9 +111,6 @@ public enum PairingSecretStore {
         /// 7.4f — `mu > 1`. ⛔ Not a failure to work around: the pairing is
         /// session-scoped by construction and there is nothing to persist.
         case multiUseCodeMayNotBePersisted
-        /// 7.4b — persistence is **opt-in**. A save with no consent is a bug in
-        /// the caller, not a default to fill in.
-        case consentNotGiven
         /// The store could not be read or written. ⚠ Never swallowed into
         /// "nothing is held": E56 exists because those two were confused.
         case storage(String)
@@ -105,14 +120,16 @@ public enum PairingSecretStore {
 
     /// Persists a pairing's `PRK`.
     ///
-    /// - Parameter consent: 7.4b. ⛔ The user's, obtained on a screen that said
-    ///   what it means — "possession of the device's storage is possession of
-    ///   continuing access" (§7.4's own words).
+    /// ⛔ **Unconditional, and that is the decision of 25 August 2026** (#96).
+    /// There is no `consent` parameter to pass `true` to: a pairing that
+    /// completed is a pairing that is kept, and the user's control over it is
+    /// ``revoke(sessionId:)`` reached from a screen — after the fact, where they
+    /// can act on it more than once. What §7.4 costs is stated there rather than
+    /// here: possession of this device's storage is possession of continuing
+    /// access.
     public static func save(code: PpcpPairingCode,
                             keys: RendezvousKeys,
-                            displayName: String?,
-                            consent: Bool) throws {
-        guard consent else { throw StoreError.consentNotGiven }
+                            displayName: String?) throws {
         // ⛔ The library's predicate, not a re-reading of `mu`.
         guard code.mayPersistPairing else {
             throw StoreError.multiUseCodeMayNotBePersisted
@@ -138,12 +155,12 @@ public enum PairingSecretStore {
     /// persist, only an ephemeral one that 11.6f has already erased. What is
     /// written is `PRK` and nothing else, exactly as the code path writes.
     ///
-    /// ⚠ 7.4b — consent is still required and still starts off. A pairing the
-    /// user did not ask to keep is one they cannot remember agreeing to.
+    /// ⚠ 7.4b — kept without asking, exactly as the code path is. 11.1a is the
+    /// reason this is not a place to differ: from 11.6e onward the two are
+    /// indistinguishable, so a persistence rule that applied to one and not the
+    /// other would be a bug rather than a policy.
     public static func save(guidedPairing pairing: BootstrapPairing,
-                            displayName: String?,
-                            consent: Bool) throws {
-        guard consent else { throw StoreError.consentNotGiven }
+                            displayName: String?) throws {
         // ⛔ 11.10a — no `Peer.id`, no device or user name and no network crossed
         // the bootstrap connection, so there is nothing here to record for them.
         // `Peer.id` is first disclosed in `hello`, inside TLS, after the pairing
@@ -184,7 +201,9 @@ public enum PairingSecretStore {
         return try RendezvousKeys(persistedPrk: held.prk)
     }
 
-    /// 7.4b — what a settings screen lists so each one can be revoked.
+    /// 7.4b — what a settings screen lists so each one can be revoked. ⚠ That
+    /// screen exists as of #96; between D7 and then this was correct and had no
+    /// caller, which is the shape `RendezvousTeardownTests` warns about.
     public static func pairings() throws -> [StoredPairing] {
         try rows().map {
             StoredPairing(sessionId: $0.sessionId,

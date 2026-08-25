@@ -29,7 +29,13 @@ struct PairingSecretStoreTests {
     /// The same vector with `mu = 3`. ⛔ 7.4f forbids persisting this one.
     private static let multiUse =
         "ppcp:pWF2AWJlcIGiYWhsMTkyLjE2OC4xLjIwYXAZHmxibXUDY3Bza1AAAQIDBAUGBwgJCgsMDQ4PY3NpZFA_JQTgT4lB05oMAwXoLDMB"
+    /// The same vector with one byte of `sid` changed, so two pairings can be
+    /// held at once. ⚠ `mu = 1` as well — this is a *second Studio*, not a second
+    /// device sharing a code.
+    private static let otherSingleUse =
+        "ppcp:pWF2AWJlcIGiYWhsMTkyLjE2OC4xLjIwYXAZHmxibXUBY3Bza1AAAQIDBAUGBwgJCgsMDQ4PY3NpZFA_JQTgT4lB05oMAwXoLDMC"
     private static let sessionId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+    private static let otherSessionId = "3f2504e0-4f89-41d3-9a0c-0305e82c3302"
 
     /// A fresh directory per case, so nothing leaks between them.
     private func withTemporaryStore(_ body: () throws -> Void) rethrows {
@@ -43,16 +49,17 @@ struct PairingSecretStoreTests {
         try body()
     }
 
-    // MARK: 7.4b — opt-in, visible, individually revocable
+    // MARK: 7.4b — visible and individually revocable, and no longer opt-in
 
-    /// The three halves of 7.4b are one requirement, so they are one test:
-    /// it saves only on consent, it can list what it holds, and it can remove
-    /// one without removing the rest.
+    /// ⛔ **Two halves of 7.4b, not three.** *Opt-in* is declined as of 25 August
+    /// 2026 (#96), which erratum E57 makes the application's decision to take;
+    /// what is asserted here is what this app still owes: it can list what it
+    /// holds, and it can remove one without removing the rest.
     @Test func savesListsAndRevokesIndividually() throws {
         try withTemporaryStore {
             let code = try PpcpPairingCode(uri: Self.singleUse)
             try PairingSecretStore.save(code: code, keys: try code.keys(),
-                                        displayName: "Bay 3", consent: true)
+                                        displayName: "Bay 3")
 
             let held = try PairingSecretStore.pairings()
             #expect(held.count == 1)
@@ -69,16 +76,48 @@ struct PairingSecretStoreTests {
         }
     }
 
-    /// 7.4b — persistence is **opt-in**. A save with no consent is a bug in the
-    /// caller, not a default to fill in.
-    @Test func refusesToSaveWithoutConsent() throws {
+    /// ⛔ **A pairing that completed is kept, and nothing has to ask for it**
+    /// (#96). ⚠ This test is the inverse of the one it replaces — which asserted
+    /// that a save without consent threw `consentNotGiven` — and it is here as
+    /// the guard on the *default*, which is the whole of the change. `RV` 7.4b is
+    /// a SHOULD since erratum E57, so declining its opt-in half is a decision the
+    /// application is entitled to take and this is where the decision is pinned.
+    @Test func savesWithoutBeingAsked() throws {
         try withTemporaryStore {
             let code = try PpcpPairingCode(uri: Self.singleUse)
-            #expect(throws: PairingSecretStore.StoreError.consentNotGiven) {
-                try PairingSecretStore.save(code: code, keys: try code.keys(),
-                                            displayName: nil, consent: false)
-            }
-            #expect(try PairingSecretStore.pairings().isEmpty)
+            try PairingSecretStore.save(code: code, keys: try code.keys(),
+                                        displayName: nil)
+            #expect(try PairingSecretStore.pairings().count == 1)
+        }
+    }
+
+    /// ⛔ 7.4b's *individually revocable*, at the scale that matters to `RV` 3.4b:
+    /// forgetting one Studio must leave the others resolvable and must take the
+    /// forgotten one out of the resolver's table entirely. ⚠ A revoke that
+    /// removed the row but left a derivable `K_id` behind would keep dialling a
+    /// host the user believes they have forgotten.
+    @Test func forgettingOneLeavesTheOthersResolvable() throws {
+        try withTemporaryStore {
+            let first = try PpcpPairingCode(uri: Self.singleUse)
+            let second = try PpcpPairingCode(uri: Self.otherSingleUse)
+            try PairingSecretStore.save(code: first, keys: try first.keys(),
+                                        displayName: "Bay 3")
+            try PairingSecretStore.save(code: second, keys: try second.keys(),
+                                        displayName: "Bay 4")
+            #expect(try PairingSecretStore.identityKeys().count == 2)
+
+            try PairingSecretStore.revoke(sessionId: Self.sessionId)
+
+            let held = try PairingSecretStore.pairings()
+            #expect(held.count == 1)
+            #expect(held.first?.sessionId == Self.otherSessionId)
+            #expect(held.first?.displayName == "Bay 4")
+            // 3.4b resolves an advertised `rid` against these. The forgotten
+            // pairing must not be among them.
+            let identities = try PairingSecretStore.identityKeys()
+            #expect(identities.count == 1)
+            #expect(identities.contains { $0.sessionId == Self.sessionId } == false)
+            #expect(try PairingSecretStore.keys(forSession: Self.sessionId) == nil)
         }
     }
 
@@ -91,7 +130,7 @@ struct PairingSecretStoreTests {
             #expect(code.mayPersistPairing == false)
             #expect(throws: PairingSecretStore.StoreError.multiUseCodeMayNotBePersisted) {
                 try PairingSecretStore.save(code: code, keys: try code.keys(),
-                                            displayName: nil, consent: true)
+                                            displayName: nil)
             }
             #expect(try PairingSecretStore.pairings().isEmpty)
         }
@@ -105,7 +144,7 @@ struct PairingSecretStoreTests {
             let code = try PpcpPairingCode(uri: Self.singleUse)
             let keys = try code.keys()
             try PairingSecretStore.save(code: code, keys: keys,
-                                        displayName: "Bay 3", consent: true)
+                                        displayName: "Bay 3")
             try PairingSecretStore.bind(sessionId: Self.sessionId,
                                         toCounterpart: "peer:abc")
 
@@ -127,7 +166,7 @@ struct PairingSecretStoreTests {
             let code = try PpcpPairingCode(uri: Self.singleUse)
             let keys = try code.keys()
             try PairingSecretStore.save(code: code, keys: keys,
-                                        displayName: nil, consent: true)
+                                        displayName: nil)
 
             let url = PairingSecretStore.directoryOverride!
                 .appendingPathComponent("pairings.json")
@@ -151,7 +190,7 @@ struct PairingSecretStoreTests {
         try withTemporaryStore {
             let code = try PpcpPairingCode(uri: Self.singleUse)
             try PairingSecretStore.save(code: code, keys: try code.keys(),
-                                        displayName: nil, consent: true)
+                                        displayName: nil)
             // A second write, because the flag surviving the FIRST write proves
             // less than it looks: the failure mode is an atomic replace dropping
             // it on a later save.
@@ -187,7 +226,7 @@ struct PairingSecretStoreTests {
         try withTemporaryStore {
             let code = try PpcpPairingCode(uri: Self.singleUse)
             try PairingSecretStore.save(code: code, keys: try code.keys(),
-                                        displayName: nil, consent: true)
+                                        displayName: nil)
             #expect(try PairingSecretStore.pairings().count == 1)
             try PairingSecretStore.revokeAll()
             #expect(try PairingSecretStore.pairings().isEmpty)
