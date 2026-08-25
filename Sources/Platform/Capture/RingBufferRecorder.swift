@@ -82,6 +82,51 @@ public struct RingStats: Sendable, Hashable {
     /// assume.
     public var monotonicityViolations: Int = 0
 
+    // MARK: Where the gaps are, not just how big the worst one was (#101)
+
+    /// ⛔ **A maximum answers "how bad" and refuses to answer "when", and "when"
+    /// is the whole question.** #101's catastrophic gaps all landed in a narrow
+    /// band — 8894, 8703, 8854 ms across three different capture modes — which
+    /// is far too tight to be thermal or load and looks like one bounded
+    /// operation. Whether that operation happens at the *start* of a run
+    /// (a session reconfiguration) or throughout it is the difference between a
+    /// startup defect and a sustained one, and `maxInterArrivalNs` cannot tell
+    /// them apart.
+    ///
+    /// Counts of inter-arrival deltas by size, in these bounds:
+    /// `< 2 ms, < 5, < 10, < 20, < 50, < 100, < 500, >= 500`.
+    ///
+    /// ⚠ **Absolute rather than in frame periods**, because `RingStats` does not
+    /// know the rate — the caller does, and prints them against it.
+    public var gapBuckets: [Int] = Array(repeating: 0, count: 8)
+
+    /// The bucket upper bounds, in nanoseconds. `.max` is the open top bucket.
+    public static let gapBucketBoundsNs: [Int64] = [
+        2_000_000, 5_000_000, 10_000_000, 20_000_000,
+        50_000_000, 100_000_000, 500_000_000, .max
+    ]
+
+    /// The largest gaps seen, each with **how far into the run it happened**.
+    ///
+    /// ⚠ Fixed at eight and inserted in place: this runs on the frame path, so
+    /// there is no sort and no allocation — at most eight comparisons, and only
+    /// for a delta already larger than the smallest one kept.
+    public private(set) var largestGaps: [Gap] = []
+
+    /// One inter-arrival gap, and how far into the run it happened.
+    public struct Gap: Sendable, Hashable {
+        /// From the first frame the ring saw to the frame *before* the gap.
+        public var sinceFirstNs: Int64
+        public var deltaNs: Int64
+    }
+
+    /// How many deltas exceeded `notableGapNs` in total, however few were kept.
+    public var notableGapCount: Int = 0
+
+    /// ⚠ Ten milliseconds: two frame periods at 240 fps and slightly over one at
+    /// 120, so it is "a frame was missed" at every rate this device offers.
+    public static let notableGapNs: Int64 = 10_000_000
+
     public init() {}
 
     /// The realised rate over what the ring actually saw, from timestamp deltas
@@ -113,6 +158,25 @@ public struct RingStats: Sendable, Hashable {
         }
         if delta > maxInterArrivalNs { maxInterArrivalNs = delta }
         if let first = firstArrivalNs { spanNs = timestampNs - first }
+
+        // ── The distribution (#101) ───────────────────────────────────────
+        var bucket = Self.gapBucketBoundsNs.count - 1
+        for (index, bound) in Self.gapBucketBoundsNs.enumerated() where delta < bound {
+            bucket = index
+            break
+        }
+        gapBuckets[bucket] += 1
+
+        guard delta >= Self.notableGapNs, let first = firstArrivalNs else { return }
+        notableGapCount += 1
+        let entry = Gap(sinceFirstNs: previous - first, deltaNs: delta)
+        if largestGaps.count < 8 {
+            largestGaps.append(entry)
+        } else if let smallest = largestGaps.indices
+            .min(by: { largestGaps[$0].deltaNs < largestGaps[$1].deltaNs }),
+            largestGaps[smallest].deltaNs < delta {
+            largestGaps[smallest] = entry
+        }
     }
 
     private var firstArrivalNs: Int64?

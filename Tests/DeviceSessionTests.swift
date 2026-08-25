@@ -357,6 +357,15 @@ struct DeviceSessionTests {
             return
         }
 
+        // ⛔ **Ten seconds of nothing before anything is asked of it** (Mark,
+        // 25 August). If the ~8.8 s gap is an `AVCaptureSession` reconfiguration
+        // overlapping the start of retaining, it lands inside this window and
+        // `largestGaps` says so — its offsets are measured from the first frame
+        // the ring saw, so a startup stall reads near zero and a sustained one
+        // does not.
+        try await Task.sleep(for: .seconds(10))
+        let settled = model.ringStats
+
         // Four swings, spaced, injected as the microphone would deliver them.
         for index in 0..<4 {
             try await Task.sleep(for: .seconds(5))
@@ -375,7 +384,7 @@ struct DeviceSessionTests {
             ? Double(stats.meanInterArrivalNs) / 1e6 : 0
         print("""
 
-        ── the whole app, 28 s on hardware ─────────────────────
+        ── the whole app, 38 s on hardware ─────────────────────
         mode                      \(mode.map { "\($0.width)x\($0.height) @ \($0.fps) \($0.lens)" } ?? "none")  (cap \(cap))
         bestMode would have been  \(baseline.map { "\($0.width)x\($0.height) @ \($0.fps) \($0.lens)" } ?? "none")
         ⚠ same lens as baseline?   \(mode?.lens == baseline?.lens ? "yes" : "NO — not comparable")
@@ -391,6 +400,18 @@ struct DeviceSessionTests {
         frag: write failed        \(stats.fragmentsDroppedWriteFailed)
         frag: empty               \(stats.fragmentsDroppedEmpty)
         non-monotonic             \(stats.monotonicityViolations)
+
+        ── the first 10 s, before any load ─────────────────────
+        frames                    \(settled.framesAppended)
+        maxInterArrival           \(String(format: "%.2f", Double(settled.maxInterArrivalNs) / 1e6)) ms
+        drop: encoder busy        \(settled.framesDroppedEncoderBusy)
+        gaps over 10 ms           \(settled.notableGapCount)
+
+        ── gap distribution over the whole run ─────────────────
+        \(Self.histogram(stats))
+        gaps over 10 ms           \(stats.notableGapCount)
+        largest, and WHEN:
+        \(Self.whenTheGapsHappened(stats))
         """)
 
         try? FileManager.default.removeItem(at: root)
@@ -544,6 +565,31 @@ struct DeviceSessionTests {
         #expect(again.claimed.filter { $0.fps <= 120 }
             .max(by: VideoMode.isWorseForCapture)?.lens == atMost120?.lens)
         #expect(capability.claimed.isEmpty == false)
+    }
+
+    /// The bucket counts, labelled. ⚠ A histogram rather than a mean, for the
+    /// reason `RingStatsOverlay` exists at all: 150 frames at 6.67 ms with one
+    /// 40 ms stall averages to a healthy-looking 145 fps.
+    static func histogram(_ stats: RingStats) -> String {
+        let labels = ["  <2ms", "  <5ms", " <10ms", " <20ms",
+                      " <50ms", "<100ms", "<500ms", " >=500"]
+        return zip(labels, stats.gapBuckets)
+            .filter { $0.1 > 0 }
+            .map { "\($0.0)  \($0.1)" }
+            .joined(separator: "\n        ")
+    }
+
+    /// ⛔ Offsets from the FIRST frame. A reconfiguration stall clusters near
+    /// zero; a sustained problem does not.
+    static func whenTheGapsHappened(_ stats: RingStats) -> String {
+        guard stats.largestGaps.isEmpty == false else { return "  (none over 10 ms)" }
+        return stats.largestGaps
+            .sorted { $0.deltaNs > $1.deltaNs }
+            .map { gap in
+                String(format: "  at %6.2f s   %8.2f ms",
+                       Double(gap.sinceFirstNs) / 1e9, Double(gap.deltaNs) / 1e6)
+            }
+            .joined(separator: "\n        ")
     }
 
     // MARK: E1.2 / E1.3 — a clip, and what describes it
