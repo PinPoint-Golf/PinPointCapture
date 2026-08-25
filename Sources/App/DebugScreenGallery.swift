@@ -26,6 +26,17 @@ enum DebugLaunch {
         UserDefaults.standard.string(forKey: "ppcpScreen")?.uppercased()
     }
 
+    /// `-ppcpRingStats 1` — render E1.1's counter overlay over a cold C1.
+    ///
+    /// ⛔ **A review affordance, and it exists because this overlay has been in
+    /// the wrong place three times.** It only draws while armed or after a run,
+    /// and a simulator has no camera to arm — so its position could not be
+    /// checked without a phone, and it was placed by arithmetic instead. Same
+    /// family as `-ppcpScreen`: DEBUG only, never reachable in a release build.
+    static var forcesRingStats: Bool {
+        UserDefaults.standard.bool(forKey: "ppcpRingStats")
+    }
+
     /// `-ppcpConformPort 51423`, for the D9 harness screen.
     static var conformPort: UInt16? {
         let value = UserDefaults.standard.integer(forKey: "ppcpConformPort")
@@ -202,6 +213,41 @@ struct DebugScreenGallery: View {
         case "B6": LocalNetworkBlockedView(onOpenSettings: {}, onConnectByCable: {},
                                            onCaptureAlone: {}, onTryAgain: {})
 
+        // Cold, and unable to arm — the state a simulator is always in, and the
+        // one a phone lands in when a permission is missing (#97).
+        case "C1C": ArmedScreen(capture: CaptureStatus(state: .cold),
+                                hostLink: HostLink(state: .none),
+                                session: PreviewFixtures.session,
+                                lastShot: nil,
+                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
+                                onDisarm: {}, onArm: {},
+                                hostSearch: .nothingHeld,
+                                capabilityError: "Camera and microphone access are both "
+                                    + "needed before this device can capture. "
+                                    + "Settings — PinPointCapture.",
+                                onCheckFraming: {})
+        case "C1L": ArmedScreen(capture: PreviewFixtures.armed,
+                                hostLink: HostLink(state: .none),
+                                session: PreviewFixtures.session,
+                                lastShot: PreviewFixtures.session.shots.last,
+                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
+                                onDisarm: {}, onArm: {},
+                                hostSearch: .looking, searchingForName: "Bay 3 — Mac Studio")
+        case "C1N": ArmedScreen(capture: PreviewFixtures.armed,
+                                hostLink: HostLink(state: .none),
+                                session: PreviewFixtures.session,
+                                lastShot: PreviewFixtures.session.shots.last,
+                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
+                                onDisarm: {}, onArm: {},
+                                hostSearch: .notFound(seconds: 45),
+                                searchingForName: "Bay 3 — Mac Studio")
+        case "C1A": ArmedScreen(capture: PreviewFixtures.armed,
+                                hostLink: HostLink(state: .none),
+                                session: PreviewFixtures.session,
+                                lastShot: PreviewFixtures.session.shots.last,
+                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
+                                onDisarm: {}, onArm: {},
+                                hostSearch: .nothingHeld)
         case "C1": ArmedScreen(capture: PreviewFixtures.armed,
                                hostLink: DebugLaunch.link,
                                session: PreviewFixtures.session,

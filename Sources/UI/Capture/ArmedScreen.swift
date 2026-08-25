@@ -46,6 +46,60 @@ struct ArmedScreen: View {
     /// Surfaced rather than swallowed — a session that failed to open is the one
     /// thing §9.2 says the UI must not be quiet about.
     private let recordingError: String?
+    /// ⛔ **Why *Arm* will not work**, when it will not. Same rule as
+    /// ``recordingError`` and it was not being shown at all: `capabilityError`
+    /// has existed since D4 and nothing on this screen read it, so a device that
+    /// could not warm up presented a live-looking button that did nothing.
+    private let capabilityError: String?
+    /// Reaches the framing check from here. ⚠ `nil` where the route is not
+    /// wired; the row is then absent rather than dead.
+    private let onCheckFraming: (() -> Void)?
+    /// A DEBUG instrument, laid out directly beneath the telemetry rail.
+    ///
+    /// ⛔ **A SLOT, because a screen-level overlay could not be positioned.** The
+    /// ring counters were floated over this screen with a hand-tuned top inset
+    /// and were in the wrong place four times: on the chips, on the golfer, on
+    /// the telemetry rail — whose rows are full width, which is what made a
+    /// left-hand offset useless — and finally in the middle of the frame on a
+    /// phone taller than the simulator the inset was measured on. An absolute
+    /// offset cannot be right on every device, and there is no reason to compute
+    /// one: laid out here, it is under the rail by construction.
+    ///
+    /// ⚠ `nil` in a release build, so the designed screen keeps its shape — which
+    /// is what the overlay was protecting, and it still is.
+    private let debugAccessory: AnyView?
+
+    /// ⛔ **What the reconnection sweep is doing, as C1 says it** (#97). `RV` §3
+    /// runs on every foreground and `AppModel` has published
+    /// `isSearchingForHost`, `reconnectSilence` and `reconnectDiagnosis` since
+    /// D7 — with nothing anywhere rendering them, so a device quietly looking for
+    /// its Studio looked identical to one that had given up.
+    ///
+    /// ⚠ **A UI type, not `Silence`.** The platform value carries sweeps and
+    /// nanoseconds; a chip on a camera screen carries a sentence.
+    enum HostSearch: Equatable {
+        /// Browsing now, and nothing has come back yet. ⛔ 3.6a — not an error,
+        /// and never coloured as one. ⚠ **No elapsed time on this one**: the
+        /// first sweep has not completed, so `Silence.searchedForNs` does not
+        /// exist yet and any number here would be invented.
+        case looking
+        /// Sweeps have come back empty. Still looking, and says how long.
+        case notFound(seconds: Int)
+        /// Nothing is held, so no browse is performed and none would help.
+        case nothingHeld
+        /// Something answered and refused, or could not be reached.
+        case diagnosis(String)
+    }
+
+    /// `nil` while a link is up — the chip names the host instead.
+    private let hostSearch: HostSearch?
+    /// The remembered Studio being looked for, when exactly one is held. ⚠ 4.4d —
+    /// untrusted display text, shown and never compared.
+    private let searchingForName: String?
+
+    /// ⛔ Ending a session is confirmed, because it cannot be undone: arming
+    /// again opens a new one, and the two do not merge.
+    @State private var isConfirmingEnd = false
 
     @Environment(\.livePreview) private var livePreview
 
@@ -60,7 +114,17 @@ struct ArmedScreen: View {
          onDisarm: @escaping () -> Void,
          onArm: @escaping () -> Void = {},
          candidateCount: Int = 0,
-         recordingError: String? = nil) {
+         recordingError: String? = nil,
+         hostSearch: HostSearch? = nil,
+         searchingForName: String? = nil,
+         capabilityError: String? = nil,
+         onCheckFraming: (() -> Void)? = nil,
+         debugAccessory: AnyView? = nil) {
+        self.capabilityError = capabilityError
+        self.onCheckFraming = onCheckFraming
+        self.debugAccessory = debugAccessory
+        self.hostSearch = hostSearch
+        self.searchingForName = searchingForName
         self.onArm = onArm
         self.candidateCount = candidateCount
         self.recordingError = recordingError
@@ -92,6 +156,17 @@ struct ArmedScreen: View {
                 }
                 .padding(.horizontal, PPMetrics.screenMargin)
                 .padding(.top, PPMetrics.groupGap)
+
+                // ⛔ Directly under the rail, on every device, with no number to
+                // get wrong. Left-aligned and hugging its content.
+                if let debugAccessory {
+                    HStack(spacing: 0) {
+                        debugAccessory
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, PPMetrics.screenMargin)
+                    .padding(.top, PPMetrics.itemGap)
+                }
 
                 Spacer(minLength: PPMetrics.groupGap)
 
@@ -139,28 +214,91 @@ struct ArmedScreen: View {
     private var hostChip: some View {
         Button(action: onOpenHost) {
             HStack(spacing: 8) {
-                Image(systemName: CaptureScreenStyle.symbol(for: hostLink.state))
+                Image(systemName: chipSymbol)
                     .font(.ppSupporting.weight(.semibold))
-                    .foregroundStyle(hostTone == .neutral ? Color(.secondaryLabel) : hostTone.foreground)
-                Text(hostChipTitle)
-                    .font(.ppSupporting.weight(.semibold))
-                    .foregroundStyle(Color(.label))
+                    .foregroundStyle(chipTone == .neutral ? Color(.secondaryLabel) : chipTone.foreground)
+                // ⛔ **The NAME on top, the STATE underneath — one shape in every
+                // state** (Mark, 25 August 2026: the chip overlapped badly). It
+                // read "PinPointStudio has not appeared" over "looked for 45s",
+                // which wraps to three lines on any Studio with a real name and
+                // swallows the top of the screen. The name is the identity and
+                // belongs on its own line; what the app is doing about it is a
+                // measurement, so it goes in the mono line with the number —
+                // which is exactly the shape the connected state already had.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(hostChipTitle)
+                        .font(.ppSupporting.weight(.semibold))
+                        .foregroundStyle(Color(.label))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let detail = chipDetail {
+                        Text(detail)
+                            .ppMeasuredDetail()
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                // ⚠ **Layout priority, not a fixed ceiling.** This was
+                // `maxWidth: 168`, which truncates a name that would fit
+                // perfectly well on a wider screen. Giving the chip a lower
+                // priority than the capture pill lets it take whatever is left
+                // and truncate only when it must — on any device.
+                .layoutPriority(-1)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.vertical, chipDetail == nil ? 9 : 7)
             .frame(minHeight: PPMetrics.Size.minimumTapTarget)
             .background(Color(.secondarySystemBackground).opacity(0.7), in: .capsule)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text("Host, \(hostChipTitle)"))
-        .accessibilityValue(Text(hostLink.state.title))
+        .accessibilityValue(Text(chipDetail ?? hostLink.state.title))
         .accessibilityHint(Text("Opens the host panel"))
+    }
+
+    /// ⛔ **Blue while looking, never orange.** 3.6a — a silent network is a
+    /// normal quiet Tuesday, not a degradation, and the one state that IS a
+    /// problem (something answered and refused) is the only one that warns.
+    private var chipTone: StatusTone {
+        switch hostSearch {
+        case .looking, .notFound: .progress
+        case .nothingHeld, nil: CaptureScreenStyle.tone(for: hostLink.state)
+        case .diagnosis: .warning
+        }
+    }
+
+    private var chipSymbol: String {
+        switch hostSearch {
+        case .looking, .notFound: "antenna.radiowaves.left.and.right"
+        case .nothingHeld: "iphone"
+        case .diagnosis: "exclamationmark.triangle.fill"
+        case nil: CaptureScreenStyle.symbol(for: hostLink.state)
+        }
     }
 
     private var hostTone: StatusTone { CaptureScreenStyle.tone(for: hostLink.state) }
 
     private var hostChipTitle: String {
-        CaptureScreenStyle.shortHostName(hostLink.hostName) ?? "No host"
+        switch hostSearch {
+        case .looking, .notFound, .diagnosis:
+            CaptureScreenStyle.shortHostName(searchingForName) ?? "Studio"
+        case .nothingHeld:
+            "On your own"
+        case nil:
+            CaptureScreenStyle.shortHostName(hostLink.hostName) ?? "No host"
+        }
+    }
+
+    /// ⚠ Mono, because every one of these is a measurement or a state, never a
+    /// name — the same rule the telemetry rail and B3 follow.
+    private var chipDetail: String? {
+        switch hostSearch {
+        case .looking: "looking…"
+        case .notFound(let seconds): "not found · \(seconds)s"
+        case .nothingHeld: "no Studio paired"
+        case .diagnosis: "refused"
+        case nil: nil
+        }
     }
 
     // MARK: - Telemetry rail
@@ -220,6 +358,11 @@ struct ArmedScreen: View {
         VStack(spacing: 18) {
             if let recordingError {
                 errorBanner(recordingError)
+            }
+            // ⛔ Before the shot rows: a device that cannot arm has nothing to
+            // say about shots, and this is the sentence that explains the button.
+            if capture.state != .armed, let capabilityError {
+                errorBanner(capabilityError)
             }
             if let lastShot {
                 lastShotRow(lastShot)
@@ -296,13 +439,43 @@ struct ArmedScreen: View {
             if capture.state == .armed {
                 // ⚠ Red because it is destructive, not because anything is wrong.
                 // Red only ever appears when there is something to stop.
-                Button(role: .destructive, action: onDisarm) {
-                    Text("Disarm")
+                //
+                // ⛔ **"End session", and it was "Disarm"** (Mark, 25 August 2026).
+                // The word described the camera; what the button does is close the
+                // Session — `AppModel.disarm()` stamps `session.end`, and the next
+                // Arm mints a **new** one. So a golfer who read "Disarm" as a pause
+                // between buckets had silently split their round in two and could
+                // not merge it back. Name the consequence, and confirm it.
+                Button(role: .destructive) { isConfirmingEnd = true } label: {
+                    Text("End session")
                         .font(.ppRowLabel.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
                 }
-                .accessibilityHint(Text("Stops retaining shots on this device"))
+                .accessibilityHint(Text("Closes this session and stops retaining shots"))
+                .confirmationDialog("End this session?",
+                                    isPresented: $isConfirmingEnd,
+                                    titleVisibility: .visible) {
+                    Button("End session", role: .destructive, action: onDisarm)
+                    Button("Keep capturing", role: .cancel) { }
+                } message: {
+                    Text(endSessionSummary)
+                }
             } else {
+                // ⛔ **Reachable setup, and it was not** (#97). Folding placement
+                // into the framing check made both onboarding-only, so from the
+                // second session onwards a golfer who re-placed the phone — which
+                // is every session — had nowhere to check it, and nowhere to go
+                // when arming would not work.
+                if let onCheckFraming {
+                    Button(action: onCheckFraming) {
+                        Text("Check framing")
+                            .font(.ppRowLabel.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
+                    }
+                    .tint(Color(.label))
+                    .accessibilityHint(Text("Re-checks placement, framing and light"))
+                }
+
                 Button(action: onArm) {
                     Text("Arm")
                         .font(.ppRowLabel.weight(.semibold))
@@ -314,6 +487,19 @@ struct ArmedScreen: View {
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.roundedRectangle(radius: PPMetrics.Radius.card))
+    }
+
+    /// What the confirmation says is about to be closed.
+    ///
+    /// ⛔ **It names what is in the session, not what the button does.** "This
+    /// cannot be undone" is a warning; "41 shots · 22 minutes" is the thing a
+    /// golfer needs in order to know whether they meant to.
+    private var endSessionSummary: String {
+        let shots = session.shots.count == 1 ? "1 shot" : "\(session.shots.count) shots"
+        let minutes = Int((now.timeIntervalSince(session.start) / 60).rounded())
+        let length = minutes < 1 ? "just started" : (minutes == 1 ? "1 minute" : "\(minutes) minutes")
+        return "\(shots) · \(length). Arming again starts a new session — "
+            + "the two are not merged. Everything already captured is kept."
     }
 
     /// Armed, listening, nothing promoted yet.

@@ -23,6 +23,9 @@ enum AppRoute: Hashable {
     /// B3a — `RV` 7.4b's revocation list (#96). ⚠ A push for the same reason A8
     /// is one: a setting, returned to, not a step in a flow.
     case rememberedStudios
+    /// A6 outside onboarding (#97). ⛔ The phone is re-placed every session, so
+    /// the screen that checks the placement cannot be first-run only.
+    case framingCheck
 }
 
 /// Modally presented screens.
@@ -194,12 +197,62 @@ struct RootView: View {
                     guard let shot = model.session.shots.last else { return }
                     path.append(.replay(shot))
                 },
-                onDisarm: { model.disarm() },
+                // ⛔ **Ending a session goes somewhere** (Mark, 25 August 2026:
+                // "even then we seem to be stuck in capture"). C1 is the root and
+                // has no back, so closing a session left a golfer on a cold
+                // camera with no acknowledgement that anything had happened. The
+                // library IS the receipt — what was captured, and what is still
+                // waiting to reach Studio — and it is the half of A7 that was
+                // worth keeping.
+                onDisarm: {
+                    model.disarm()
+                    path.append(.sessionLibrary)
+                },
                 onArm: { model.arm() },
                 candidateCount: model.candidateCount,
-                recordingError: model.recordingError
+                recordingError: model.recordingError,
+                hostSearch: hostSearchStatus,
+                // ⚠ Only where exactly ONE is held: "Looking for Bay 3" is a
+                // promise, and with three remembered Studios the sweep is not
+                // looking for any particular one of them (3.4b resolves whichever
+                // advertisement answers).
+                searchingForName: rememberedStudios.count == 1
+                    ? rememberedStudios.first?.displayName : nil,
+                // ⛔ Never read by this screen until now, which is why *Arm*
+                // could sit there doing nothing with no explanation.
+                capabilityError: model.capabilityError,
+                onCheckFraming: { path.append(.framingCheck) },
+                // ⛔ **E1.1's instrument, debug builds only.** The exit criterion
+                // is "twenty fragments, rolling, **at the claimed rate**" — the
+                // rate clause cannot be read off a directory listing, and a
+                // device run without this produces an impression.
+                //
+                // ⚠ Passed as a laid-out accessory rather than floated over the
+                // screen. It was an `.overlay` with a hand-tuned top inset and
+                // that inset was wrong on every device that was not the one it
+                // was measured on; `ArmedScreen` now places it under the
+                // telemetry rail by construction. `nil` outside DEBUG, so the
+                // designed screen is unchanged in a release build.
+                debugAccessory: ringStatsAccessory
             )
+            .task { reloadRememberedStudios() }
             .task {
+                // ⛔ **Enumerate FIRST, and nothing did on this path.**
+                // `AppModel.init` seeds `capability` with `claimed: []`, so
+                // `bestMode` — and therefore `activeMode` — is nil until
+                // `refreshCapability()` runs. Its only callers were
+                // `OnboardingFlow` and the debug gallery, so on **every launch
+                // after onboarding was completed** the app had no usable mode:
+                // `warmUp` refused, `arm()` refused after it, and *Arm* was a
+                // dead button on every device. It failed silently until the
+                // guards were given sentences, and then said "No usable capture
+                // format was found on this device" — which was true, and was
+                // about a fresh `AppModel` rather than about the camera.
+                //
+                // ⚠ Cheap and permission-free: `AVCaptureDevice` discovery lists
+                // formats without authorisation, which is why A1 can run it
+                // before asking for anything.
+                model.refreshCapability()
                 // ⚠ Warm before arming so C1 shows a live preview cold, and so
                 // arming costs no AE/AF settling (REQ-STATE-2).
                 model.warmUp()
@@ -208,33 +261,6 @@ struct RootView: View {
             // C1 is full-bleed. The preview is the screen; a nav bar over it would
             // cost exactly the area the golfer needs to be judged in.
             .toolbar(.hidden, for: .navigationBar)
-            #if DEBUG
-            // ⛔ **E1.1's instrument, and debug builds only.** The exit criterion
-            // is "twenty fragments, rolling, **at the claimed rate**" — the rate
-            // clause cannot be read off a directory listing or a preview that
-            // looks fine, and a device run without this produces an impression.
-            //
-            // ⚠ Here rather than in `DebugScreenGallery`: the gallery is selected
-            // by a launch argument and REPLACES the app, so it cannot show a
-            // running capture. The numbers are only interesting while armed.
-            //
-            // ⚠ Overlaid rather than added to `ArmedScreen`, so the designed
-            // screen keeps the shape the handoff specifies and this cannot drift
-            // into it. Tap to expand.
-            .overlay(alignment: .topLeading) {
-                if model.captureStatus.state == .armed || model.lastRunRingStats != nil {
-                    RingStatsOverlay(
-                        stats: model.captureStatus.state == .armed
-                            ? model.ringStats
-                            : (model.lastRunRingStats ?? RingStats()),
-                        expectedFPS: model.activeMode?.fps,
-                        isLive: model.captureStatus.state == .armed)
-                    .padding(.leading, 12)
-                    .padding(.top, 8)
-                    .allowsHitTesting(true)
-                }
-            }
-            #endif
             .navigationDestination(for: AppRoute.self, destination: destination(for:))
         }
     }
@@ -252,6 +278,23 @@ struct RootView: View {
                 onPauseTransfer: { model.transferQueue?.isPaused.toggle() },
                 onOpenMicToBallDistance: { path.append(.micToBallDistance) }
             )
+
+        case .framingCheck:
+            // ⚠ The same screen onboarding uses, and it re-runs the measurement
+            // rather than showing the one from the first session — which is the
+            // whole reason to come back to it.
+            FramingCheckScreen(
+                framing: model.framing,
+                onUse120fps: { Task { await model.remeasure(atMost: 120) } },
+                onArm: {
+                    model.arm()
+                    path.removeLast()
+                }
+            )
+            .task {
+                model.warmUp()
+                await model.runSelfTest()
+            }
 
         case .rememberedStudios:
             // ⛔ B3a — `RV` 7.4b's *individually revocable*. `pairings()` and
@@ -312,8 +355,12 @@ struct RootView: View {
                     onSelectReviewState: Self.reviewStateHandler(model),
                     measuredMethod: model.capability.measured?.method,
                     onDone: { self.sheet = nil },
-                    // A real action in the `.none` state, and it did nothing.
-                    onPrimaryAction: { self.sheet = .connectHost },
+                    // ⛔ **Six titles, one behaviour, until now.** Every state
+                    // was wired to `sheet = .connectHost`, so *Disconnect* on a
+                    // live link opened the connect screen and *Pause sending*
+                    // opened it too. Each title now does what it says, and the
+                    // one this app cannot perform is disabled rather than lying.
+                    onPrimaryAction: primaryHostAction,
                     onOpenMicToBallDistance: {
                         self.sheet = nil
                         path.append(.micToBallDistance)
@@ -483,6 +530,91 @@ struct RootView: View {
     }
 
     // MARK: Rendezvous (RV §4, §6, §7.4)
+
+    /// E1.1's ring counters, or `nil`. ⚠ Shown while armed, after a run, or when
+    /// `-ppcpRingStats 1` forces it — the last of those exists because the
+    /// overlay only draws while capturing, so a simulator could never show it and
+    /// its placement was guessed instead of seen.
+    private var ringStatsAccessory: AnyView? {
+        #if DEBUG
+        guard model.captureStatus.state == .armed
+                || model.lastRunRingStats != nil
+                || DebugLaunch.forcesRingStats else { return nil }
+        return AnyView(
+            RingStatsOverlay(
+                stats: model.captureStatus.state == .armed
+                    ? model.ringStats
+                    : (model.lastRunRingStats ?? RingStats()),
+                expectedFPS: model.activeMode?.fps,
+                isLive: model.captureStatus.state == .armed)
+        )
+        #else
+        nil
+        #endif
+    }
+
+    /// `RV` §3, as the C1 chip says it.
+    ///
+    /// ⛔ **This is the first thing in the application to render the search.**
+    /// `AppModel` has published `isSearchingForHost`, `reconnectSilence` and
+    /// `reconnectDiagnosis` since D7 and nothing read them, so a device quietly
+    /// looking for its Studio and one that had given up looked identical.
+    ///
+    /// ⚠ `nil` once a link is up — the chip names the host instead.
+    private var hostSearchStatus: ArmedScreen.HostSearch? {
+        guard model.link == nil else { return nil }
+        if let diagnosis = model.reconnectDiagnosis {
+            return .diagnosis(diagnosis)
+        }
+        if let silence = model.reconnectSilence {
+            return .notFound(seconds: Int(Double(silence.searchedForNs) / 1_000_000_000))
+        }
+        if model.isSearchingForHost {
+            return .looking
+        }
+        // ⛔ Not "no host": nothing is held, so no browse was performed and none
+        // would help. `ReconnectOutcome.noPairingsHeld` is a different sentence
+        // from "your Studio did not appear", and this is where that matters.
+        return rememberedStudios.isEmpty ? .nothingHeld : nil
+    }
+
+    /// What B3's full-width button does, per state.
+    ///
+    /// ⛔ **Disconnect drops the LINK and nothing else.** Not the pairing — that
+    /// is *Forget*, on the status card — and not capture, which §9.2 and the
+    /// colour rule keep running through every host problem. A golfer who
+    /// disconnects is still recording, and the reconnection sweep can find the
+    /// same Studio again on the next foreground.
+    ///
+    /// ⚠ `.weak` is `nil` on purpose: its title offers a cable and there is no
+    /// cable path in this application (E15). A disabled button that says why
+    /// beats a live one that silently does something else — the same rule the
+    /// connection log and diagnostic export rows already follow.
+    private var primaryHostAction: (() -> Void)? {
+        switch model.hostLink.state {
+        case .none:
+            { self.sheet = .connectHost }
+        case .connected:
+            {
+                Task {
+                    await model.disconnect(.normal)
+                    // 6b / 4.4c — the user ended this session with the host, so
+                    // the network this app configured goes and the decoded
+                    // payload is released. Same reasoning as B2's Cancel.
+                    if let left = await rendezvous.endPairing() { leftNetwork = left }
+                }
+            }
+        case .pairing:
+            { Task { await model.disconnect(.cancelled) } }
+        case .lost:
+            // 3.6a — look again, which is exactly what the sweep does.
+            { model.beginSearchingForHost() }
+        case .resyncing:
+            { model.transferQueue?.isPaused.toggle() }
+        case .weak:
+            nil
+        }
+    }
 
     /// The platform outcome as B2's sentence. ⛔ `RendezvousCoordinator.PersistOutcome`
     /// does not cross into `Sources/UI`; this is the seam.

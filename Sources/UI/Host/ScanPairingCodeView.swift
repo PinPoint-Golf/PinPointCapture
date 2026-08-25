@@ -131,7 +131,15 @@ public struct ScanPairingCodeView: View {
             Section {
                 if cameraAuthorised {
                     PairingCodeScannerView(onCode: onCode)
-                        .frame(height: 260)
+                        // ⚠ Square, from the row width — a QR reticle is square,
+                        // and the width is the dimension a List row knows.
+                        // `containerRelativeFrame(.vertical)` resolves against the
+                        // row here, not the screen, and collapses it.
+                        .aspectRatio(1.0, contentMode: .fit)
+                        .frame(maxHeight: 380)
+                        // ⚠ Centred once the ceiling bites, so a wide screen does not
+                        // leave it hanging off the leading edge.
+                        .frame(maxWidth: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: PPMetrics.Radius.card))
                         .listRowInsets(EdgeInsets(top: 0, leading: PPMetrics.screenMargin,
                                                   bottom: 0, trailing: PPMetrics.screenMargin))

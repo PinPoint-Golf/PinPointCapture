@@ -404,6 +404,82 @@ final class StubCaptureDevice: CaptureDevice, @unchecked Sendable {
 }
 
 @MainActor
+@Suite("Arming says why it will not")
+struct ArmRefusalIsSpokenTests {
+
+    /// ⛔ **The defect this guards is a MISSING CALL SITE, and no test in this
+    /// target can see one.** `refreshCapability()` had exactly two callers —
+    /// `OnboardingFlow` and the debug gallery — so on every launch after
+    /// onboarding was completed, `AppModel` kept the seeded `claimed: []` from
+    /// its initialiser, `bestMode` was nil, and *Arm* was dead on every device.
+    /// It shipped that way because `warmUp()` returned **silently** from both of
+    /// its guards.
+    ///
+    /// ⚠ **And the suites here were part of why it survived.** Every one of them
+    /// calls `model.refreshCapability()` in its own setup — doing for the model
+    /// exactly what the application forgot to do — so a green suite said nothing
+    /// about the app. What is assertable is the half that made it findable: the
+    /// refusal is now a sentence.
+    ///
+    /// ⚠ What actually guards the call site is reading `RootView`'s capture-stack
+    /// `.task`, and a phone.
+    @Test("A model that has not enumerated says so rather than failing silently")
+    func warmUpWithoutCapabilityStatesTheReason() {
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
+                                                                 isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = AppModel(device: StubCaptureDevice(), store: SessionStore(root: root))
+        // ⛔ Deliberately NOT calling refreshCapability() — this is the state a
+        // fresh launch was in.
+        model.permissions = Permissions(camera: .allowed, microphone: .allowed,
+                                        localNetwork: .allowed, motion: .allowed)
+        #expect(model.activeMode == nil)
+
+        model.arm()
+
+        #expect(model.captureStatus.state == .cold)
+        #expect(model.capabilityError != nil)
+    }
+
+    /// ⛔ 7.2 / REQ-PRIV-4 — both are needed, and a refusal must name the remedy
+    /// rather than leaving a live-looking button that does nothing.
+    @Test("A missing permission is named, not swallowed")
+    func warmUpWithoutPermissionsStatesTheReason() {
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
+                                                                 isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = AppModel(device: StubCaptureDevice(), store: SessionStore(root: root))
+        model.refreshCapability()
+        model.permissions = Permissions(camera: .denied, microphone: .allowed,
+                                        localNetwork: .allowed, motion: .allowed)
+
+        model.arm()
+
+        #expect(model.captureStatus.state == .cold)
+        #expect(model.capabilityError != nil)
+    }
+
+    /// ⚠ The other half: a solved problem must not stay on screen.
+    @Test("The reason clears once warming succeeds")
+    func theReasonClearsOnSuccess() {
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
+                                                                 isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = AppModel(device: StubCaptureDevice(), store: SessionStore(root: root))
+        model.permissions = Permissions(camera: .allowed, microphone: .allowed,
+                                        localNetwork: .allowed, motion: .allowed)
+        model.warmUp()
+        #expect(model.capabilityError != nil)
+
+        model.refreshCapability()
+        model.warmUp()
+
+        #expect(model.capabilityError == nil)
+        #expect(model.captureStatus.state == .warm)
+    }
+}
+
+@MainActor
 @Suite("E1.1 — arming is a claim about the ring")
 struct ArmingRetainsTests {
 

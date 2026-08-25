@@ -80,7 +80,13 @@ public struct HostPanelView: View {
 
     private let onDone: () -> Void
     /// The full-width action, whose title is ``HostLinkState/actionTitle``.
-    private let onPrimaryAction: () -> Void
+    ///
+    /// ⛔ **`nil` disables it, and that is the honest state for an action this
+    /// app cannot perform yet** — `.weak` offers *Send over a cable instead* and
+    /// there is no cable path. It was wired to one closure in every state, so
+    /// "Disconnect", "Pause sending" and "Send over a cable instead" all opened
+    /// the connect screen: six titles and one behaviour.
+    private let onPrimaryAction: (() -> Void)?
     private let onOpenConnectionLog: (() -> Void)?
     private let onExportDiagnostics: (() -> Void)?
 
@@ -102,7 +108,7 @@ public struct HostPanelView: View {
         onSelectReviewState: ((HostLinkState) -> Void)? = nil,
         measuredMethod: MeasuredCapability.Method? = nil,
         onDone: @escaping () -> Void,
-        onPrimaryAction: @escaping () -> Void,
+        onPrimaryAction: (() -> Void)?,
         onOpenConnectionLog: (() -> Void)? = nil,
         onExportDiagnostics: (() -> Void)? = nil,
         onOpenMicToBallDistance: (() -> Void)? = nil,
@@ -466,7 +472,8 @@ public struct HostPanelView: View {
     // MARK: - The full-width action, tinted to the state
 
     private var primaryAction: some View {
-        Button(link.state.actionTitle, action: onPrimaryAction)
+        Button(link.state.actionTitle) { onPrimaryAction?() }
+            .disabled(onPrimaryAction == nil)
             .buttonStyle(.bordered)
             .controlSize(.large)
             // The tint is the state, so it cannot be inherited from the app

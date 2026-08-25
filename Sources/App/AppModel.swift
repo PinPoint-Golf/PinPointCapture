@@ -253,11 +253,31 @@ public final class AppModel {
     // MARK: Capture lifecycle
 
     /// REQ-STATE-2. Warm exists so arming costs no AE/AF settling.
+    /// ⛔ **The two guards used to `return` silently, and that is what made *Arm*
+    /// a dead button** (Mark, 25 August 2026, on a phone). `arm()` calls this and
+    /// then refuses to proceed unless the state reached `.warm`, so a device that
+    /// could not warm up produced no state change, no error and no sentence —
+    /// the golfer tapped Arm and nothing whatever happened. §9.2 makes capture
+    /// the thing that must not be quietly wrong, and a silent guard on the path
+    /// to arming is exactly that.
     public func warmUp() {
-        guard permissions.canCapture, let mode = activeMode else { return }
+        guard permissions.canCapture else {
+            // ⚠ Names the remedy, not the API. Both are needed: the camera for
+            // the frames and the microphone for the impact that times them.
+            capabilityError = "Camera and microphone access are both needed "
+                + "before this device can capture. Settings — PinPointCapture."
+            return
+        }
+        guard let mode = activeMode else {
+            capabilityError = "No usable capture format was found on this device."
+            return
+        }
         do {
             try device.warmUp(mode: mode)
             captureStatus.state = .warm
+            // ⚠ Cleared on success, or a solved problem stays on screen for the
+            // rest of the session.
+            capabilityError = nil
         } catch {
             capabilityError = String(describing: error)
         }
@@ -270,6 +290,8 @@ public final class AppModel {
     /// nothing. §9.2 makes capture the thing that must not be quietly wrong.
     public func arm() {
         warmUp()
+        // ⛔ `warmUp` has stated the reason by now — it no longer fails silently
+        // — so this returns to a screen that can say what happened.
         guard captureStatus.state == .warm else { return }
         startRecording()
         guard let recording, let mode = activeMode else { return }

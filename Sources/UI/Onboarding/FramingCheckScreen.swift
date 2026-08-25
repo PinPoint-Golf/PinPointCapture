@@ -157,7 +157,27 @@ public struct FramingCheckScreen: View {
     /// be worse than drawing it over a placeholder, because it would look real.
     private var livePreviewArea: some View {
         livePreview.makeView("CAMERA PREVIEW")
-            .frame(height: 380)
+            // ⛔ **Proportional, and it was `.frame(height: 380)`.** A fixed
+            // height is a guess about a screen: 380pt is 45% of an iPhone 15 Pro,
+            // 57% of an iPhone SE — which pushes the checklist this screen exists
+            // for below the fold — and a letterbox strip on an iPad. The preview
+            // is the subject here, so it takes a share of whatever height it is
+            // given (Mark, 25 August 2026).
+            //
+            // ⚠ **Aspect ratio, NOT `containerRelativeFrame(.vertical)`.** That
+            // was the first attempt and it resolves against the enclosing List
+            // ROW rather than the screen, so the preview collapsed to a strip —
+            // caught on an iPad simulator, not reasoned about. Width is the
+            // dimension a row actually knows, so the height comes from it.
+            //
+            // ⚠ The cap is a ceiling and not a layout: it constrains nothing on a
+            // phone, and stops a 13-inch iPad devoting 750pt to a viewfinder.
+            // iPad still wants E12.1's two-pane; this keeps it sane, not designed.
+            .aspectRatio(4.0 / 3.0, contentMode: .fit)
+            .frame(maxHeight: 460)
+            // ⚠ Centred once the ceiling bites, so a wide screen does not
+            // leave it hanging off the leading edge.
+            .frame(maxWidth: .infinity)
             .clipped()
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text("Camera preview"))
