@@ -92,8 +92,10 @@ private struct StubConnector: DiscoveredHostConnecting {
 private enum Fixture {
 
     /// Real derived key material — `RendezvousKeys` runs the library's HKDF, so
-    /// these are the same bytes a scanned code would produce. ⚠ No Keychain is
-    /// touched anywhere in this file.
+    /// these are the same bytes a scanned code would produce. ⚠ No real pairing
+    /// store is touched anywhere in this file — the walk runs through the
+    /// `HeldPairings` seam. The store itself is covered by
+    /// `PairingSecretStoreTests`, which erratum E56 made possible.
     static func keys(seed: UInt8) throws -> RendezvousKeys {
         try RendezvousKeys(psk: Data(repeating: seed, count: 16),
                            sid: Data(repeating: seed &+ 1, count: 16))

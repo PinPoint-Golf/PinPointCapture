@@ -156,6 +156,13 @@ public enum ReconnectOutcome: Sendable {
     /// for the same reason `RendezvousCoordinator` keeps them apart: they are
     /// opposite diagnoses.
     case couldNotReachHost(sessionId: String, reason: String)
+
+    /// The store could not be read. ⛔ **Not `noPairingsHeld`** — *erratum E56.*
+    /// Until 25 August 2026 a failed read was reported as "nothing is held",
+    /// which is a different sentence and, on a locked phone holding a pairing,
+    /// an untrue one. A user told they have never paired does not retry; a user
+    /// told the store could not be read does.
+    case pairingStoreUnreadable(reason: String)
 }
 
 /// ⚠ The retry shape, as a value so it can be shortened in a test without the
@@ -210,7 +217,7 @@ extension PpcpConnector: DiscoveredHostConnecting {}
 /// What this device holds, as three reads.
 ///
 /// ⚠ A struct of closures rather than a direct call to `PairingSecretStore` so a
-/// test can exercise the walk without writing to the Keychain — and so that
+/// test can exercise the walk without writing to the real store — and so that
 /// **this file names exactly what it reads**, which is `PRK`-derived key material
 /// and one untrusted display string, and nothing else 7.2b would object to.
 struct HeldPairings: Sendable {
@@ -224,7 +231,7 @@ struct HeldPairings: Sendable {
     /// 4.4d — untrusted display text, for a screen and never as an identifier.
     var displayName: @Sendable (_ sessionId: String) throws -> String?
 
-    static let keychain = HeldPairings(
+    static let stored = HeldPairings(
         identityKeys: { try PairingSecretStore.identityKeys() },
         keys: { try PairingSecretStore.keys(forSession: $0) },
         displayName: { sessionId in
@@ -253,7 +260,7 @@ public actor ReconnectCoordinator {
 
     init(browser: any HostBrowsing = PpcpBrowser(),
          connector: any DiscoveredHostConnecting = PpcpConnector(),
-         held: HeldPairings = .keychain,
+         held: HeldPairings = .stored,
          cadence: ReconnectCadence = .standard,
          nowNs: @escaping @Sendable () -> Int64 = { MachClock.hostTimeNs }) {
         self.browser = browser
@@ -285,12 +292,12 @@ public actor ReconnectCoordinator {
         do {
             pairings = try held.identityKeys()
         } catch {
-            // ⚠ The Keychain refused to be read — on a locked device, most
-            // likely, since `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` is
-            // what these are stored under. Nothing is held **that can be used**,
-            // which is the same answer for the caller and is not a discovery
-            // failure to dress up as one.
-            return .noPairingsHeld
+            // ⛔ Reported as itself — *erratum E56*. This used to return
+            // `.noPairingsHeld`, on the reasoning that nothing usable is held
+            // either way. That reasoning was wrong: the two produce the same
+            // screen for a device that has never paired and for one whose store
+            // is temporarily unreadable, and only the second is worth retrying.
+            return .pairingStoreUnreadable(reason: "\(error)")
         }
         guard pairings.isEmpty == false else { return .noPairingsHeld }
 
@@ -398,7 +405,13 @@ public actor ReconnectCoordinator {
                     case .connected, .noPairingsHeld:
                         continuation.finish()
                         return
-                    case .notFound, .hostRefusedThePairing, .couldNotReachHost:
+                    // ⛔ `.pairingStoreUnreadable` **retries** rather than
+                    // finishing — that is the whole point of separating it from
+                    // `.noPairingsHeld` under E56. The commonest cause is a
+                    // device that has not been unlocked since boot, which fixes
+                    // itself the moment it is.
+                    case .notFound, .hostRefusedThePairing, .couldNotReachHost,
+                         .pairingStoreUnreadable:
                         break
                     }
                     let gap = await self.gapAfterCurrentSweep()

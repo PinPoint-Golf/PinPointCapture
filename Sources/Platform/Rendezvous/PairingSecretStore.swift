@@ -2,12 +2,34 @@
 //  `PPCP-RV` §7.2c / §7.4 — where a pairing's key material lives, and what it
 //  takes to keep it.
 //
-//  ⛔ **The Keychain, and only the Keychain** (7.2c: "secrets at rest are held in
-//  the platform's protected storage where one exists"). Not `UserDefaults`, not a
-//  file, not `@AppStorage`. `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` is the
-//  strongest class that still works for an app that has to reconnect on launch,
-//  and `ThisDeviceOnly` is what stops a pairing riding an iCloud backup onto a
-//  second phone — which 7.4c calls non-transferable in as many words.
+//  ⛔ **A file this app owns, and NOT the Keychain** — *erratum E56, 25 August
+//  2026, which made 7.2c a SHOULD.* It was the Keychain until then, because 7.2c
+//  was a MUST. Two things were wrong with that. The specification was deciding
+//  how a consuming application spends a platform permission, which its own §1.3
+//  lists as out of scope; and `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` —
+//  the class this file used — is **unreadable while the phone is locked**, so
+//  the reconnection sweep read nothing and reported *no pairings held*, which is
+//  a different statement and an untrue one.
+//
+//  ⛔ **`isExcludedFromBackup`, and it is re-applied on every write.** This is
+//  the whole of what keeps 7.4c's *not transferable* true, and it is load-bearing
+//  in a way the Keychain made free: `ThisDeviceOnly` used to stop a pairing
+//  riding an encrypted backup onto a second phone, and ordinary app storage does
+//  not. An atomic write replaces the inode, so the flag does not survive one —
+//  hence `exclude(_:)` after each save rather than once at creation.
+//
+//  ⛔ **`completeUntilFirstUserAuthentication`, deliberately not `complete`.**
+//  `.complete` would reintroduce the exact locked-device failure E56 was raised
+//  over. This class is readable after the first unlock following a boot, which is
+//  what a peer that reconnects in the background needs.
+//
+//  ⚠ **What this gives up, stated rather than assumed away.** The file is
+//  readable by this app and by anything that can read its container. `RV` §7.4's
+//  own words — *possession of the device's storage is possession of continuing
+//  access* — were written when this was a keychain and should be read at the
+//  stronger meaning now. 7.4b's opt-in, visible, individually revocable
+//  persistence is what remains, and it is now the load-bearing control rather
+//  than the weaker half of a pair.
 //
 //  ⛔ **`PRK`, never `psk`** (5.1c). The pairing secret from the code is used once,
 //  to derive, and is never written down: every key a session needs re-expands
@@ -24,10 +46,9 @@
 //  held, or that could only be cleared wholesale, would meet none of it. Hence
 //  `save(_:consent:)`, `pairings()` and `revoke(_:)`.
 //
-//  Spec: `RV` §5.1c, §7.2b–d, §7.4. Plan D7.
+//  Spec: `RV` §5.1c, §7.2b–d, §7.4, erratum E56. Plan D7.
 
 import Foundation
-import Security
 import CaptureCore
 
 /// One persisted pairing, as a screen sees it.
@@ -68,8 +89,6 @@ public struct StoredPairing: Sendable, Hashable, Identifiable {
 
 public enum PairingSecretStore {
 
-    private static let service = "org.pinpointstudio.capture.ppcp.pairing"
-
     public enum StoreError: Error, Sendable, Equatable {
         /// 7.4f — `mu > 1`. ⛔ Not a failure to work around: the pairing is
         /// session-scoped by construction and there is nothing to persist.
@@ -77,7 +96,9 @@ public enum PairingSecretStore {
         /// 7.4b — persistence is **opt-in**. A save with no consent is a bug in
         /// the caller, not a default to fill in.
         case consentNotGiven
-        case keychain(OSStatus)
+        /// The store could not be read or written. ⚠ Never swallowed into
+        /// "nothing is held": E56 exists because those two were confused.
+        case storage(String)
     }
 
     // MARK: Saving
@@ -165,30 +186,14 @@ public enum PairingSecretStore {
 
     /// 7.4b — what a settings screen lists so each one can be revoked.
     public static func pairings() throws -> [StoredPairing] {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecMatchLimit: kSecMatchLimitAll,
-            kSecReturnAttributes: true
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return [] }
-        guard status == errSecSuccess, let items = result as? [[CFString: Any]] else {
-            throw StoreError.keychain(status)
-        }
-        return items.compactMap { item in
-            guard let sessionId = item[kSecAttrAccount] as? String else { return nil }
-            // ⚠ `kSecAttrLabel` carries the untrusted display name and
-            // `kSecAttrComment` the counterpart id. Neither is key material and
-            // neither is an identifier the store keys on.
-            return StoredPairing(sessionId: sessionId,
-                                 displayName: item[kSecAttrLabel] as? String,
-                                 counterpartPeerId: item[kSecAttrComment] as? String,
-                                 // 7.4h — `kSecAttrDescription`, and nothing in
-                                 // this store holds a passphrase.
-                                 networkName: item[kSecAttrDescription] as? String,
-                                 savedAt: item[kSecAttrModificationDate] as? Date ?? .now)
+        try rows().map {
+            StoredPairing(sessionId: $0.sessionId,
+                          displayName: $0.displayName,
+                          counterpartPeerId: $0.counterpartPeerId,
+                          // 7.4h — the network NAME, and nothing in this store
+                          // holds a passphrase.
+                          networkName: $0.networkName,
+                          savedAt: $0.savedAt)
         }
         .sorted { $0.savedAt > $1.savedAt }
     }
@@ -199,24 +204,16 @@ public enum PairingSecretStore {
     /// in a failed handshake for the other. ⛔ There is no soft delete: the bytes
     /// go.
     public static func revoke(sessionId: String) throws {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: sessionId
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw StoreError.keychain(status)
-        }
+        try mutate { $0.removeAll { $0.sessionId == sessionId } }
     }
 
     /// 7.2d — erases every pairing that was not persisted under 7.4. ⚠ Called
     /// when a session closes; a persisted pairing survives it by design.
     public static func revokeAll() throws {
-        for pairing in try pairings() { try revoke(sessionId: pairing.sessionId) }
+        try mutate { $0.removeAll() }
     }
 
-    // MARK: The Keychain itself
+    // MARK: The file itself
 
     private struct Held {
         let prk: Data
@@ -225,50 +222,129 @@ public enum PairingSecretStore {
         let networkName: String?
     }
 
-    private static func load(sessionId: String) throws -> Held? {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: sessionId,
-            kSecReturnData: true,
-            kSecReturnAttributes: true,
-            kSecMatchLimit: kSecMatchLimitOne
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let item = result as? [CFString: Any],
-              let data = item[kSecValueData] as? Data else {
-            throw StoreError.keychain(status)
+    /// One pairing as it sits on disk.
+    ///
+    /// ⚠ The field names are the on-disk format. Renaming one silently orphans
+    /// every pairing already stored, which presents as "the phone forgot the
+    /// host" — the failure E56 was raised over, reintroduced by a refactor.
+    private struct Row: Codable {
+        let sessionId: String
+        let prk: Data
+        let displayName: String?
+        let counterpartPeerId: String?
+        let networkName: String?
+        let savedAt: Date
+    }
+
+    /// ⚠ Serialises read-modify-write. The Keychain did this for us; a file does
+    /// not, and `bind` racing a `save` would drop one of the two.
+    private static let lock = NSLock()
+
+    /// ⚠ **Tests only, and internal rather than public for that reason.** The
+    /// real store is one file in Application Support; a suite that wrote there
+    /// would share it across every case and leak state between them.
+    nonisolated(unsafe) internal static var directoryOverride: URL?
+
+    private static var directory: URL {
+        get throws {
+            if let directoryOverride { return directoryOverride }
+            let base = try FileManager.default.url(for: .applicationSupportDirectory,
+                                                   in: .userDomainMask,
+                                                   appropriateFor: nil,
+                                                   create: true)
+            return base.appendingPathComponent("PPCP", isDirectory: true)
         }
-        return Held(prk: data, displayName: item[kSecAttrLabel] as? String,
-                    networkName: item[kSecAttrDescription] as? String)
+    }
+
+    private static var fileURL: URL {
+        get throws { try directory.appendingPathComponent("pairings.json") }
+    }
+
+    /// ⛔ 7.4c — the one call that keeps a pairing off a restored second device.
+    /// Applied to the directory once and to the file after **every** write,
+    /// because an atomic write replaces the inode and the flag with it.
+    private static func exclude(_ url: URL) {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
+
+    private static func rows() throws -> [Row] {
+        lock.lock(); defer { lock.unlock() }
+        return try rowsLocked()
+    }
+
+    private static func rowsLocked() throws -> [Row] {
+        let url: URL
+        do { url = try fileURL } catch { throw StoreError.storage("\(error)") }
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        do {
+            let data = try Data(contentsOf: url)
+            if data.isEmpty { return [] }
+            return try JSONDecoder().decode([Row].self, from: data)
+        } catch {
+            // ⛔ Not `[]`. A store we cannot read is not a store that is empty,
+            // and conflating the two is precisely what reported "no pairings
+            // held" to a user who had one.
+            throw StoreError.storage("\(error)")
+        }
+    }
+
+    private static func mutate(_ change: (inout [Row]) -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        var rows = try rowsLocked()
+        change(&rows)
+        let url: URL
+        do {
+            let dir = try directory
+            if !FileManager.default.fileExists(atPath: dir.path) {
+                try FileManager.default.createDirectory(at: dir,
+                                                        withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+            }
+            exclude(dir)
+            url = try fileURL
+        } catch { throw StoreError.storage("\(error)") }
+
+        do {
+            let data = try JSONEncoder().encode(rows)
+            #if os(iOS)
+            // ⛔ NOT `.completeFileProtection` — that is the locked-device
+            // failure E56 was raised over. This class is readable after the
+            // first unlock since boot, which is what a background reconnection
+            // sweep needs.
+            try data.write(to: url, options: [.atomic,
+                                              .completeFileProtectionUntilFirstUserAuthentication])
+            #else
+            try data.write(to: url, options: [.atomic])
+            #endif
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: url.path)
+            exclude(url)
+        } catch { throw StoreError.storage("\(error)") }
+    }
+
+    private static func load(sessionId: String) throws -> Held? {
+        guard let row = try rows().first(where: { $0.sessionId == sessionId }) else {
+            return nil
+        }
+        return Held(prk: row.prk, displayName: row.displayName,
+                    networkName: row.networkName)
     }
 
     private static func write(sessionId: String, prk: Data, displayName: String?,
                               counterpartPeerId: String?,
                               networkName: String? = nil) throws {
-        var attributes: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: sessionId,
-            kSecValueData: prk,
-            // ⛔ 7.4c — not transferable. `ThisDeviceOnly` keeps it out of an
-            // encrypted backup and off a restored second device; `WhenUnlocked`
-            // is the strongest class an app that reconnects on launch can use.
-            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        ]
-        if let displayName { attributes[kSecAttrLabel] = displayName }
-        if let counterpartPeerId { attributes[kSecAttrComment] = counterpartPeerId }
-        // 7.4h (E26) — the network NAME. ⛔ There is deliberately no branch here
-        // for a passphrase: the field does not exist, so it cannot be filled in
-        // by a later change that looked reasonable.
-        if let networkName { attributes[kSecAttrDescription] = networkName }
-
-        // Replace rather than update-or-add: a partial update that left an old
+        // Replace rather than update in place: a partial update that left an old
         // `PRK` behind would be a pairing that authenticates as something else.
-        try? revoke(sessionId: sessionId)
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else { throw StoreError.keychain(status) }
+        try mutate { rows in
+            rows.removeAll { $0.sessionId == sessionId }
+            rows.append(Row(sessionId: sessionId, prk: prk,
+                            displayName: displayName,
+                            counterpartPeerId: counterpartPeerId,
+                            networkName: networkName,
+                            savedAt: Date()))
+        }
     }
 }

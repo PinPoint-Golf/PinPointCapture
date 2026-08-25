@@ -7,8 +7,11 @@
 //  a range is not a bay, and the setting screen is reachable while a session is
 //  being set up rather than buried.
 //
-//  ⛔ `UserDefaults`, not the Keychain: this is a preference, not a secret.
-//  `RV` 7.2c is about key material and nothing here is key material.
+//  ⛔ `UserDefaults`, and NOT `PairingSecretStore`: this is a preference, not a
+//  secret. `RV` 7.2c is about key material and nothing here is key material.
+//  ⚠ The contrast used to be drawn against the Keychain; erratum E56 moved the
+//  key material to a backup-excluded file, so the distinction is now which
+//  store, not which platform API — and it is unchanged in substance.
 //
 //  Spec: `CORE` §5.9, §5.12d, §8.1d; I29. Plan D7.
 

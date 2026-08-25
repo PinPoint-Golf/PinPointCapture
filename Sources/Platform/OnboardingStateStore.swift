@@ -13,9 +13,10 @@
 //  Settings must not be treated as having granted it because a flag says the
 //  screen was seen.
 //
-//  ⛔ `UserDefaults`, not the Keychain — a preference, not a secret. Same
-//  reasoning as `MicToBallDistanceStore`, and deliberately the same shape so
-//  there is one pattern here rather than two.
+//  ⛔ `UserDefaults`, and NOT `PairingSecretStore` — a preference, not a secret.
+//  Same reasoning as `MicToBallDistanceStore`, and deliberately the same shape
+//  so there is one pattern here rather than two. ⚠ The contrast was against the
+//  Keychain until erratum E56; what it distinguishes is unchanged.
 
 import Foundation
 

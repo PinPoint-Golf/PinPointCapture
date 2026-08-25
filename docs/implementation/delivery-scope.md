@@ -137,7 +137,7 @@ The only place `AVFoundation`, `VideoToolbox`, `CoreMotion`, `CoreMedia` and `Ne
 | `PermissionsService` | ✅ | — | — |
 | `DeviceProfiles.{swift,json,md}` (REQ-PORT-10) | ▨ | Every provenance is `assumed` | E-M1 |
 | `Network/PpcpTransport` — TLS-PSK | ✅ | RT-17 is a standing review item | E14.2 |
-| `Rendezvous/*` — advertiser, coordinator, Keychain, hotspot join | ✅ ⛔ | Device and App ID capability | E16 |
+| `Rendezvous/*` — advertiser, coordinator, pairing store, hotspot join | ✅ ⛔ | Device and App ID capability | E16 |
 | `Capture/RingBufferRecorder` | ◐ | **Not connected** | E1.1 |
 | `Capture/FrameTimeline` | ✅ | — | — |
 | `Capture/MicrophoneOnsetSource` | ⛔ | Never run on a real microphone | E2.1 |
@@ -404,7 +404,7 @@ Downgrade or defer without embarrassment; it is a `SHOULD` and the transport abs
 | Level | Capability | Release | Exit criterion |
 |---|---|---|---|
 | **E16.1** | **Discovery on a real network** — mDNS advertise and browse against a real AP, including the multicast-fails path | v1 | REQ-DISC-1/3 proven outside a simulator |
-| **E16.2** | **Pairing that does not ride a backup** — Keychain `ThisDeviceOnly` verified across a real restore | v1 | **RT-15** completes |
+| **E16.2** | **Pairing that does not ride a backup** — `isExcludedFromBackup` verified across a real restore (*was Keychain `ThisDeviceOnly` until erratum E56*) | v1 | **RT-15** completes |
 | **E16.3** | **Hotspot join** — `NEHotspotConfiguration` with Hotspot Configuration enabled on the App ID | v1 (SHOULD) | B4 joins a host-provided network on a device |
 
 **PRD coverage.** REQ-DISC-1..6 · REQ-AUTH-1/2 · REQ-PRIV-1.

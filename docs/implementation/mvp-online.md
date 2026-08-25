@@ -62,7 +62,7 @@ So the constraint is not new. What was new was a sentence in this document that 
 | | Mechanism | State |
 |---|---|---|
 | **First pairing** | The **pairing code**, `RV` §4. Studio displays it, the device scans and dials, Studio listens | ✅ **REQUIRED of every implementation by 2a**, working, and measured **30/30 two-sided** against Studio's real listener on 23 Aug |
-| **Every session after** | The persisted pairing of `RV` §7.4 — `PRK` in the Keychain, opt-in and revocable | ✅ built |
+| **Every session after** | The persisted pairing of `RV` §7.4 — `PRK` in a backup-excluded file this app owns, opt-in and revocable (**the Keychain until erratum E56**) | ✅ built |
 | **Finding Studio again** | Studio advertises `_ppcp._tcp` `role: host`; the device browses, resolves the `rid` against its held pairings and dials (§2.2) | ⚠ **Built both sides, 24 Aug**, and survives the host changing address — ⛔ but unreachable today, §2.2 |
 
 ⛔ **The consequence worth stating plainly: the MVP is no longer gated on RV-6, on `libppcp`, or on RT-20c.** What was Phase 0 across three repositories is a path that was already proved against the real Studio before today began, and nothing is owed by another team. ⚠ Requirement (a) is **not** finished, but what remains is a design question in this repository rather than a dependency — §2.2.

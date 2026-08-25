@@ -37,6 +37,6 @@ struct GuidedPairingCoordinatorTests {
     /// exchange — so this target cannot fabricate one, and PinPointCapture is
     /// acceptor-only (CA4) so it has no initiator to complete one against. The
     /// re-derivation half of 11.1a is asserted in `Packages/Core` where a real
-    /// exchange runs; the keychain half runs for the first time against
+    /// exchange runs; the persistence half runs for the first time against
     /// PinPointStudio, which is RT-20c and session C3.
 }

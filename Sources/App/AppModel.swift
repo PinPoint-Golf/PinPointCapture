@@ -507,6 +507,14 @@ public final class AppModel {
         case .couldNotReachHost(_, let reason):
             reconnectDiagnosis = reason
             return false
+
+        case .pairingStoreUnreadable(let reason):
+            // ⛔ *Erratum E56* — deliberately NOT folded into `.noPairingsHeld`.
+            // The store exists and could not be read; the commonest cause is a
+            // phone not unlocked since boot. Returning `false` keeps the search
+            // alive, because unlike "never paired" this one resolves itself.
+            reconnectDiagnosis = reason
+            return false
         }
     }
 
