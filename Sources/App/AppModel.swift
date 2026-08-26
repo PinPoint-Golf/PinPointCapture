@@ -682,6 +682,15 @@ public final class AppModel {
         }
     }
 
+    /// C3's swipe-to-delete. ⛔ Device-local only — there is no host-side
+    /// deletion or sync-state tracking yet, so this removes the bundle this
+    /// phone holds and nothing else.
+    public func deleteRecordedBundle(sessionId: String) {
+        guard let bundles = try? store.bundles(),
+              let bundle = bundles.first(where: { $0.sessionId == sessionId }) else { return }
+        try? store.delete(bundle)
+    }
+
     private nonisolated static func directorySize(_ directory: URL) -> Int64 {
         guard let walker = FileManager.default.enumerator(
             at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }

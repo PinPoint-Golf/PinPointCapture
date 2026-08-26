@@ -86,6 +86,10 @@ struct RootView: View {
     /// store is the truth and a stale screen here is a screen that offers to
     /// forget something already gone.
     @State private var rememberedStudios: [StoredPairing] = []
+    /// C3's list. ⚠ Same reasoning as `rememberedStudios`: re-read from the
+    /// store so a swipe-to-delete removes the row rather than leaving a stale
+    /// one behind.
+    @State private var recordedBundles: [RecordedBundle] = []
     /// The stored pairing behind the link that is currently up, if there is one
     /// — what puts *Forget this Studio* on B3's status card beside its name.
     ///
@@ -273,11 +277,13 @@ struct RootView: View {
                 session: model.session,
                 transferQueue: model.transferQueue,
                 hostName: model.hostLink.hostName,
-                recordedBundles: model.libraryRows(),
+                recordedBundles: recordedBundles,
                 onSelectShot: { path.append(.replay($0)) },
                 onPauseTransfer: { model.transferQueue?.isPaused.toggle() },
-                onOpenMicToBallDistance: { path.append(.micToBallDistance) }
+                onOpenMicToBallDistance: { path.append(.micToBallDistance) },
+                onDeleteBundle: { deleteRecordedBundle(sessionId: $0.sessionId) }
             )
+            .task { reloadRecordedBundles() }
 
         case .framingCheck:
             // ⚠ The same screen onboarding uses, and it re-runs the measurement
@@ -641,6 +647,17 @@ struct RootView: View {
     /// writes.
     private func reloadRememberedStudios() {
         rememberedStudios = (try? PairingSecretStore.pairings()) ?? []
+    }
+
+    /// ⚠ Re-read rather than mutated, same reasoning as `reloadRememberedStudios()`.
+    private func reloadRecordedBundles() {
+        recordedBundles = model.libraryRows()
+    }
+
+    /// C3's swipe-to-delete. ⛔ The bytes go; there is no soft delete.
+    private func deleteRecordedBundle(sessionId: String) {
+        model.deleteRecordedBundle(sessionId: sessionId)
+        reloadRecordedBundles()
     }
 
     /// Matches the live link to the pairing it was established from.

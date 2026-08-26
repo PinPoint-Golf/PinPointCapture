@@ -36,6 +36,8 @@ struct SessionLibraryScreen: View {
     /// User-level pause / resume of the bulk transfer.
     private let onPauseTransfer: () -> Void
     private let onOpenMicToBallDistance: (() -> Void)?
+    /// Device-local only — there is no host-side deletion yet.
+    private let onDeleteBundle: (RecordedBundle) -> Void
 
     init(session: Session,
          transferQueue: TransferQueue?,
@@ -43,7 +45,8 @@ struct SessionLibraryScreen: View {
          recordedBundles: [RecordedBundle] = [],
          onSelectShot: @escaping (Shot) -> Void,
          onPauseTransfer: @escaping () -> Void,
-         onOpenMicToBallDistance: (() -> Void)? = nil) {
+         onOpenMicToBallDistance: (() -> Void)? = nil,
+         onDeleteBundle: @escaping (RecordedBundle) -> Void = { _ in }) {
         self.session = session
         self.transferQueue = transferQueue
         self.hostName = hostName
@@ -51,6 +54,7 @@ struct SessionLibraryScreen: View {
         self.onSelectShot = onSelectShot
         self.onPauseTransfer = onPauseTransfer
         self.onOpenMicToBallDistance = onOpenMicToBallDistance
+        self.onDeleteBundle = onDeleteBundle
     }
 
     var body: some View {
@@ -136,6 +140,9 @@ struct SessionLibraryScreen: View {
         }
         .frame(minHeight: PPMetrics.Size.minimumTapTarget)
         .accessibilityElement(children: .combine)
+        .swipeActions(edge: .trailing) {
+            Button("Delete", role: .destructive) { onDeleteBundle(bundle) }
+        }
     }
 
     // MARK: Summary

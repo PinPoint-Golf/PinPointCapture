@@ -392,6 +392,21 @@ struct SessionBundleTests {
         }
     }
 
+    @Test("Deleting a bundle removes its directory and it stops being listed")
+    func deleteRemovesTheDirectory() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ppcp-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(root: root)
+
+        let bundle = try store.makeBundle(sessionId: Self.sessionId, mintingPeerId: Self.peerId)
+        #expect(try store.bundles().count == 1)
+
+        try store.delete(bundle)
+        #expect(FileManager.default.fileExists(atPath: bundle.directory.path) == false)
+        #expect(try store.bundles().isEmpty)
+    }
+
     /// The magic is read from the **bytes**, not the extension: a file arriving
     /// by AirDrop or the Files app may have been renamed.
     @Test("Something that is not a bundle is refused by its bytes, not its name")

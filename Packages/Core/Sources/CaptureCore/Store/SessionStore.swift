@@ -176,6 +176,12 @@ public struct SessionStore: Sendable {
                                                 withIntermediateDirectories: true)
         return bundle
     }
+
+    /// Removes a Session's bundle and everything beside it — `clips/` and
+    /// `thumbnails/` included, since the directory holds all three.
+    public func delete(_ bundle: SessionBundle) throws {
+        try FileManager.default.removeItem(at: bundle.directory)
+    }
 }
 
 public enum SessionStoreError: Error, Sendable, Equatable {
