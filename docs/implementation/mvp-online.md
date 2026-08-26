@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; guided pairing removed from scope the same day. ✅ **(a) is DONE and proven end to end on hardware, 25 Aug** — [#96](https://github.com/PinPoint-Golf/PinPointCapture/issues/96) closed, both ends showing connected. ✅ **Phase 0 is clear** — [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98), [#101](https://github.com/PinPoint-Golf/PinPointCapture/issues/101), [#102](https://github.com/PinPoint-Golf/PinPointCapture/issues/102) closed the same day. ⛔ **Next: (b), preview — §3.3** |
-| Date | 24 August 2026 · **revised 25 August** |
+| Status | Scope and plan. ⚠ Phase 1 done 24 Aug; guided pairing removed from scope the same day. ✅ **(a) is DONE and proven end to end on hardware, 25 Aug** — [#96](https://github.com/PinPoint-Golf/PinPointCapture/issues/96) closed, both ends showing connected. ✅ **Phase 0 is clear** — [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98), [#101](https://github.com/PinPoint-Golf/PinPointCapture/issues/101), [#102](https://github.com/PinPoint-Golf/PinPointCapture/issues/102) closed the same day. ✅ **Sync (#25) is DONE and converging live against Studio, 26 Aug** — B3 shows a real offset and uncertainty, not the fixture (§3.2). ⛔ **Next: (b), preview — §3.3** |
+| Date | 24 August 2026 · revised 25 August · **revised 26 August** |
 | Scope of this document | Delivery order for one demonstrable outcome. [`delivery-scope.md`](delivery-scope.md) remains the authority on *what the product is*; this says what is built next, in what order, and what is deliberately left out |
 | Source of truth | [`capture-companion-requirements.md`](../design/capture-companion-requirements.md) · [`ppcp-conformance.md`](../conformance/ppcp-conformance.md) · `PPCP-RV` revision 9 |
 | Cross-repository | ⚠ **One, reopened 25 Aug.** Preview's Studio half — a viewer, and whatever *config from PPS* means — is PinPointStudio's to scope (§3.3). Studio's advertising landed 24 Aug; `libppcp`'s RV-6 work is out of MVP scope (§2) |
@@ -46,7 +46,7 @@ So the constraint is not new. What was new was a sentence in this document that 
 |---|---|---|
 | **(a)** | The mechanisms *and* the journey (`0d0df74`, `af3d80c`, 25 Aug). A pairing is kept by default; the four-screen opening pairs at the Mac before the phone is set down. ✅ **A phone held a pairing and browsed for it** — §2.2b | ⛔ **The last step: the dial completing.** Reaching Studio with no code has still never happened |
 | **(b)** | Hi-res: the ring, clip extraction, the sidecar, thumbnails — `8a371c3`. ⚠ Ring counters now read off a phone, and they are **not** the clean 24 Aug figures — §3.1 | **Preview**: no `preview` Stream is opened and nothing produces frames for one. ⛔ And nothing can open one while [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98) stands |
-| **(c)** | `LiveDetectionSink`, `HostLinkDriver`, `TransferQueue`, `PayloadTransferQueue`, `SessionResume` — all tested | **Every one of them has no caller.** Composition only, which is the shape E1.1 was — and the shape three defects found on 25 Aug also had (§3.0a) |
+| **(c)** | `LiveDetectionSink`, `HostLinkDriver`, `TransferQueue`, `PayloadTransferQueue`, `SessionResume` — all tested. ✅ **`HostLinkDriver` composed, 26 Aug** — wired into `HostLinkSession`'s tick, converges live against Studio (§3.2) | **`LiveDetectionSink`, `TransferQueue`, `PayloadTransferQueue`, `SessionResume` still have no caller.** Shots crossing ([#27](https://github.com/PinPoint-Golf/PinPointCapture/issues/27)) is what remains of (c) — the shape three defects found on 25 Aug also had (§3.0a) |
 | **(d)** | — | Nothing. It is a subtraction |
 
 ---
@@ -137,7 +137,7 @@ A day on a phone. Five issues closed, four of them found while fixing the first.
 
 ⚠ **What §3.1's contradiction turned out to be.** The `↕100.2 ms` reading was a **startup transient**, not a sustained defect: over 38 s at 1080p240 the distribution is 8994 inter-arrivals under 5 ms and one over 10 ms. `maxInterArrivalNs` could say how bad and not *when*, so `RingStats` now buckets every gap and timestamps the largest. E1.1 holds the claimed rate for a whole session at both rates.
 
-⚠ **Still open from that day, and none of it blocks preview:** [#103](https://github.com/PinPoint-Golf/PinPointCapture/issues/103) minting stops after ~31 candidates — the one that bites a real range session soonest; [#99](https://github.com/PinPoint-Golf/PinPointCapture/issues/99) the primary button's label and the Session's state are decided separately; [#100](https://github.com/PinPoint-Golf/PinPointCapture/issues/100) nothing can be deleted and a four-shot session is 44 MB; [#19](https://github.com/PinPoint-Golf/PinPointCapture/issues/19) the intrinsics overclaim, now unblocked because 1080p120 exists; and [#17](https://github.com/PinPoint-Golf/PinPointCapture/issues/17)'s last item, the encoded profile/level at the provisional 50 Mbps.
+⚠ **Still open from that day, and none of it blocks preview:** [#103](https://github.com/PinPoint-Golf/PinPointCapture/issues/103) minting stops after ~31 candidates — the one that bites a real range session soonest; [#99](https://github.com/PinPoint-Golf/PinPointCapture/issues/99) the primary button's label and the Session's state are decided separately; [#19](https://github.com/PinPoint-Golf/PinPointCapture/issues/19) the intrinsics overclaim, now unblocked because 1080p120 exists; and [#17](https://github.com/PinPoint-Golf/PinPointCapture/issues/17)'s last item, the encoded profile/level at the provisional 50 Mbps. ✅ **[#100](https://github.com/PinPoint-Golf/PinPointCapture/issues/100) closed 26 Aug** — a session can now be swiped away from the library, deleting its bundle from the device.
 
 ### 3.0a ⚠ What 25 August says about *how* this codebase fails
 
@@ -163,9 +163,9 @@ Three defects landed and were fixed in one day, and they share one shape worth n
 
 ### 3.2 (c) — shots and candidates crossing
 
-⚠ **Numbered before (b) and now sequenced after it** — the section numbers are historical, the order in §6 is current. See §3.3 for why, and for the one dependency that could reverse it back.
+⚠ **Numbered before (b) and now sequenced after it** — the section numbers are historical, the order in §6 is current. See §3.3 for why, and for the one dependency that has since resolved it.
 
-**Sync first** ([#25](https://github.com/PinPoint-Golf/PinPointCapture/issues/25), E3.2). Compose `HostLinkDriver.pump(nowNs:throughputMbitPerSecond:)` into `HostLinkSession`'s tick — the burst, the filtering, the settle to heartbeat cadence are all written. ⛔ Required before anything else in (c): `.connected` is deliberately unreachable without a settled clock estimate.
+✅ **Sync — done, 26 August** ([#25](https://github.com/PinPoint-Golf/PinPointCapture/issues/25), E3.2). `HostLinkDriver.pump(nowNs:throughputMbitPerSecond:)` is composed into `HostLinkSession`'s tick — the burst, the filtering, the settle to heartbeat cadence, all running. Verified against a real PinPointStudio: the burst converges, offset and rate both measured. Two findings surfaced by that run rather than by testing — `AppModel.hostLink` was never refreshed after the initial connect, so a converged link still read as frozen `Pairing`; and the raw offset between two peers' own since-boot clocks is correct but can print as several million milliseconds, which is meaningless to a golfer. B3 now polls the live link and shows the clock agreement's **uncertainty**, not its magnitude. ⛔ This was required before anything else in (c) — `.connected` was deliberately unreachable without a settled clock estimate — and it now is reachable.
 
 **The fan-out sink.** A small `DetectionSink` wrapping `CaptureSessionRecorder` and `LiveDetectionSink`, so the same records reach the bundle and the wire. **Decided: both**, per §1's note on (d).
 
@@ -240,6 +240,19 @@ A day of work on a phone. Two commits — `0d0df74`, `af3d80c` — and the plan 
 
 ---
 
+## 4b. What changed on 26 August, and what it adds
+
+One day, four commits. §3.2 and §6 absorb the substance; this is what a reader returning to this document needs that is not already folded in above.
+
+- **Sync (#25) landed** — see §3.2. `.connected` is reachable now; B3 shows the real clock agreement instead of the fixture switcher's canned numbers.
+- **[#100](https://github.com/PinPoint-Golf/PinPointCapture/issues/100) closed** — a session can be swiped away from the library on-device; deletion removes the bundle directory from disk, no confirmation dialog, device-local only (§3.0).
+- **Arm renamed to Capture** on the button and the C1 status pill. The mechanism is unchanged; the word now names what the app is for rather than the mechanism underneath it.
+- **Autofocus now converges before locking.** `warmUp` used to lock focus/exposure/white balance the instant the format was assigned, before AF/AE had settled on the subject — including on the QR pairing path, which shares the same camera. Fixed; the scanner now forces its own continuous AF/AE/WB. A capture-quality defect, not an (a)–(d) item, recorded here because it touched the pairing screen.
+
+⚠ **Nothing here moves preview (§3.3).** It remains the next tranche, and the one cross-repository dependency — PinPointStudio's viewer and config surface — is unmoved.
+
+---
+
 ## 5. Explicitly out
 
 | Out | Why |
@@ -263,11 +276,13 @@ A day of work on a phone. Two commits — `0d0df74`, `af3d80c` — and the plan 
         ▼
    1    device session    ✅ DONE — and the 25 Aug contradiction is resolved (§3.1)
         ▼
-   2    preview  (+ Studio's viewer and config surface)        = (b)
-        ▼         ⚠ order reversed 25 Aug — §3.3. Check the sync dependency FIRST
-   3    sync (#25) → fan-out sink → shots crossing (#27)       = (c)
+   2    sync (#25)        ✅ DONE 26 Aug — HostLinkDriver composed, converges live against Studio (§3.2)
+        ▼         ⚠ settles the order question raised 25 Aug — §3.3's dependency was real, and sync led
+   3    preview  (+ Studio's viewer and config surface)        = (b)
         ▼
-   4    demo — step 7 needs Studio on a multicast-carrying network
+   4    fan-out sink → shots crossing (#27)                    = (c)
+        ▼
+   5    demo — step 7 needs Studio on a multicast-carrying network
 ```
 
 ✅ **Phase 0 is clear, 25 August.** It was a single defect in this repository ([#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)) that stopped a Session writing its payloads, and it brought three more out with it — see §3.0. All closed the same day. **Preview (§3.3) is next and nothing blocks it.**
