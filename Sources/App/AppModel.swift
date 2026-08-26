@@ -265,7 +265,7 @@ public final class AppModel {
     /// the golfer tapped Arm and nothing whatever happened. §9.2 makes capture
     /// the thing that must not be quietly wrong, and a silent guard on the path
     /// to arming is exactly that.
-    public func warmUp() {
+    public func warmUp() async {
         guard permissions.canCapture else {
             // ⚠ Names the remedy, not the API. Both are needed: the camera for
             // the frames and the microphone for the impact that times them.
@@ -278,7 +278,7 @@ public final class AppModel {
             return
         }
         do {
-            try device.warmUp(mode: mode)
+            try await device.warmUp(mode: mode)
             captureStatus.state = .warm
             // ⚠ Cleared on success, or a solved problem stays on screen for the
             // rest of the session.
@@ -293,8 +293,8 @@ public final class AppModel {
     /// ⛔ **Arming is not a claim.** It used to set `.armed` whatever `warmUp`
     /// did, so a device with no camera reported itself armed and retaining
     /// nothing. §9.2 makes capture the thing that must not be quietly wrong.
-    public func arm() {
-        warmUp()
+    public func arm() async {
+        await warmUp()
         // ⛔ `warmUp` has stated the reason by now — it no longer fails silently
         // — so this returns to a screen that can say what happened.
         guard captureStatus.state == .warm else { return }

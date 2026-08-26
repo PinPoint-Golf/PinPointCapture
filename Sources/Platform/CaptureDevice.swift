@@ -45,7 +45,7 @@ public protocol CaptureDevice: AnyObject, Sendable {
     /// REQ-STATE-2: warm exists so arming incurs no AE/AF settling penalty.
     /// Rebuilding a capture session costs roughly a second plus settling, and the
     /// first shot after a cold re-arm is exactly the one not to lose.
-    func warmUp(mode: VideoMode) throws
+    func warmUp(mode: VideoMode) async throws
 
     /// Tear the session down (`cold`).
     func goCold()

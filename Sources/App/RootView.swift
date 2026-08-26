@@ -208,7 +208,7 @@ struct RootView: View {
                     model.disarm()
                     path.append(.sessionLibrary)
                 },
-                onArm: { model.arm() },
+                onArm: { Task { await model.arm() } },
                 candidateCount: model.candidateCount,
                 recordingError: model.recordingError,
                 hostSearch: hostSearchStatus,
@@ -255,7 +255,7 @@ struct RootView: View {
                 model.refreshCapability()
                 // ⚠ Warm before arming so C1 shows a live preview cold, and so
                 // arming costs no AE/AF settling (REQ-STATE-2).
-                model.warmUp()
+                await model.warmUp()
                 model.refreshHealth()
             }
             // C1 is full-bleed. The preview is the screen; a nav bar over it would
@@ -287,12 +287,14 @@ struct RootView: View {
                 framing: model.framing,
                 onUse120fps: { Task { await model.remeasure(atMost: 120) } },
                 onArm: {
-                    model.arm()
-                    path.removeLast()
+                    Task {
+                        await model.arm()
+                        path.removeLast()
+                    }
                 }
             )
             .task {
-                model.warmUp()
+                await model.warmUp()
                 await model.runSelfTest()
             }
 

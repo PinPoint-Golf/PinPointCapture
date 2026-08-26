@@ -60,11 +60,11 @@ struct AppModelTests {
     /// ⚠ REQ-STATE-1 / §9.2. Arming without a usable camera must not leave the
     /// UI claiming it is armed when nothing is being retained.
     @Test("Arming without a camera does not claim to be capturing")
-    func armingWithoutACameraIsHonest() {
+    func armingWithoutACameraIsHonest() async {
         let model = AppModel()
         model.refreshCapability()
         guard model.capabilityError != nil else { return }  // real hardware, skip
-        model.warmUp()
+        await model.warmUp()
         #expect(model.captureStatus.state != .warm)
     }
 }

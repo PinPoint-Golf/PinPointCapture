@@ -253,7 +253,7 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
     /// The lock sequence is REQ-OPT-1..7 and every one of them is load-bearing:
     /// each unlocked control is a parameter that changes mid-session and makes
     /// two frames incomparable.
-    public func warmUp(mode: VideoMode) throws {
+    public func warmUp(mode: VideoMode) async throws {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [Self.deviceType(for: mode.lens)],
             mediaType: .video,
@@ -276,6 +276,14 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         // camera and throws out of this method long before here; it crashed on
         // the first frame of the first device run (24 Aug 2026).
         try configure(session: session, device: device, format: format, mode: mode)
+
+        // See `configure`'s note above its old lock lines: focus/exposure/WB
+        // were left in continuous-auto there, deliberately unlocked, so they
+        // can actually converge on the subject before REQ-OPT-2/3/4 freezes
+        // them. This wait is what `warmUp` exists to absorb (REQ-STATE-2) —
+        // `arm()` must never pay it.
+        await waitForConvergence(of: device)
+        try lockControls(on: device)
 
         if !session.isRunning {
             // Capture `self`, which is Sendable, rather than the session, which
@@ -352,12 +360,22 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         device.activeVideoMinFrameDuration = duration
         device.activeVideoMaxFrameDuration = duration
 
-        // REQ-OPT-2/3/4. Locked focus, exposure and white balance. A focus change
-        // changes focal length and therefore the intrinsics; an exposure change
-        // varies motion blur mid-swing.
-        if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
-        if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
-        if device.isWhiteBalanceModeSupported(.locked) { device.whiteBalanceMode = .locked }
+        // ⛔ REQ-OPT-2/3/4 lock focus/exposure/WB, but NOT here and not yet.
+        // `activeFormat` above resets AF/AE convergence, and locking in the same
+        // pass freezes whatever transient state the sensor is in a moment after
+        // the switch — never letting it actually focus on the subject. Force a
+        // fresh convergence attempt against the NEW format instead; `warmUp`
+        // awaits convergence, then calls `lockControls(on:)` to lock what
+        // actually landed.
+        if device.isFocusModeSupported(.continuousAutoFocus) {
+            device.focusMode = .continuousAutoFocus
+        }
+        if device.isExposureModeSupported(.continuousAutoExposure) {
+            device.exposureMode = .continuousAutoExposure
+        }
+        if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+            device.whiteBalanceMode = .continuousAutoWhiteBalance
+        }
 
         // ⛔ REQ-OPT-1. Stabilisation OFF. It warps geometry and destroys 2D shaft
         // measurement, and it is incompatible with per-frame intrinsics delivery.
@@ -375,7 +393,70 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         activeDevice = device
     }
 
+    /// Poll, unlocked, until focus and exposure have converged on the format
+    /// `configure(...)` just switched to — or until the bound below elapses.
+    ///
+    /// ⛔ **No `lockForConfiguration()` held here.** That call guards property
+    /// *writes*; holding it across a wait for hardware convergence would
+    /// serialise this against every other configuration caller for no reason
+    /// `AVCaptureDevice` requires. `isAdjustingFocus`/`isAdjustingExposure` are
+    /// safe to read without it.
+    ///
+    /// ⚠ Polling against `MachClock`, not KVO — this codebase has no KVO usage
+    /// anywhere (`AppModel.beginSettling()` is the existing convergence-wait
+    /// idiom) and this matches it.
+    ///
+    /// ⚠ Bounded so a device that never reports convergence (AVFoundation makes
+    /// no completion guarantee) still reaches `lockControls(on:)` and arms —
+    /// late and possibly soft, never stuck.
+    private func waitForConvergence(of device: AVCaptureDevice) async {
+        let startedAt = MachClock.hostTimeNs
+        while device.isAdjustingFocus || device.isAdjustingExposure {
+            if MachClock.hostTimeNs - startedAt > Self.convergenceTimeoutNs { return }
+            try? await Task.sleep(for: .milliseconds(Self.convergencePollMs))
+        }
+    }
+
+    /// ⚠ Cadence for `waitForConvergence`, matching `AppModel`'s settle-poll style.
+    private static let convergencePollMs = 30
+    /// ⛔ Bounded well under the existing 75ms-typical / 8.85s-worst-case arm
+    /// budget. AF on a stationary subject in daylight converges in well under
+    /// this in practice; chosen high enough not to cut off a slow convergence
+    /// in dim light.
+    private static let convergenceTimeoutNs: Int64 = 800_000_000
+
+    /// REQ-OPT-2/3/4. Lock focus, exposure and white balance where they landed
+    /// after `waitForConvergence` — a converged point now, not the transient
+    /// state immediately after the format switch.
+    ///
+    /// ⛔ Device-only, no `session.beginConfiguration()`: nothing here touches
+    /// the session graph, only device properties already legal to change on a
+    /// running session.
+    private func lockControls(on device: AVCaptureDevice) throws {
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
+        if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
+        if device.isWhiteBalanceModeSupported(.locked) { device.whiteBalanceMode = .locked }
+    }
+
     public func goCold() {
+        // ⛔ REQ-OPT-2/3/4 hold only while armed. Leaving the physical device
+        // `.locked` after goCold hands the same lens to whatever uses it next
+        // (the QR pairing scanner, or another app) already jammed.
+        if let device = activeDevice, (try? device.lockForConfiguration()) != nil {
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+            device.unlockForConfiguration()
+        }
+
         // ⛔ Retention ends before the outputs do. A writer left open across the
         // teardown below is one nothing will ever close, and its fragment files
         // outlive the process as orphans. `stopRetaining` is idempotent, so
@@ -503,7 +584,7 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
 
     public func measureSustainedRate(mode: VideoMode,
                                      duration: TimeInterval) async throws -> MeasuredCapability {
-        try warmUp(mode: mode)
+        try await warmUp(mode: mode)
         guard session.outputs.contains(where: { $0 is AVCaptureVideoDataOutput })
         else { throw CaptureDeviceError.configurationFailed("no video output") }
 

@@ -88,14 +88,16 @@ struct OnboardingFlow: View {
                 onUse120fps: dropTo120,
                 onArm: {
                     model.hasCompletedOnboarding = true
-                    model.arm()
-                    onFinish()
+                    Task {
+                        await model.arm()
+                        onFinish()
+                    }
                 }
             )
             .task {
                 // Warm the session so A6 has something to show and A7's measured
                 // row is real rather than empty.
-                model.warmUp()
+                await model.warmUp()
                 await model.runSelfTest()
             }
 

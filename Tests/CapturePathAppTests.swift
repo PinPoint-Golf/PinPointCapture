@@ -249,7 +249,7 @@ struct CapturePathAppTests {
     /// nothing, so it must not open a Session and must not say it is armed.
     @Test("Arming without a camera opens no Session and claims nothing")
     @MainActor
-    func armingWithoutACameraOpensNoSession() throws {
+    func armingWithoutACameraOpensNoSession() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("d4-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -258,7 +258,7 @@ struct CapturePathAppTests {
         model.refreshCapability()
         guard model.capabilityError != nil else { return }  // real hardware, skip
 
-        model.arm()
+        await model.arm()
         #expect(model.captureStatus.state != .armed)
         #expect(model.recording == nil)
         #expect(model.recordingError == nil, "nothing failed — nothing was attempted")
@@ -390,7 +390,7 @@ final class StubCaptureDevice: CaptureDevice, @unchecked Sendable {
         DeviceCapability(modelIdentifier: "stub", modelName: "Stub", claimed: [Self.mode])
     }
 
-    func warmUp(mode: VideoMode) throws {}
+    func warmUp(mode: VideoMode) async throws {}
     func goCold() { stopRetaining() }
 
     func startRetaining(mode: VideoMode) throws {
@@ -476,7 +476,7 @@ struct ArmRefusalIsSpokenTests {
     /// ⚠ What actually guards the call site is reading `RootView`'s capture-stack
     /// `.task`, and a phone.
     @Test("A model that has not enumerated says so rather than failing silently")
-    func warmUpWithoutCapabilityStatesTheReason() {
+    func warmUpWithoutCapabilityStatesTheReason() async {
         let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
                                                                  isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -487,7 +487,7 @@ struct ArmRefusalIsSpokenTests {
                                         localNetwork: .allowed, motion: .allowed)
         #expect(model.activeMode == nil)
 
-        model.arm()
+        await model.arm()
 
         #expect(model.captureStatus.state == .cold)
         #expect(model.capabilityError != nil)
@@ -496,7 +496,7 @@ struct ArmRefusalIsSpokenTests {
     /// ⛔ 7.2 / REQ-PRIV-4 — both are needed, and a refusal must name the remedy
     /// rather than leaving a live-looking button that does nothing.
     @Test("A missing permission is named, not swallowed")
-    func warmUpWithoutPermissionsStatesTheReason() {
+    func warmUpWithoutPermissionsStatesTheReason() async {
         let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
                                                                  isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -505,7 +505,7 @@ struct ArmRefusalIsSpokenTests {
         model.permissions = Permissions(camera: .denied, microphone: .allowed,
                                         localNetwork: .allowed, motion: .allowed)
 
-        model.arm()
+        await model.arm()
 
         #expect(model.captureStatus.state == .cold)
         #expect(model.capabilityError != nil)
@@ -513,18 +513,18 @@ struct ArmRefusalIsSpokenTests {
 
     /// ⚠ The other half: a solved problem must not stay on screen.
     @Test("The reason clears once warming succeeds")
-    func theReasonClearsOnSuccess() {
+    func theReasonClearsOnSuccess() async {
         let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
                                                                  isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = AppModel(device: StubCaptureDevice(), store: SessionStore(root: root))
         model.permissions = Permissions(camera: .allowed, microphone: .allowed,
                                         localNetwork: .allowed, motion: .allowed)
-        model.warmUp()
+        await model.warmUp()
         #expect(model.capabilityError != nil)
 
         model.refreshCapability()
-        model.warmUp()
+        await model.warmUp()
 
         #expect(model.capabilityError == nil)
         #expect(model.captureStatus.state == .warm)
@@ -559,13 +559,13 @@ struct ArmingRetainsTests {
     /// short-circuit. That matters more than usual here, because the *success*
     /// path cannot be tested beside it (see below).
     @Test("A device that cannot retain does not reach armed")
-    func refusedRetentionBlocksArmed() throws {
+    func refusedRetentionBlocksArmed() async throws {
         let device = StubCaptureDevice()
         device.refusesToRetain = true
         let (model, root) = self.model(device)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        model.arm()
+        await model.arm()
 
         #expect(device.startRetainingCalls == 1,
                 "the hostless session opened and retention was attempted")
@@ -603,7 +603,7 @@ struct ArmingRetainsTests {
         let (model, root) = self.model(device)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        model.arm()
+        await model.arm()
 
         // ⛔ Not armed on return, however the arm went.
         #expect(model.captureStatus.state != .armed,

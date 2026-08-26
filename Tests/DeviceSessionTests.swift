@@ -68,7 +68,7 @@ struct DeviceSessionTests {
         bitrate    \(AVFoundationCaptureDevice.provisionalBitrate) bps (⚠ provisional, E1.4/E-M2)
         """)
 
-        try device.warmUp(mode: mode)
+        try await device.warmUp(mode: mode)
         // Settle before retaining — REQ-STATE-2 is what warm is for.
         try await Task.sleep(for: .seconds(2))
 
@@ -177,7 +177,7 @@ struct DeviceSessionTests {
             print("SKIP — no physical camera"); return
         }
         let device = AVFoundationCaptureDevice()
-        try device.warmUp(mode: mode)
+        try await device.warmUp(mode: mode)
         try await Task.sleep(for: .seconds(2))
         try device.startRetaining(mode: mode)
         // Fill the ring before asking it for anything.
@@ -261,7 +261,7 @@ struct DeviceSessionTests {
             print("SKIP — no physical camera"); return
         }
         let device = AVFoundationCaptureDevice()
-        try device.warmUp(mode: mode)
+        try await device.warmUp(mode: mode)
         try await Task.sleep(for: .seconds(2))
         try device.startRetaining(mode: mode)
         try await Task.sleep(for: .seconds(5))
@@ -343,7 +343,7 @@ struct DeviceSessionTests {
         await model.remeasure(atMost: cap)
         let mode = model.activeMode
         let baseline = model.capability.bestMode
-        model.arm()
+        await model.arm()
 
         // ⛔ #101 — `arm()` no longer claims `.armed` on return; it waits for the
         // ring. Report what the settle actually cost, which is the number
@@ -451,7 +451,7 @@ struct DeviceSessionTests {
             print("SKIP — no physical camera"); return
         }
         let device = AVFoundationCaptureDevice()
-        try device.warmUp(mode: mode)
+        try await device.warmUp(mode: mode)
         try await Task.sleep(for: .seconds(2))
         try device.startRetaining(mode: mode)
         try await Task.sleep(for: .seconds(6))
@@ -617,7 +617,7 @@ struct DeviceSessionTests {
             print("SKIP — no physical camera"); return
         }
         let device = AVFoundationCaptureDevice()
-        try device.warmUp(mode: mode)
+        try await device.warmUp(mode: mode)
         try await Task.sleep(for: .seconds(2))
         try device.startRetaining(mode: mode)
         try await Task.sleep(for: .seconds(6))

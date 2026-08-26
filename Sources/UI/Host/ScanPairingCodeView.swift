@@ -207,6 +207,28 @@ struct PairingCodeScannerView: UIViewControllerRepresentable {
               session.canAddInput(input) else { return controller }
         session.addInput(input)
 
+        // ⚠ Force continuous AF/AE/WB explicitly rather than trusting whatever
+        // mode the physical device is already in. The same physical back camera
+        // is often still `.locked` by the main capture screen's warm
+        // `AVFoundationCaptureDevice` (REQ-OPT-2/3/4) — a SwiftUI sheet doesn't
+        // remove the presenting screen from the hierarchy, so that warm, locked
+        // session keeps running underneath this one. A locked device can never
+        // focus on a QR code held at an arbitrary distance. Not restored on
+        // teardown: the next real `warmUp()` unconditionally re-locks from
+        // scratch, so any change made here is transient and self-healing.
+        if (try? device.lockForConfiguration()) != nil {
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                device.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+            device.unlockForConfiguration()
+        }
+
         let output = AVCaptureMetadataOutput()
         guard session.canAddOutput(output) else { return controller }
         session.addOutput(output)
