@@ -464,6 +464,19 @@ re-read after the initial connect, so a converged link still showed the frozen
 is correct but can read as several million milliseconds, which is why B3 now
 shows the relation's uncertainty (`agreementText`) rather than its magnitude.
 
+⛔ **What "verified" did not cover, found 27 August 2026 (issue #25, comment).**
+Both fixes above were about `HostLinkDriver`'s *local* state — what B3 shows off
+the peer directly. Nothing in that pass checked what PinPointStudio actually
+received: `publishRelations()`'s only call site was `resume()`, the post-outage
+resync path, which itself had no caller anywhere in the app. So a connection
+that never dropped published nothing, ever — PinPointStudio measured
+`phoneWorstSyncSigmaMs() == -1` (zero relations received) throughout, on a link
+B3 was confidently showing as converged. "Paired half verified live" was true of
+the handshake and the burst; it was not true of 6.1f. Fixed in `eae0cad`: `pump()`
+now calls `publishRelations()` once an estimate exists, gated to every 5 s
+(publishing at the driver's 10 Hz tick would cost ~2.5 KB/s for a number that
+barely moves once settled).
+
 **CT-S4 (7) — `impl`.** `HostLinkDriver.resume` sequences `MSG` 4.3 in its stated
 order — `session_resume` first, then the synchronisation burst, then the queued
 payload — and refuses to release the queue until the burst has produced an
@@ -592,6 +605,14 @@ and did not give `ppcp_relations_convert` what it needed to express *this*
 device's "now" in the reference timebase. 6.1f requires publishing the relation
 you measured; `HostLinkDriver` always did on the real path and the harness did
 not. ⛔ **None of the three causes was `libppcp`'s or the specification's.**
+
+⛔ **"`HostLinkDriver` always did on the real path" was wrong, found 27 August
+2026 (issue #25).** It was true of `resume()`, which this row exercises directly
+— but `resume()` had no caller anywhere in the app, and the path that did run
+every tick, `pump()`, never called `publishRelations()` at all. So the harness's
+Run 3 defect and the live app's defect were the same omission, and this row
+passing said nothing about the live app having it too. Fixed alongside, in
+`eae0cad`.
 
 ⚠ **The library refused correctly at every step and that is the finding worth
 keeping.** `ppcp_relations_convert` applies at most one relation and refuses when
