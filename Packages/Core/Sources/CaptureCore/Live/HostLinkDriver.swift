@@ -45,6 +45,23 @@ public final class HostLinkDriver: @unchecked Sendable {
     /// 8.3f — Shots minted while the link was down, for `session_resume`.
     public private(set) var mintedDuringOutage: [String] = []
 
+    /// 6.1f — how often this peer's own estimate is republished during ordinary
+    /// operation. ⚠ **Not the tick rate.** `pump()` runs at
+    /// `PeerLinkPump.defaultTickIntervalNs` (100 ms, 10 Hz) to drive liveness and
+    /// the sync probe/reply exchange promptly, but the *estimate* it produces
+    /// barely moves between two 100 ms samples once the burst has settled — REQ-
+    /// SYNC-2's burst alone measures ~2 minutes to converge — and 6.1f's own
+    /// filtering makes a faster republish redundant. Publishing on every tick
+    /// would put a 250-byte `relation_update` on the wire at 10 Hz, ~2.5 KB/s
+    /// against a steady-state control-channel budget the capability spike puts
+    /// at ≤10 KB/s total. Five seconds keeps the host's view within a few seconds
+    /// of true at negligible cost (~50 B/s).
+    private static let publishIntervalNs: Int64 = 5_000_000_000
+
+    /// `nil` until the first publish. Reset on entering `.lost` so a stale timer
+    /// does not hold back the first post-recovery estimate.
+    private var lastPublishedAtNs: Int64?
+
     public init(peer: DevicePeer, timebaseId: String, burstTarget: Int = 16) {
         self.peer = peer
         self.timebaseId = timebaseId
@@ -52,7 +69,8 @@ public final class HostLinkDriver: @unchecked Sendable {
     }
 
     /// One tick. Drives the library's two pumps — they are **separate** (6.3d:
-    /// "the heartbeat rate does not set the sync rate") — and re-derives the state.
+    /// "the heartbeat rate does not set the sync rate") — republishes this
+    /// peer's own estimate at ``publishIntervalNs``, and re-derives the state.
     ///
     /// - Parameter throughputMbitPerSecond: `nil` where nothing has been measured.
     ///   ⛔ It decides `weak` versus `connected`, which is a *presentation*
@@ -64,6 +82,22 @@ public final class HostLinkDriver: @unchecked Sendable {
         try peer.livenessPump(nowNs: nowNs)
         try peer.syncPump(nowNs: nowNs)
 
+        // ⛔ **6.1f — found live 27 August: this was the only pump that never
+        // published.** `resume()` always has; the ordinary tick never did, so a
+        // connection that never dropped kept its estimate to itself no matter how
+        // long it ran or how good the number was — PPS read `phoneWorstSyncSigmaMs
+        // () == -1` (zero relations received) throughout. `HostLinkDriver` composed
+        // into a real tick on 26 August without this, and it went unnoticed
+        // because B3 reads the estimate straight off the local `peer`, not off
+        // anything that crossed the wire.
+        if peer.syncHasEstimate(timebaseId) {
+            let due = lastPublishedAtNs.map { nowNs - $0 >= Self.publishIntervalNs } ?? true
+            if due {
+                try peer.publishRelations()
+                lastPublishedAtNs = nowNs
+            }
+        }
+
         let previous = state
         state = try derive(nowNs: nowNs, throughput: throughputMbitPerSecond)
 
@@ -72,6 +106,10 @@ public final class HostLinkDriver: @unchecked Sendable {
             // 8.3f — the regime is entered for the duration: mint locally, queue
             // Captures as `transfer: pending`, reconcile on reconnect.
             isAwaitingResyncBurst = true
+            // The old estimate is about to be superseded by a fresh burst
+            // (below, on the way back) — don't let its timer suppress the first
+            // publish of the new one.
+            lastPublishedAtNs = nil
         }
         if previous == .lost, state != .lost {
             // 6.3c — a network change is one of the three triggers, and a link
@@ -136,6 +174,10 @@ public final class HostLinkDriver: @unchecked Sendable {
         // host reading a resumed Capture reads it against the current relation and
         // not the one that drifted.
         try peer.publishRelations()
+        // Keeps this in step with `pump()`'s own bookkeeping, so the ordinary
+        // tick 100 ms later does not immediately re-publish what this call just
+        // sent.
+        lastPublishedAtNs = nowNs
         try queue.resumeAfterLinkLoss()
         isAwaitingResyncBurst = false
         hasSentResume = false
