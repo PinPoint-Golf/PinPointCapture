@@ -205,7 +205,7 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | CT-I6 | static | a Candidate carries `source_id`, a canonical `at`, a confidence and its corrections | D5 | — | — | pass |
 | CT-I8 | injected | every nomination is emitted and retained, winners and losers | D5 | — | — | pass (own half) |
 | CT-I18 | static | no relation is ever composed; A→C is measured, never derived | D6 | — | — | pass (own half) |
-| CT-I21 | injected | one sync exchange per Timebase, each relation declared directly | D6 | — | — | pass (own half) |
+| CT-I21 | injected | one sync exchange per Timebase, each relation declared directly | D6 | — | — | pass (own half; paired convergence verified live against PinPointStudio, 26 Aug 2026) |
 | CT-I23 | injected | a hostless Shot carries exactly one Candidate, `authority: device` | D5 | — | — | pass (own half) |
 | CT-I26 | injected | a Candidate names a Source this peer declared, on a declared Timebase | D5 | — | — | pass |
 | CT-I29 | static | `tof_correction` carries value **and** sigma, or is absent | D5 | — | — | pass |
@@ -453,6 +453,16 @@ than zeros, because a displayed offset of `0.000 ms ± 0.00` reads as a very goo
 measurement and is not one. I18's half is an absence: there is no function in
 `CaptureCore` or `libppcp` that takes two relations, and a conversion with no
 direct relation **fails** rather than falling back to a zero offset (8.2i1, 5.4b).
+
+⚠ **CT-I21's paired half — verified live against PinPointStudio, 26 August 2026**
+(issue #25). `HostLinkDriver.pump` composed into `HostLinkSession`'s tick: the
+burst ran over a real Wi-Fi link, offset and rate both converged
+(`syncHasEstimate` true, exchanges counted), and B3 reached `.connected`. Two
+things this exposed that no synthetic test could: `AppModel.hostLink` was never
+re-read after the initial connect, so a converged link still showed the frozen
+"Pairing" snapshot; and the raw offset between two peers' own since-boot clocks
+is correct but can read as several million milliseconds, which is why B3 now
+shows the relation's uncertainty (`agreementText`) rather than its magnitude.
 
 **CT-S4 (7) — `impl`.** `HostLinkDriver.resume` sequences `MSG` 4.3 in its stated
 order — `session_resume` first, then the synchronisation burst, then the queued
