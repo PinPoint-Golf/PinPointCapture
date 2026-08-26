@@ -231,10 +231,10 @@ public struct FramingCheckScreen: View {
         return light.verdict != .good && light.fps > 120
     }
 
-    /// `Arm anyway` is the wording that goes with a warning. With nothing to
+    /// `Capture anyway` is the wording that goes with a warning. With nothing to
     /// warn about, "anyway" would be answering a question nobody asked.
     private var armTitle: String {
-        framing.allChecksPass ? "Arm" : "Arm anyway"
+        framing.allChecksPass ? "Capture" : "Capture anyway"
     }
 
 }

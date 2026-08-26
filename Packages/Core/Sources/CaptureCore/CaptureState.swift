@@ -21,7 +21,7 @@ public enum CaptureState: String, Sendable, CaseIterable {
         switch self {
         case .cold: "Not capturing"
         case .warm: "Ready"
-        case .armed: "Armed"
+        case .armed: "Capturing"
         }
     }
 }

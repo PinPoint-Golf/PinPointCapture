@@ -477,7 +477,7 @@ struct ArmedScreen: View {
                 }
 
                 Button(action: onArm) {
-                    Text("Arm")
+                    Text("Capture")
                         .font(.ppRowLabel.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
                 }
