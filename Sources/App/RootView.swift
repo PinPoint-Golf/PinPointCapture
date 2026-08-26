@@ -616,7 +616,25 @@ struct RootView: View {
             { Task { await model.disconnect(.cancelled) } }
         case .lost:
             // 3.6a — look again, which is exactly what the sweep does.
-            { model.beginSearchingForHost() }
+            //
+            // ⛔ **The dead session has to be torn down first.** A transport
+            // that dies while this app stays foregrounded (PPS switched off)
+            // only changes what `HostLinkSession.hostLink` *reports* —
+            // `phase` moves to `.closed`/`.failed` and the state reads
+            // `.lost` — but nothing clears `AppModel.link` on that path; only
+            // an explicit `disconnect()` does, which backgrounding already
+            // calls but a live "lost" screen never did. So
+            // `beginSearchingForHost()`'s `link == nil` guard — there to stop
+            // a *second* search racing a live link — silently blocked this
+            // button on a link that was already dead. Found live: PPS
+            // restarted while the app stayed foregrounded, and "Find the
+            // host again" did nothing.
+            {
+                Task {
+                    await model.disconnect(.cancelled)
+                    model.beginSearchingForHost()
+                }
+            }
         case .resyncing:
             { model.transferQueue?.isPaused.toggle() }
         case .weak:
