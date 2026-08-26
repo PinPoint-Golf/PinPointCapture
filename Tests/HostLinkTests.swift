@@ -8,9 +8,14 @@
 //  `Packages/Core/Tests/CaptureCoreTests/PeerLinkPumpTests.swift`, which is
 //  `private` to that file and cannot be shared across the package boundary.
 //
+//  ⚠ `Pipe`/`PipeChannel`/`PipeTransport` are internal, not `private`, so
+//  `HostLinkSyncTests.swift` (E3.2) can reuse them — both files are compiled into
+//  the same `PinPointCaptureTests` target.
+//
 //  ⛔ The assertion that matters most here is a **negative**: a live link must not
-//  report `.connected` at this level. That state means an arbitrating host and a
-//  settled clock estimate, and E3.1 establishes neither.
+//  report `.connected` **without a host that arbitrates**. That state means a
+//  settled clock estimate over an arbitrating session; a bare handshake, which is
+//  all this pipe's counterpart ever produces, establishes neither.
 
 import Foundation
 import Testing
@@ -19,7 +24,7 @@ import CaptureCore
 
 // MARK: - An in-memory transport
 
-private actor Pipe {
+actor Pipe {
     private var buffered = Data()
     private var waiter: CheckedContinuation<Data?, any Error>?
     private var closed: ChannelCloseReason?
@@ -53,7 +58,7 @@ private actor Pipe {
     }
 }
 
-private struct PipeChannel: ByteChannel {
+struct PipeChannel: ByteChannel {
     let channel: PpcpChannel
     let outbound: Pipe
     let inbound: Pipe
@@ -66,7 +71,7 @@ private struct PipeChannel: ByteChannel {
     }
 }
 
-private struct PipeTransport: PeerTransport {
+struct PipeTransport: PeerTransport {
     let control: any ByteChannel
     let bulk: any ByteChannel
     let preview: (any ByteChannel)? = nil

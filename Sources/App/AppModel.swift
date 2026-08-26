@@ -136,6 +136,12 @@ public final class AppModel {
     private var mintTicker: Task<Void, Never>?
     /// Thermal, storage and battery, at `CORE` 7.4a's heartbeat cadence.
     private var healthTicker: Task<Void, Never>?
+    /// Keeps `hostLink` current with `HostLinkSession.hostLink` while a link is
+    /// up — see `startHostLinkPolling()`.
+    private var hostLinkTicker: Task<Void, Never>?
+    /// E3.2/REQ-SYNC-2 — the thermal reading `refreshHealth()` last saw, so a
+    /// *change* (not every 1 Hz tick) is what triggers a fresh sync burst.
+    private var lastThermalStateForSync: ThermalState?
 
     public init(device: any CaptureDevice = CaptureDeviceFactory.create(),
                 store: SessionStore = SessionStore(
@@ -513,14 +519,35 @@ public final class AppModel {
             if case .failed(let message) = session.phase {
                 hostLinkError = message
             }
+            startHostLinkPolling()
         } catch {
             hostLinkError = String(describing: error)
             hostLink = HostLink(state: .lost)
         }
     }
 
+    /// ⛔ **`HostLinkSession.hostLink` moves continuously once E3.2's ticker
+    /// starts (`linkState`/`clockAgreement` update on every sync tick) — nothing
+    /// re-read it into this `@Observable` copy after the two assignments in
+    /// `connect()`.** Found live against real PinPointStudio: the burst had
+    /// converged (`hasEst=true`, 23 exchanges) while B3 still showed "Pairing"
+    /// and every telemetry row dashed, because `hostLink` was frozen at the
+    /// snapshot taken the instant `open()` returned.
+    private func startHostLinkPolling() {
+        hostLinkTicker?.cancel()
+        hostLinkTicker = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                guard let self, let link = self.link else { return }
+                self.hostLink = link.hostLink
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+    }
+
     /// ⚠ Idempotent, and safe to call when nothing is up.
     public func disconnect(_ reason: ChannelCloseReason = .normal) async {
+        hostLinkTicker?.cancel()
+        hostLinkTicker = nil
         guard let link else { return }
         await link.close(reason)
         self.link = nil
@@ -714,6 +741,14 @@ public final class AppModel {
     public func refreshHealth() {
         let health = DeviceHealthService.current()
         captureStatus.thermal = health.thermal
+        // REQ-SYNC-2's third trigger — oscillator frequency shifts with
+        // temperature, so a changed thermal state restarts the estimator's
+        // window rather than waiting for the next maintenance probe.
+        if let previous = lastThermalStateForSync, previous != health.thermal,
+           let link {
+            Task { await link.notifyThermalEvent() }
+        }
+        lastThermalStateForSync = health.thermal
         if let mode = activeMode {
             storage = device.storageHeadroom(forMode: mode)
         }

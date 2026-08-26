@@ -164,6 +164,22 @@ struct HostLinkTests {
         #expect(clock.offsetText.contains("-") == false)
     }
 
+    /// ⛔ **What B3 actually shows.** Found live against real PinPointStudio
+    /// (26 August 2026): a real, converged relation between two peers' own
+    /// since-boot clocks can carry an offset of minus several million
+    /// milliseconds — correct, and meaningless to a golfer. `agreementText`
+    /// is the uncertainty alone, which is the number that answers a real
+    /// question regardless of how large the underlying offset is.
+    @Test("Clock agreement shows the uncertainty, not the offset")
+    func agreementFormattingIgnoresTheOffsetMagnitude() {
+        let huge = ClockAgreement(offsetMilliseconds: -7_569_907.589,
+                                  offsetSigmaMilliseconds: 17.26, driftPPM: 18)
+        #expect(huge.agreementText == "± 17.26 ms")
+        let settled = ClockAgreement(offsetMilliseconds: -3.184,
+                                     offsetSigmaMilliseconds: 0.21, driftPPM: 18)
+        #expect(settled.agreementText == "± 0.21 ms")
+    }
+
     /// ⚠ REQ-SYNC-3: the estimate is filtered, never stepped. The word "filtered"
     /// in the UI is the visible half of that promise.
     @Test("Drift is reported as filtered")

@@ -152,10 +152,29 @@ public struct ClockAgreement: Sendable, Hashable {
     }
 
     /// "−3.184 ms ± 0.21" — mono. Note the U+2212 minus, not a hyphen.
+    ///
+    /// ⚠ **Not what B3 shows.** `offsetMilliseconds` is measured against
+    /// whatever local reference each peer's clock happens to be counting from
+    /// (`tb:hosttime` is monotonic since boot — `CORE` 6.5, `PpcpTimebases.swift`),
+    /// so its magnitude reflects nothing a golfer can act on: two devices with
+    /// different uptimes since their own last boot disagree by however long that
+    /// gap is, correctly and by design. `agreementText` is the number that
+    /// answers a real question — how tightly the two clocks are related — and
+    /// is what the screen shows instead.
     public var offsetText: String {
         let sign = offsetMilliseconds < 0 ? "\u{2212}" : ""
         return String(format: "%@%.3f ms ± %.2f", sign, abs(offsetMilliseconds),
                       offsetSigmaMilliseconds)
+    }
+
+    /// "± 0.21 ms" — what B3 actually shows for REQ-SYNC-1's offset row.
+    /// ⚠ The uncertainty, not the offset: found live against real
+    /// PinPointStudio (26 August 2026) that a two-way relation between two
+    /// peers' own since-boot clocks can genuinely read minus several million
+    /// milliseconds — correct, and meaningless to show a golfer. How tightly
+    /// the relation holds is the number that answers "is this trustworthy".
+    public var agreementText: String {
+        String(format: "± %.2f ms", offsetSigmaMilliseconds)
     }
 
     /// "18 ppm, filtered" — the word matters (REQ-SYNC-3).

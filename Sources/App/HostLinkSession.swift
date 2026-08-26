@@ -9,16 +9,19 @@
 //  the `#if DEBUG` conformance harness. This is the first shipping path that
 //  drives a `ppcp_peer` over a real link.
 //
-//  ⚠ **E3.1 only.** It completes a handshake and reports what that establishes.
-//  It does not sync clocks (E3.2), accept arm commands (E3.3), announce or
-//  transfer (E3.4), or resume after an outage (E3.5). Each of those is a separate
-//  level precisely so each is separately demonstrable, and this type should grow
-//  by composition rather than by accumulating their responsibilities.
+//  ⚠ **E3.1 + E3.2.** It completes a handshake, runs the clock sync burst and
+//  reports both. It does not accept arm commands (E3.3), announce or transfer
+//  (E3.4), or resume after an outage (E3.5). Each of those is a separate level
+//  precisely so each is separately demonstrable, and this type should grow by
+//  composition rather than by accumulating their responsibilities.
 //
-//  ⛔ **`.connected` is unreachable here, and that is correct.** `CORE` puts
-//  `has_arbitration` and a settled clock estimate behind the connected state, and
-//  neither exists until E3.2's burst has run. An honest E3.1 link reports
-//  `.pairing`, which is what B2 was designed to show.
+//  ⛔ **`.connected` needs a session with arbitration, and this type does not open
+//  one.** `HostLinkDriver.derive` reports `.none` — not `.pairing` — until
+//  `peer.sessionParameters?.hasArbitration` is true, which only happens once a
+//  real host sends `session_open` (E3.3/E3.4 territory). Until then, `hostLink`
+//  maps the driver's `.none` back to `.pairing`: a handshake really did succeed,
+//  and "no host" would be a lie. Once a host opens a session, the driver's
+//  `.pairing`/`.connected`/`.weak`/`.resyncing` take over unmapped.
 //
 //  ⚠ **`DevicePeer` is `@unchecked Sendable` over a C engine with no internal
 //  locking, and `PeerLinkPump.perform` is the only door to it.** Every read of
@@ -27,7 +30,8 @@
 //  `peer.sessionParameters` outside `perform`; that is a latent race in the
 //  harness and is deliberately not copied here.
 //
-//  Spec: `MSG` §3.1, §3.3; `CORE` §5.15, §7.4. Plan E3.1, issue #24.
+//  Spec: `MSG` §3.1, §3.3, §6; `CORE` §5.15, §6.3, §7.4. Plan E3.1/E3.2, issues
+//  #24, #25.
 
 import Foundation
 import Observation
@@ -61,6 +65,12 @@ public final class HostLinkSession {
     public private(set) var lastSeen: Date?
     /// A protocol error the counterpart reported, surfaced rather than counted.
     public private(set) var protocolError: String?
+    /// E3.2 — `HostLinkDriver`'s own view of link state, from liveness and sync
+    /// together. `.none` until a session with arbitration exists; `hostLink` maps
+    /// that back to `.pairing` for as long as this link has merely handshaken.
+    public private(set) var linkState: HostLinkState = .none
+    /// REQ-SYNC-1/3 — `nil` until the burst has produced offset **and** rate.
+    public private(set) var clockAgreement: ClockAgreement?
 
     /// What the transport actually negotiated, for B2's first row.
     public let security: NegotiatedSecurity
@@ -70,10 +80,21 @@ public final class HostLinkSession {
 
     private let peer: DevicePeer
     private let pump: PeerLinkPump
+    /// E3.2 — turns liveness + sync into `HostLinkState` and the clock estimate.
+    /// ⛔ **Touched only from inside a `pump.perform` closure.** It is a plain
+    /// class, not an actor; `pump.perform` is what serialises every call into it,
+    /// exactly as it does for `peer` itself.
+    private let driver: HostLinkDriver
     /// Drains `takeEvents` and folds each batch into the state above.
     /// ⚠ `takeEvents(waitingUpTo:)` is a poll, not a stream, so this owns a task
     /// in the same shape as `AppModel`'s mint and health tickers.
     private var events: Task<Void, Never>?
+    /// Pumps `HostLinkDriver` at `PeerLinkPump`'s own tick cadence. ⚠ Redundant
+    /// with the liveness/sync calls `PeerLinkPump.tickOnce()` already makes on its
+    /// own internal tick — both are cadence-checked internally against elapsed
+    /// time, so the extra calls are no-ops between what's actually due. This is
+    /// the read side: without it, nothing ever asks the driver what it derived.
+    private var syncTicker: Task<Void, Never>?
 
     // MARK: Opening
 
@@ -110,6 +131,7 @@ public final class HostLinkSession {
             syncTimebase: PpcpTimebases.captureId)
         self.pump = PeerLinkPump(peer: peer, transport: transport,
                                  nowNs: { MachClock.hostTimeNs })
+        self.driver = HostLinkDriver(peer: peer, timebaseId: PpcpTimebases.captureId)
         self.declaration = try declaration ?? PpcpDeclaration(
             device.ppcpDeclarationInput(peerId: peerId, viewpoint: nil))
     }
@@ -131,10 +153,51 @@ public final class HostLinkSession {
             phase = .established
             lastSeen = Date()
             startDrainingEvents()
+            // REQ-SYNC-1a/I21 — one estimator for this device's own timebase, and
+            // REQ-SYNC-2's first trigger: a burst on connect. ⚠ Best-effort: a
+            // link that handshook but somehow failed to register sync is still a
+            // usable link, and this level's job is not to fail it over that.
+            try? await pump.perform { peer in
+                try peer.addSyncTimebase(PpcpTimebases.captureId)
+                try peer.syncTrigger(.connect)
+            }
+            startSyncTicking()
         } catch {
             phase = .failed(String(describing: error))
             await pump.stop(.failed("handshake did not complete"))
         }
+    }
+
+    // MARK: Sync (E3.2)
+
+    /// Reads `HostLinkDriver`'s derived state at `PeerLinkPump`'s own cadence.
+    /// ⚠ REQ-SYNC-2's network-change trigger is automatic inside `driver.pump` on
+    /// leaving `.lost` — nothing here decides that.
+    private func startSyncTicking() {
+        syncTicker?.cancel()
+        syncTicker = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                guard let self else { return }
+                let now = MachClock.hostTimeNs
+                if let (state, clock) = try? await self.pump.perform({ peer
+                    -> (HostLinkState, ClockAgreement?) in
+                    let state = try self.driver.pump(nowNs: now)
+                    return (state, self.driver.clockAgreement)
+                }) {
+                    self.linkState = state
+                    self.clockAgreement = clock
+                }
+                try? await Task.sleep(for: .nanoseconds(PeerLinkPump.defaultTickIntervalNs))
+            }
+        }
+    }
+
+    /// REQ-SYNC-2's third trigger. `AppModel` calls this when
+    /// `DeviceHealthService`'s thermal reading changes — oscillator frequency
+    /// shifts with temperature, so the estimator's fit is stale and not merely
+    /// the offset.
+    public func notifyThermalEvent() async {
+        try? await pump.perform { try $0.syncTrigger(.thermalEvent) }
     }
 
     // MARK: Events
@@ -189,9 +252,11 @@ public final class HostLinkSession {
 
         default:
             // ⚠ Every other event belongs to a level that is not built yet —
-            // arm (E3.3), capture and payload (E3.4), sync and relations (E3.2),
-            // resume (E3.5). They are dropped here rather than half-handled,
-            // because a half-handled `session_open` is worse than an ignored one.
+            // arm (E3.3), capture and payload (E3.4), resume (E3.5). They are
+            // dropped here rather than half-handled, because a half-handled
+            // `session_open` is worse than an ignored one. Sync is E3.2's and is
+            // handled by `startSyncTicking`'s own poll of the driver, not by an
+            // event case — `relation_update`/`sync` are informational only.
             break
         }
     }
@@ -203,6 +268,8 @@ public final class HostLinkSession {
     public func close(_ reason: ChannelCloseReason = .normal) async {
         events?.cancel()
         events = nil
+        syncTicker?.cancel()
+        syncTicker = nil
         await pump.stop(reason)
         if case .closed = phase {} else {
             phase = .closed(reason: nil)
@@ -213,17 +280,22 @@ public final class HostLinkSession {
 
     /// This link, as the app-wide `HostLink`.
     ///
-    /// ⛔ **Never `.connected`.** That state means an arbitrating host and a
-    /// settled clock estimate, and E3.1 establishes neither. `clock` is `nil` for
-    /// the same reason `HostLinkDriver` refuses to synthesise one: a displayed
-    /// offset of `0.000 ms ± 0.00` reads as a very good measurement and is not one.
+    /// ⚠ **`.connected` is reachable, but only once a host actually arbitrates.**
+    /// `HostLinkDriver.derive` reports `.none` until `session_open` carries
+    /// arbitration, and `.none` here would read as "no host" for a link that has
+    /// genuinely handshaken — so it is mapped back to `.pairing`. Once a host
+    /// opens a session, the driver's own states take over unmapped. `clock` comes
+    /// from the same driver and is `nil` for the reason it always was: a
+    /// displayed offset of `0.000 ms ± 0.00` reads as a very good measurement and
+    /// is not one.
     public var hostLink: HostLink {
         switch phase {
         case .connecting:
             HostLink(state: .pairing, hostName: hostDisplayName)
         case .established:
-            HostLink(state: .pairing, hostName: hostDisplayName,
-                     hostVersion: negotiatedVersion, lastSeen: lastSeen)
+            HostLink(state: linkState == .none ? .pairing : linkState,
+                     hostName: hostDisplayName, hostVersion: negotiatedVersion,
+                     clock: clockAgreement, lastSeen: lastSeen)
         case .closed, .failed:
             HostLink(state: .lost, hostName: hostDisplayName,
                      hostVersion: negotiatedVersion, lastSeen: lastSeen)

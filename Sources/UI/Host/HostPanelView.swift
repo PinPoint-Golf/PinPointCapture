@@ -331,7 +331,7 @@ public struct HostPanelView: View {
 
     private var connectedTelemetry: [HostTelemetryLine] {
         [
-            HostTelemetryLine.clockOffset(link.clock),
+            HostTelemetryLine.clockAgreement(link.clock),
             HostTelemetryLine("Drift", link.clock?.driftText ?? "—"),
             HostTelemetryLine("Checked on last impact",
                               HostFormat.residual(link.clock?.lastImpactResidualMilliseconds),
@@ -343,7 +343,7 @@ public struct HostPanelView: View {
 
     private var weakTelemetry: [HostTelemetryLine] {
         [
-            HostTelemetryLine.clockOffset(link.clock),
+            HostTelemetryLine.clockAgreement(link.clock),
             HostTelemetryLine("Last impact",
                               HostFormat.residual(link.clock?.lastImpactResidualMilliseconds),
                               tone: .warning),
@@ -374,7 +374,7 @@ public struct HostPanelView: View {
 
     private var resyncingTelemetry: [HostTelemetryLine] {
         [
-            HostTelemetryLine.clockOffset(link.clock),
+            HostTelemetryLine.clockAgreement(link.clock),
             HostTelemetryLine("Sending",
                               HostFormat.sending(queue, progress: currentTransferProgress),
                               tone: .progress),
@@ -390,7 +390,7 @@ public struct HostPanelView: View {
         [
             HostTelemetryLine("Exchanges", HostFormat.exchanges(link.clock),
                               tone: .progress),
-            HostTelemetryLine.clockOffset(link.clock),
+            HostTelemetryLine.clockAgreement(link.clock),
             HostTelemetryLine("Drift", link.clock?.driftText ?? "—"),
             HostTelemetryLine("Waiting to send", HostFormat.queue(queue)),
             HostTelemetryLine("Temperature", capture.thermal.displayName)
@@ -508,12 +508,18 @@ private struct HostTelemetryLine {
         self.spokenValue = spokenValue
     }
 
-    /// "−3.184 ms ± 0.21", spoken as words. REQ-SYNC-1: offset **and** rate, so
-    /// this row never appears without a drift row beside it.
-    static func clockOffset(_ clock: ClockAgreement?) -> HostTelemetryLine {
-        guard let clock else { return HostTelemetryLine("Clock offset", "—") }
-        return HostTelemetryLine("Clock offset", clock.offsetText,
-                                 spokenValue: HostFormat.spokenOffset(clock))
+    /// "± 0.21 ms", spoken as words. REQ-SYNC-1: offset **and** rate, so this
+    /// row never appears without a drift row beside it.
+    ///
+    /// ⚠ **The uncertainty, not the offset.** Found live against real
+    /// PinPointStudio: the raw offset between two peers' own since-boot clocks
+    /// is correct but can read minus several million milliseconds, which is
+    /// meaningless to a golfer. How tightly the clocks agree is the number
+    /// that answers a real question.
+    static func clockAgreement(_ clock: ClockAgreement?) -> HostTelemetryLine {
+        guard let clock else { return HostTelemetryLine("Clock agreement", "—") }
+        return HostTelemetryLine("Clock agreement", clock.agreementText,
+                                 spokenValue: HostFormat.spokenAgreement(clock))
     }
 }
 
@@ -614,13 +620,10 @@ enum HostFormat {
         "\(VideoMode.fpsText(value)) fps"
     }
 
-    /// "minus 3.184 milliseconds, plus or minus 0.21" — symbols do not read
-    /// aloud, so every value with one gets a spoken form.
-    static func spokenOffset(_ clock: ClockAgreement) -> String {
-        let sign = clock.offsetMilliseconds < 0 ? "minus " : ""
-        return String(format: "%@%.3f milliseconds, plus or minus %.2f",
-                      sign, abs(clock.offsetMilliseconds),
-                      clock.offsetSigmaMilliseconds)
+    /// "agreeing to within 0.21 milliseconds" — symbols do not read aloud, so
+    /// every value with one gets a spoken form.
+    static func spokenAgreement(_ clock: ClockAgreement) -> String {
+        String(format: "agreeing to within %.2f milliseconds", clock.offsetSigmaMilliseconds)
     }
 }
 
