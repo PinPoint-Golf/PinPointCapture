@@ -58,16 +58,30 @@ this is meaningful.
 **Nobody has ever opened a `preview` channel to PinPointStudio.** Their side was broken until this
 afternoon and is now fixed; we are its first real test, and our side has never sent a frame.
 
-1. Connect to Studio and arm.
+⛔ **Rewritten this evening against PinPointStudio's specification** ([#108](https://github.com/PinPoint-Golf/PinPointCapture/issues/108)).
+Preview is no longer anything to do with arming: the host asks for it immediately after
+`session_open`, and `CORE` 5.11.2 calls setup and framing preview's main use. **Press nothing.**
+
+1. Connect to Studio. **Do not arm. Do not press Capture.**
 2. On the Mac: **Settings → Cameras**.
 
-**Pass:** a moving picture, roughly ten frames a second.
+**Pass:** a moving picture, roughly ten frames a second, with the phone sitting on its opening
+screen. ⚠ **If a picture requires anything to be pressed on the phone first, this is not done** —
+that is their acceptance test, in their words.
+
+3. **Then** arm, and watch the picture across the transition.
+
+⚠ Arming reconfigures the camera (5.11k makes preview *alone* an independent mode and preview
+beside a capture Stream a derived view), so the picture may freeze for as long as that takes. What
+must not happen is silence: the gap is announced as an `absent` segment and the picture returns.
+⛔ **A picture that stops at arm and never comes back is a defect** — tell me.
 
 **If nothing appears, the three failure points are separable and worth telling apart:**
 
 | Where | How to tell |
 |---|---|
-| The third `link_bind` refused | Studio logs a phone and its channel count; it will say two, not three |
+| The third `link_bind` refused | Studio logs a phone and its channel count; it will say two, not three. ⚠ **Their end swept it silently until `1f513dd`** — that is the `no link_bind inside the bind timeout` in every Studio log from this afternoon |
+| The Stream refused by us | Studio shows our `stream_open_ack` reason verbatim — `camera_permission_denied`, `no_preview_profile`, `camera_unavailable`, `no_preview_channel`. **Each names which side to look at** |
 | The Stream refused | Studio shows a `stream_open` refusal with our reason |
 | Frames not produced | Channel and Stream both open, no pixels — ours, in `PreviewFrameTap` |
 

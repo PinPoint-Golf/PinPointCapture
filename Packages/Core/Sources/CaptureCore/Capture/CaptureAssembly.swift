@@ -254,4 +254,10 @@ public enum PpcpMediaType {
     /// 5.12.1a's Candidate evidence — the window of microphone audio that
     /// explains why detection fired.
     public static let audioEvidence = "audio/mp4"
+    /// A single `preview` frame. ⛔ **`ENC` 6g wants the IANA media type and 6h
+    /// forbids a receiver inferring one**, so a JPEG announced `video/mp4` is
+    /// wrong even where the receiver sniffs the bytes and copes — which is what
+    /// PinPointStudio was doing, both ends being wrong in complementary
+    /// directions (their spec, 27 Aug, §4.4).
+    public static let previewFrame = "image/jpeg"
 }

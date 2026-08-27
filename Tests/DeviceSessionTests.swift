@@ -951,22 +951,48 @@ struct DeviceSessionTests {
             print("SKIP — no physical camera"); return
         }
         guard let (model, _) = await Self.reachStudio() else { return }
-        try await Task.sleep(for: .seconds(12))
+
+        // ⛔ **NOTHING IS ARMED, AND THAT IS THE TEST** (#108). PinPointStudio
+        // sends `stream_open` for a `kind: preview` Stream immediately after
+        // `session_open`, and 5.11.2 makes setup and framing preview's main use
+        // — so a picture must exist before a golfer has pressed anything. This
+        // used to be impossible twice over: the channel was dialled from
+        // `startRecording`, and every inbound `stream_open` was refused because
+        // the declaration was read off `recording`, which is `nil` until arm.
+        try await Task.sleep(for: .seconds(20))
+
+        let channel = await model.link?.hasPreviewChannel ?? false
+        let streamId = await model.previewStreamId
+        let segments = await model.previewSegmentsAnnounced
+        print("DEVICE-RUN preview channel=\(channel) "
+              + "stream=\(streamId ?? "—") segments=\(segments)")
+
+        #expect(channel, """
+                `ENC` 2.1d's third channel never opened, so there is nowhere for \
+                preview payload to go (5.11h refuses the bulk channel)
+                """)
+        #expect(streamId != nil, """
+                the host asked for no preview Stream, or we refused it — check \
+                the `stream_open_ack` reason at their end
+                """)
+        // I36 / 5.11c — every interval from `opened_at` onward is an announced
+        // segment or an announced `absent`. Zero of either means no picture.
+        #expect(segments > 0,
+                "the Stream opened and no frame was ever announced on it")
 
         await model.arm()
         try await Task.sleep(for: .seconds(6))
         let withPreview = await model.ringStats
-        let hasPreview = await model.recording?.previewStream != nil
-        print("DEVICE-RUN preview stream declared: \(hasPreview)")
         print("DEVICE-RUN with preview: frames \(withPreview.framesAppended) "
               + "maxInterArrival \(withPreview.maxInterArrivalNs / 1_000_000) ms")
 
-        // ⚠ 5.11a/I5 — the Stream must name a profile the declaration carries,
-        // and 5.11m makes that profile's `intrinsics: none`.
-        #expect(hasPreview, """
-                no preview Stream was derived — either no camera Source declares \
-                the preview profile, or the guard that requires it is refusing
-                """)
+        // ⚠ §4.5 — arming reconfigures the camera and preview drops while it
+        // does. What must not happen is silence: the first frame afterwards
+        // finds the interval unaccounted for and sheds it (5.11c3).
+        let acrossTheArm = await model.previewSegmentsAnnounced
+        print("DEVICE-RUN preview across the arm: segments=\(acrossTheArm)")
+        #expect(acrossTheArm > segments,
+                "preview stopped when capture started — 5.11k makes it a derived view, not an exit")
 
         await model.disarm()
         try await Task.sleep(for: .seconds(2))

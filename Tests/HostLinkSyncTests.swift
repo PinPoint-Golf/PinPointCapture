@@ -114,3 +114,118 @@ struct HostLinkSyncTests {
         model.refreshHealth()
     }
 }
+
+// MARK: - Preview at connect (#108)
+
+/// PinPointStudio's specification of 27 August 2026: *"When a phone connects to
+/// PinPointStudio, its preview must be available immediately. Not when the phone
+/// arms. Not when a recording session starts. At connect."*
+///
+/// ⛔ **What these can and cannot see.** A simulator enumerates no camera, so it
+/// declares no camera Source and no preview profile — the `opened` verdict is
+/// only reachable on hardware and lives in `DeviceSessionTests`. What is provable
+/// here is the defect that made preview impossible: every inbound `stream_open`
+/// was answered from `recording?.declaration`, which is `nil` until a golfer
+/// presses Capture, so a request arriving at connect was refused before it
+/// reached any preview logic at all.
+@Suite("#108 — a stream_open is answered before anything is armed")
+@MainActor
+struct PreviewAtConnectTests {
+
+    private func counterpart(on transport: PipeTransport) async throws -> PeerLinkPump {
+        let peer = try DevicePeer(peerId: "peer:test-host", role: .capture, listener: true,
+                                  syncTimebase: "tb:test-host-clock")
+        let pump = PeerLinkPump(peer: peer, transport: transport,
+                                nowNs: { Int64(Date().timeIntervalSince1970 * 1_000_000_000) })
+        await pump.start()
+        return pump
+    }
+
+    private func connected() async throws -> (AppModel, PeerLinkPump, PpcpDeclaration) {
+        let declaration = try PpcpDeclaration(
+            ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
+            allowingNoCameraSource: true)
+        let (deviceSide, hostSide) = PipeTransport.pair()
+        let hostPump = try await counterpart(on: hostSide)
+        let model = AppModel()
+        await model.connect(transport: deviceSide, sessionId: "ses:test",
+                            hostDisplayName: nil, declaration: declaration)
+        return (model, hostPump, declaration)
+    }
+
+    /// ⛔ **The regression, stated as an assertion.** Nothing is armed, so
+    /// `recording` is `nil` — and the answer must still come from the Source list
+    /// the link declared at `hello`, not from a refusal that fires first.
+    @Test("A stream_open with nothing armed is answered from the link's declaration")
+    func aRequestIsAnsweredBeforeAnythingIsArmed() async throws {
+        let (model, hostPump, declaration) = try await connected()
+        defer { Task { await hostPump.stop() } }
+        let link = try #require(model.link)
+        #expect(model.recording == nil, "the premise: nothing is armed")
+
+        // A Source this peer never declared. ⚠ The verdict that matters is the
+        // *reason*: `no_such_source` means the request reached the Source lookup.
+        let stranger = await model.hostLink(link, didRequestStream: "str:x",
+                                            sourceId: "src:nothing-declared",
+                                            profileId: PpcpDeclaration.previewProfileId,
+                                            kind: PpcpStreamKind.preview)
+        #expect(stranger == .refused(reason: "no_such_source"), """
+                a stream_open with nothing armed was refused before it reached \
+                the declaration — which is exactly the defect in #108
+                """)
+
+        // A Source this peer *did* declare, with a profile it does not carry.
+        let declared = try #require(declaration.sources.first)
+        let wrongProfile = await model.hostLink(link, didRequestStream: "str:y",
+                                                sourceId: declared.id,
+                                                profileId: "no-such-profile",
+                                                kind: PpcpStreamKind.preview)
+        #expect(wrongProfile == .refused(reason: "no_such_profile"), """
+                5.11a / I5 — a Stream names a profile the declaration carries, \
+                and the refusal must say which half was wrong
+                """)
+
+        await model.disconnect()
+    }
+
+    /// `CORE` 5.11l — a preview profile is activatable on a `kind: preview`
+    /// Stream and nowhere else. ⛔ The owner MUST refuse it for capture:
+    /// honouring it silently hands an operator 640×360 where they asked for a
+    /// capture format.
+    @Test("A preview profile selected for a capture Stream is refused by name")
+    func aPreviewProfileIsRefusedForCapture() async throws {
+        let (model, hostPump, declaration) = try await connected()
+        defer { Task { await hostPump.stop() } }
+        let link = try #require(model.link)
+
+        // ⚠ Needs a declared Source carrying a profile with `intrinsics: none`
+        // (5.11m). Without a camera there is none, so this asserts the ordering
+        // of the guards rather than the clause itself — the clause is exercised
+        // on hardware.
+        guard let source = declaration.sources.first,
+              let profile = source.profiles.first(where: {
+                  $0.intrinsics == PpcpDeclaration.Intrinsics.none
+              }) else {
+            #expect(model.livePreview == nil, "no preview Stream exists unasked")
+            await model.disconnect()
+            return
+        }
+        let verdict = await model.hostLink(link, didRequestStream: "str:z",
+                                           sourceId: source.id, profileId: profile.id,
+                                           kind: PpcpStreamKind.video)
+        #expect(verdict == .refused(reason: "preview_profile_not_for_capture"))
+        await model.disconnect()
+    }
+
+    /// ⚠ **Request-driven, never unprompted** — PinPointStudio asks per Source
+    /// and asked explicitly not to be sent preview for a Source it never
+    /// requested (their §5).
+    @Test("No preview Stream exists until a host asks for one")
+    func previewIsNeverUnprompted() async throws {
+        let (model, hostPump, _) = try await connected()
+        defer { Task { await hostPump.stop() } }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(model.livePreview == nil)
+        await model.disconnect()
+    }
+}

@@ -574,23 +574,13 @@ public final class RecordingSession {
                 profileId: profile, timebaseId: camera.timebaseId,
                 continuity: .shotWindowed, openedAtNs: openedAtNs))
         }
-        // ⛔ **The `preview` Stream** — 5.11f: "a second Stream from an existing
-        // Source, with its own `profile_id` … It needs no new Source, no new
-        // message and no new machinery." `continuous` is fixed by §5.11's own
-        // table; a preview is a view of time passing, not a window around a shot.
-        //
-        // ⚠ **Not opened on the record peer.** `SessionBundleWriter` refuses a
-        // preview Capture outright (5.11j — live-only, never retained, never
-        // written), so this Stream exists on the link and nowhere else. The
-        // caller filters on `kind` when it opens Streams for the bundle.
-        if let camera, camera.profileIds.contains(PpcpDeclaration.previewProfileId) {
-            built.append(PpcpStreamRecord(
-                id: "str:preview:\(camera.id)", sessionId: sessionId,
-                sourceId: camera.id, kind: PpcpStreamKind.preview,
-                profileId: PpcpDeclaration.previewProfileId,
-                timebaseId: camera.timebaseId,
-                continuity: .continuous, openedAtNs: openedAtNs))
-        }
+        // ⛔ **No `preview` Stream is derived here any more.** Preview belongs
+        // to the LINK, not to a recording session: 5.11.2 makes setup and
+        // framing its main use, which happens before anything is armed, and
+        // 5.11k makes a preview Stream alone an independent mode. `LivePreview`
+        // owns it, opened when the host asks (#108). Deriving one here as well
+        // would put two preview Streams on one Source and pay the 6.7 ms frame
+        // path twice for one picture.
         // ⛔ **A separate `audio` Stream, and it was missing.** 5.12.1a puts the
         // window that explains why detection fired on its own Stream, and D5's
         // `DetectAndMint` requires one — but this composition opened only video
@@ -628,10 +618,6 @@ public final class RecordingSession {
     /// The `video` Stream, for a Capture to land on.
     public var videoStream: PpcpStreamRecord? {
         streams.first { $0.kind == PpcpStreamKind.video }
-    }
-
-    public var previewStream: PpcpStreamRecord? {
-        streams.first { $0.kind == PpcpStreamKind.preview }
     }
 
     /// D4's attitude and gravity, on the `continuous` `metadata` Stream.
@@ -767,97 +753,6 @@ public final class RecordingSession {
 
     private var transferTask: Task<Void, Never>?
 
-    /// `CORE` §5.11.2 — live-only frames for a human to look at.
-    ///
-    /// ⚠ `nil` is the ordinary case: no host, no third channel, or a transport
-    /// that cannot dial one. 5.11i puts preview first in the order of things to
-    /// lose, so its absence is never an error.
-    private var previewProducer: PreviewProducer?
-
-    /// Opens the `preview` Stream on the link and starts taking frames for it.
-    ///
-    /// ⛔ **Nothing is installed on the capture path until the far end can
-    /// actually receive a frame.** A tap running with no producer would cost the
-    /// frame callback for nothing, which is the wrong side of 5.11i's ordering.
-    @discardableResult
-    public func openPreview() async -> Bool {
-        guard let hosted = control.hosted, let stream = previewStream else { return false }
-        guard let producer = try? await hosted.openPreview(stream) else { return false }
-        previewProducer = producer
-
-        let tap = PreviewFrameTap { [weak self] jpeg, atNs in
-            // ⚠ On the tap's own queue. The hop to the peer is here and nowhere
-            // near the frame callback.
-            Task { @MainActor [weak self] in
-                await self?.deliverPreview(jpeg, endingAtNs: atNs)
-            }
-        }
-        device.attachPreviewTap(tap)
-        return true
-    }
-
-    /// One preview segment, onto the link.
-    ///
-    /// ⛔ **`shed` is not an error path — it is the accounting** (5.11c3).
-    /// Deliberate non-retention is an `absent` segment with `absent_reason:
-    /// not_retained`, never a gap: `gaps` mean loss (I11), and a peer that sheds
-    /// a frame on purpose and records a gap is reporting a dropout it did not
-    /// have. So whatever the tap dropped between this frame and the last is
-    /// announced as absent before this one is announced as present, and the
-    /// Stream's interval stays fully accounted for.
-    /// How many preview segments one session may announce.
-    ///
-    /// ⛔ **A budget, because the library has no way to release a transfer
-    /// entry.** `PPCP_TRANSFER_MAX` is 128 and the table only ever grows — every
-    /// announced Capture takes a slot for the peer's lifetime, whatever its
-    /// transfer state. Preview announces one per segment at ~10 fps, so it fills
-    /// the table in about thirteen seconds and the next **shot** announce fails
-    /// with `PPCP_ERR_LIMIT`, surfacing as "nothing is being recorded".
-    ///
-    /// ⛔ That is 5.11i inverted — preview degrades before transfer and transfer
-    /// before capture, and here preview was stopping capture outright. Observed
-    /// on hardware, 27 Aug.
-    ///
-    /// ⚠ **Half the table, and the number is arbitrary because the fix is not
-    /// ours.** libppcp needs to reclaim resolved entries, exactly as
-    /// `ppcp_mint_pump` was taught to reclaim resolved mint slots for #103. Until
-    /// it does, a bounded preview is the honest trade: framing keeps its picture
-    /// — 5.11.2 calls setup and framing preview's main use — and capture keeps
-    /// its slots.
-    nonisolated static let previewSegmentBudget = 64
-
-    private var previewSegments = 0
-
-    private func deliverPreview(_ jpeg: Data, endingAtNs atNs: Int64) async {
-        guard let hosted = control.hosted, let producer = previewProducer else { return }
-        guard previewSegments < Self.previewSegmentBudget else {
-            // ⚠ Announced as shed once, then silent. 5.11c3 — deliberate
-            // non-retention is an `absent` segment, never a gap.
-            if previewSegments == Self.previewSegmentBudget {
-                previewSegments += 1
-                try? await hosted.pump.perform { _ in
-                    _ = try producer.shed(throughNs: atNs)
-                }
-                stopPreview()
-            }
-            return
-        }
-        previewSegments += 1
-        try? await hosted.pump.perform { _ in
-            if producer.unaccountedNs(asOf: atNs) != nil {
-                _ = try producer.shed(throughNs: atNs - PreviewFrameTap.intervalNs)
-            }
-            _ = try producer.deliver(endingAtNs: atNs, payload: jpeg)
-        }
-    }
-
-    /// ⛔ Taken off the capture path when the session ends, so the callback stops
-    /// paying for a producer that is going away.
-    public func stopPreview() {
-        device.attachPreviewTap(nil)
-        previewProducer = nil
-    }
-
     /// One 32 KiB chunk per `perform`, and that is not a tuning choice.
     ///
     /// ⛔ `libppcp` encodes each originated message into a **64 KiB per-channel**
@@ -988,7 +883,6 @@ public final class RecordingSession {
         // to decide, and an unsent payload is not lost — it is in the bundle,
         // which is the whole of "live bytes are bundle bytes".
         stopTransferring()
-        stopPreview()
         // ⛔ **Close this session's Streams on the LINK peer, which outlives it.**
         // 5.1a fixes a Stream's identity for its lifetime and `peer_stream_add`
         // refuses an id the peer already holds — so without this, the second arm

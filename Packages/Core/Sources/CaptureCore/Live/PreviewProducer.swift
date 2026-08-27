@@ -85,8 +85,10 @@ public final class PreviewProducer: @unchecked Sendable {
                               channel: channel,
                               // `ENC` 6g (erratum E7) — a preview segment is a
                               // container-framed file like any other clip, and a
-                              // receiver may not infer that (6h).
-                              container: PpcpMediaType.clip)
+                              // receiver may not infer that (6h). ⛔ **JPEG, not
+                              // MP4**: `PreviewFrameTap` encodes single frames,
+                              // and this said `video/mp4` until 27 Aug.
+                              container: PpcpMediaType.previewFrame)
         try peer.payloadChunk(captureId: id, index: 0,
                               chunkBytes: PayloadTransferQueue.chunkBytes,
                               data: payload, channel: channel)

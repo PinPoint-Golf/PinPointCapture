@@ -83,9 +83,13 @@ public protocol HostLinkSessionDelegate: AnyObject {
     /// (E18 1c) and 5.11l makes one of the refusals mandatory: a preview profile
     /// selected for a capture Stream MUST be refused, and a consumer MUST NOT
     /// select one.
+    /// ⚠ **`async`, because honouring a preview request is real work** — the
+    /// camera may need warming and the Stream has to be registered on the peer
+    /// before anything can be announced on it. Answering `opened` and then
+    /// producing nothing is the silence E18 1c exists to prevent, one step later.
     func hostLink(_ link: HostLinkSession, didRequestStream streamId: String,
                   sourceId: String, profileId: String,
-                  kind: String) -> StreamVerdict
+                  kind: String) async -> StreamVerdict
 
     /// `MSG` 7.2 — the host arbitrated and issued. The timebase travels with the
     /// number so the receiver can convert it (I22).
@@ -246,7 +250,13 @@ public final class HostLinkSession {
             device.ppcpDeclarationInput(peerId: peerId, viewpoint: nil))
     }
 
-    private let declaration: PpcpDeclaration
+    /// ⚠ **Readable, because preview needs it before anything is armed.** The
+    /// declaration is what says which Sources exist and which of their profiles
+    /// is a preview profile (`intrinsics: none`, 5.11m), and a host's
+    /// `stream_open` arrives at connect — long before `RecordingSession` exists
+    /// to carry a copy. Reading it off `recording?.declaration` is what made
+    /// every inbound `stream_open` unanswerable until arm (#108).
+    public let declaration: PpcpDeclaration
 
     /// `MSG` 3.1 / 3.3 — `hello`, then a complete declaration snapshot.
     ///
@@ -412,7 +422,7 @@ public final class HostLinkSession {
             // `error`, never silence. `stream_open` is `any → owner`, so this is
             // a host asking us for a Stream on a `profile_id` it chose, which is
             // the only carrier the protocol has for a capture-format choice.
-            let verdict = delegate?.hostLink(self, didRequestStream: streamId,
+            let verdict = await delegate?.hostLink(self, didRequestStream: streamId,
                                              sourceId: sourceId,
                                              profileId: profileId, kind: kind)
                 ?? .refused(reason: "not_needed")
@@ -608,13 +618,33 @@ public final class HostLinkSession {
     /// - Returns: `true` where the channel is open and the engine knows about it.
     @discardableResult
     public func openPreviewChannel() async -> Bool {
+        // ⛔ **Once per link, and the guard is not defensive tidiness.** Two
+        // concurrent calls dial two channels, one gets attached and the other is
+        // held by the listener until its bind timeout and swept — which is
+        // PinPointStudio's `no link_bind inside the bind timeout` on 27 Aug, and
+        // reads at both ends as preview simply not working.
+        if hasPreviewChannel { return true }
         guard let dialling = transport as? any DiallingPeerLink else { return false }
         guard let channel = try? await dialling.openChannel(.preview) else { return false }
         await pump.attachPreview(channel)
         let told = try? await pump.perform { peer in
             try peer.openChannel(.preview)
         }
-        return told != nil
+        hasPreviewChannel = told != nil
+        return hasPreviewChannel
+    }
+
+    /// Whether `ENC` 2.1d's third channel is open on this link.
+    public private(set) var hasPreviewChannel = false
+
+    /// Builds the live `preview` Stream a host asked for.
+    ///
+    /// ⛔ **Here rather than in `AppModel`, because `pump` is private and stays
+    /// private** — this file's header calls `perform` the only door to the peer,
+    /// and a `pump` accessor would be a door beside it.
+    public func openPreview(_ stream: PpcpStreamRecord,
+                            device: any CaptureDevice) async throws -> LivePreview {
+        try await LivePreview(pump: pump, device: device, stream: stream)
     }
 
     /// `CORE` 7.3c — readiness again, whenever `settled` changes.

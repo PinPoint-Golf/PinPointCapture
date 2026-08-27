@@ -71,27 +71,47 @@ struct PipeChannel: ByteChannel {
     }
 }
 
-struct PipeTransport: PeerTransport {
+/// ⛔ **`DiallingPeerLink`, because preview needs `ENC` 2.1d's third channel and
+/// `openPreviewChannel()` answers `false` to anything that cannot dial one.** The
+/// pipe carries the channel from the start rather than dialling it — there is no
+/// listener here to bind against — so `openChannel` hands back what it already
+/// holds, which is what 2.1d's own "returns the already-bound channel if the link
+/// carries it" describes.
+struct PipeTransport: PeerTransport, DiallingPeerLink {
     let control: any ByteChannel
     let bulk: any ByteChannel
-    let preview: (any ByteChannel)? = nil
+    let preview: (any ByteChannel)?
     /// ⚠ Says it negotiated nothing rather than claiming an unknown mode (`RV` 5.4k).
     let security = NegotiatedSecurity.directPathPlaintext
+
+    func openChannel(_ channel: PpcpChannel) async throws -> any ByteChannel {
+        switch channel {
+        case .control: control
+        case .bulk: bulk
+        default:
+            if let preview { preview }
+            else { throw TransportError.channelClosed(.cancelled) }
+        }
+    }
 
     func close(_ reason: ChannelCloseReason) async {
         await control.close(reason)
         await bulk.close(reason)
+        await preview?.close(reason)
     }
 
     static func pair() -> (PipeTransport, PipeTransport) {
         let controlAB = Pipe(), controlBA = Pipe()
         let bulkAB = Pipe(), bulkBA = Pipe()
+        let previewAB = Pipe(), previewBA = Pipe()
         let a = PipeTransport(
             control: PipeChannel(channel: .control, outbound: controlAB, inbound: controlBA),
-            bulk: PipeChannel(channel: .bulk, outbound: bulkAB, inbound: bulkBA))
+            bulk: PipeChannel(channel: .bulk, outbound: bulkAB, inbound: bulkBA),
+            preview: PipeChannel(channel: .preview, outbound: previewAB, inbound: previewBA))
         let b = PipeTransport(
             control: PipeChannel(channel: .control, outbound: controlBA, inbound: controlAB),
-            bulk: PipeChannel(channel: .bulk, outbound: bulkBA, inbound: bulkAB))
+            bulk: PipeChannel(channel: .bulk, outbound: bulkBA, inbound: bulkAB),
+            preview: PipeChannel(channel: .preview, outbound: previewBA, inbound: previewAB))
         return (a, b)
     }
 }

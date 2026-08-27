@@ -827,11 +827,20 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
                               from connection: AVCaptureConnection) {
         switch routing {
         case .warm:
-            // Nothing consuming frames. ⚠ Not counted here: the ring is the
-            // thing that counts what it did and did not take, and there is no
-            // ring. `RingStats.framesDroppedNotRetaining` covers the window
-            // where one exists but is not yet retaining.
-            break
+            // ⛔ **Preview-only mode, and this case used to be a bare `break`
+            // under a comment that said otherwise.** `Routing.warm`'s own
+            // doc reads "nothing consuming frames but the preview" and the code
+            // consumed nothing at all, so a preview Stream opened before arming
+            // produced no picture — which is `CORE` 5.11k's *independent* mode,
+            // and 5.11.2 calls setup and framing preview's main use.
+            //
+            // ⚠ Not counted here: the ring is the thing that counts what it did
+            // and did not take, and there is no ring.
+            // `RingStats.framesDroppedNotRetaining` covers the window where one
+            // exists but is not yet retaining.
+            previewTap?.offer(sampleBuffer,
+                              atNs: FrameTimeline.nanoseconds(
+                                  CMSampleBufferGetPresentationTimeStamp(sampleBuffer)))
         case .retaining:
             recorder?.append(sampleBuffer, device: activeDevice)
             // ⛔ **After the ring, always.** 5.11i: preview degrades before

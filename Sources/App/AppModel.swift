@@ -119,6 +119,12 @@ public final class AppModel {
 
     /// `CORE` §9 — the open Session, written to a bundle as it happens. `nil`
     /// when nothing is being recorded.
+    /// The live `preview` Stream, for as long as a host wants one.
+    ///
+    /// ⚠ **On the model, not on `RecordingSession`.** It is opened at connect
+    /// and outlives every arm and disarm on that link (#108).
+    public private(set) var livePreview: LivePreview?
+
     public private(set) var recording: RecordingSession?
     /// ⛔ Surfaced rather than swallowed. A session that failed to open is a
     /// session whose swings are not being kept, and §9.2 makes that the one thing
@@ -591,12 +597,11 @@ public final class AppModel {
                 // REQ-SESS-5/6 — payload follows the announce on its own channel,
                 // at whatever rate the socket allows.
                 session.startTransferring()
-                // ⚠ `ENC` 2.1d's third channel, then the Stream, then the tap —
-                // and each step gives up quietly if the one before it could not
-                // happen. A host with no preview channel is not an error (5.11i).
-                if let link, await link.openPreviewChannel() {
-                    await session.openPreview()
-                }
+                // ⛔ **Preview is NOT opened here any more.** It belongs to the
+                // link, not to a recording session — `LivePreview`, opened when
+                // the host asks for it at connect. Opening it from arm made a
+                // picture conditional on a golfer pressing Capture, which is the
+                // opposite of what preview is for (5.11.2, #108).
             }
 
             // ⚠ **`readiness` is NOT reported here** — see `reportReadiness()`.
@@ -679,6 +684,9 @@ public final class AppModel {
         hostLinkTicker?.cancel()
         hostLinkTicker = nil
         guard let link else { return }
+        // ⛔ 5.11j — preview is live-only, so its Stream dies with the link that
+        // carried it. Nothing to resume, nothing to keep.
+        stopPreview()
         await link.close(reason)
         self.link = nil
         hostLink = HostLink(state: .none)
@@ -1148,11 +1156,22 @@ extension AppModel: HostLinkSessionDelegate {
 
     public func hostLink(_ link: HostLinkSession, didOpenSession sessionId: String,
                          parameters: PpcpSessionParameters) {
-        // ⛔ Nothing opens here. PinPointStudio opens the Session at `declare`,
-        // long before an arm, and a Session opened now would be one the host's
-        // arbitration parameters could not reach. `startRecording` reads
-        // `link.hostSession` when the arm actually happens.
+        // ⛔ Nothing *captures* here. PinPointStudio opens the Session at
+        // `declare`, long before an arm, and a Session opened now would be one
+        // the host's arbitration parameters could not reach. `startRecording`
+        // reads `link.hostSession` when the arm actually happens.
         refreshHostLink()
+        // ⛔ **`ENC` 2.1d's third channel, at session open and not at arm.**
+        // Preview's whole use is setup and framing (5.11.2), which happens
+        // before anything is captured — so the channel it needs has to exist
+        // before anything is armed. This was called from `startRecording`, which
+        // is why a host asking for preview at connect got a picture only after a
+        // golfer pressed Capture, if at all (#108).
+        //
+        // ⚠ Opened unconditionally, not on demand: a host's `stream_open`
+        // arrives immediately after `session_open` and dialling a channel takes
+        // a round trip. A channel with no preview Stream on it costs nothing.
+        Task { [weak link] in await link?.openPreviewChannel() }
     }
 
     public func hostLinkDidRequestArm(_ link: HostLinkSession) -> ReadinessMeasurement {
@@ -1177,23 +1196,22 @@ extension AppModel: HostLinkSessionDelegate {
 
     public func hostLink(_ link: HostLinkSession, didRequestStream streamId: String,
                          sourceId: String, profileId: String,
-                         kind: String) -> StreamVerdict {
-        // ⛔ **5.11l, and it is the one refusal with an answer both ends can
-        // test.** A preview profile describes a *derived view* — a decimation of
-        // whatever the capture Stream is already producing — and is activatable
-        // only on a Stream of `kind: preview`. A consumer MUST NOT select one for
-        // capture, and an owner MUST refuse it. Silently honouring it would hand
-        // an operator 640×360 where they asked for a capture format.
-        guard let declaration = recording?.declaration,
-              let source = declaration.sources.first(where: { $0.id == sourceId }) else {
-            // Nothing armed, so nothing to open a Stream on yet.
-            return .refused(reason: "not_needed")
+                         kind: String) async -> StreamVerdict {
+        // ⛔ **The declaration comes from the LINK, not from `recording`.** It
+        // used to be read off `recording?.declaration`, which is `nil` until a
+        // golfer presses Capture — so every `stream_open` arriving at connect
+        // was refused before it reached any of the logic below, preview included
+        // (#108). The link has held a complete declaration since `hello`.
+        let declaration = link.declaration
+        guard let source = declaration.sources.first(where: { $0.id == sourceId }) else {
+            // 5.11a / I5 — a Stream names a Source this peer actually declared.
+            return .refused(reason: "no_such_source")
         }
         guard let profile = source.profiles.first(where: { $0.id == profileId }) else {
             // ⛔ 5.11a / I5 — a Stream names a profile the declaration actually
             // carries. Refusing an undeclared one is what stops a Stream
             // existing for a mode this camera cannot enter.
-            return .refused(reason: "not_needed")
+            return .refused(reason: "no_such_profile")
         }
         // ⛔ **5.11l, and it is the refusal with an answer both ends can test.**
         // A preview profile describes a *derived view* — a decimation of what
@@ -1203,7 +1221,20 @@ extension AppModel: HostLinkSessionDelegate {
         // honouring it silently would hand an operator 640×360 where they asked
         // for a capture format.
         if kind != PpcpStreamKind.preview, profile.intrinsics == PpcpDeclaration.Intrinsics.none {
-            return .refused(reason: "not_needed")
+            return .refused(reason: "preview_profile_not_for_capture")
+        }
+
+        // ⛔ **The preview case, and it is the LEGAL one** (5.11l). A preview
+        // profile is activatable on a `kind: preview` Stream and nowhere else,
+        // so this is the request the specification expects rather than the one
+        // it forbids — and 5.11.2 puts opening it with "the consumer that wants
+        // it", which is why the host originating it raises none of the `ENC`
+        // 7a/7b ownership problem that keeps *capture* Streams ours: a preview
+        // Capture is never written to a bundle (5.11j), so there is no file to
+        // keep consistent.
+        if kind == PpcpStreamKind.preview {
+            return await openPreview(streamId: streamId, source: source,
+                                     profile: profile, on: link)
         }
         // ⛔ **Everything else is refused too, for now, and deliberately.**
         // Honouring a format choice means closing the Stream this device already
@@ -1327,7 +1358,15 @@ extension AppModel: HostLinkSessionDelegate {
         // ⛔ **7.4d — capture does not stop, and `armed` is never dropped here.**
         // REQ-STATE-3 scopes the keepalive lapse to warm → cold, which is a
         // battery mechanism, not a capture one.
-        guard captureStatus.state == .warm else { return }
+        //
+        // ⛔ **And a device holding an open `preview` Stream is not idle.** Going
+        // cold under it would stop the camera, and nothing would start it again
+        // when the link came back — the host asked once, at session open, and
+        // 5.11.2 gives it no reason to ask twice. Leaving the camera running
+        // costs the outage's frames and no more: `LivePreview` finds the
+        // interval unaccounted for on the first frame after the link returns and
+        // sheds it, which is 5.11c3's `absent` rather than a silence.
+        guard captureStatus.state == .warm, livePreview == nil else { return }
         device.goCold()
         captureStatus.state = .cold
         stopHealthPolling()
@@ -1394,4 +1433,102 @@ extension AppModel: HostLinkSessionDelegate {
 
     /// REQ-BUF-2 — the floor below which arming is refused rather than attempted.
     nonisolated static let storageFloor = StorageFloor()
+
+    // MARK: - Preview (#108)
+
+    /// Honours a host's `stream_open` for a `preview` Stream, or says why not.
+    ///
+    /// ⛔ **This is the whole of "a picture is there before anything is
+    /// pressed".** PinPointStudio sends this immediately after `session_open`,
+    /// so everything it needs must be reachable with nothing armed: the
+    /// declaration off the link, the camera warmed here rather than by `arm()`,
+    /// and `Routing.warm` feeding the tap.
+    ///
+    /// ⚠ **A refusal is a first-class answer and the host shows the reason to an
+    /// operator verbatim**, so these are words a person can act on.
+    /// ⛔ 5.11a1's vocabulary — `thermal_limit`, `storage_full`, `not_needed`,
+    /// `calibration_changed` — has no value for *no camera permission* or *no
+    /// preview profile*, and `not_needed` would be a lie about whose problem it
+    /// is. The in-vocabulary reasons are used where they fit and the rest are
+    /// stated plainly; recorded as a deviation, and it is the fifth instance of
+    /// the same gap.
+    private func openPreview(streamId: String, source: PpcpDeclaration.SourceView,
+                             profile: PpcpDeclaration.ProfileView,
+                             on link: HostLinkSession) async -> StreamVerdict {
+        // ⛔ 5.11m — `intrinsics: none` is the positive declaration that
+        // identifies a preview profile, and `PreviewFrameTap` produces exactly
+        // the one this device declares. A `preview` Stream naming a capture
+        // profile would be a Stream we could not produce what it promises on.
+        guard profile.intrinsics == PpcpDeclaration.Intrinsics.none else {
+            return .refused(reason: "not_a_preview_profile")
+        }
+        guard permissions.canCapture else {
+            return .refused(reason: "camera_permission_denied")
+        }
+        // 5.11i — preview is the first thing to lose, so a device already too hot
+        // to capture does not spend the budget on a picture.
+        if captureStatus.thermal == .critical {
+            return .refused(reason: "thermal_limit")
+        }
+        guard let sessionId = link.hostSession?.sessionId else {
+            // ⛔ 5.11a — a Stream belongs to a Session, and this arrives after
+            // `session_open` on every host that follows 5.11.2. Refusing beats
+            // inventing a Session id the host never opened.
+            return .refused(reason: "no_session")
+        }
+        // ⚠ 5.11h — preview payload may not share the shot payload's channel, so
+        // without the third channel there is no preview to open. Ordinarily
+        // already dialled at session open; this is the retry, not the first try.
+        if link.hasPreviewChannel == false, await link.openPreviewChannel() == false {
+            return .refused(reason: "no_preview_channel")
+        }
+
+        // ⛔ **The camera has to be running, and nothing else would start it.**
+        // `warmUp` is what `arm()` pays for; preview-only mode pays the same
+        // price and REQ-STATE-2 is why it is paid here rather than on the frame
+        // path. ⚠ Skipped where capture already has the camera: re-warming an
+        // armed device would reconfigure it mid-session, which is #101's stall.
+        if captureStatus.state == .cold {
+            await warmUp()
+            guard captureStatus.state == .warm else {
+                return .refused(reason: "camera_unavailable")
+            }
+        }
+
+        // A host re-asking replaces what it asked for last time; two preview
+        // Streams on one Source would pay the frame path twice for one picture.
+        livePreview?.stop(reason: "not_needed")
+
+        let record = PpcpStreamRecord(
+            id: streamId, sessionId: sessionId, sourceId: source.id,
+            kind: PpcpStreamKind.preview, profileId: profile.id,
+            timebaseId: source.timebaseId,
+            // ⛔ Fixed by §5.11's own table — a preview is a view of time
+            // passing, not a window around a shot.
+            continuity: .continuous, openedAtNs: MachClock.hostTimeNs)
+        do {
+            let preview = try await link.openPreview(record, device: device)
+            preview.start()
+            livePreview = preview
+            return .opened
+        } catch {
+            // ⚠ Named rather than swallowed: `libppcp: invalid argument
+            // (openStream)` on a device tells nobody which Stream it was.
+            recordingError = "Preview could not be opened: \(error)"
+            return .refused(reason: "stream_open_failed")
+        }
+    }
+
+    /// What the live preview Stream is called, and how much of its interval has
+    /// been accounted for. ⚠ Read through the model so a caller is not obliged to
+    /// hop actors for two integers.
+    var previewStreamId: String? { livePreview?.stream.id }
+    var previewSegmentsAnnounced: Int { livePreview?.segmentsAnnounced ?? 0 }
+
+    /// ⛔ Preview dies with the link that carries it. 5.11j makes it live-only,
+    /// so there is nothing to resume and nothing to keep.
+    func stopPreview(reason: String = "not_needed") {
+        livePreview?.stop(reason: reason)
+        livePreview = nil
+    }
 }

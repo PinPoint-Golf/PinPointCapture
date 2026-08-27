@@ -88,23 +88,6 @@ public struct HostedSessionContext: Sendable {
         }
     }
 
-    /// Opens the `preview` Stream on the link and returns its producer.
-    ///
-    /// ⛔ **On the link and nowhere else.** `SessionBundleWriter` refuses a
-    /// preview Capture (5.11j — live-only, never retained, never written), so
-    /// this Stream has no counterpart in the bundle by construction rather than
-    /// by a filter someone has to remember.
-    ///
-    /// ⚠ Returns the producer rather than storing it: this is a `struct` held in
-    /// a `let`, so a `mutating` setter here would write to a copy and the caller
-    /// would hold a producer nothing ever used.
-    public func openPreview(_ stream: PpcpStreamRecord) async throws -> PreviewProducer {
-        try await pump.perform { [stream] peer in
-            try peer.openStream(stream)
-            return try PreviewProducer(peer: peer, stream: stream)
-        }
-    }
-
     /// Opens the recording session's own Stream records on the link.
     ///
     /// ⛔ **A `preview` Stream is deliberately excluded.** `SessionBundleWriter`
