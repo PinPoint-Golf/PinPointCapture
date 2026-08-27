@@ -90,7 +90,7 @@ public protocol HostLinkSessionDelegate: AnyObject {
     /// `MSG` 7.2 — the host arbitrated and issued. The timebase travels with the
     /// number so the receiver can convert it (I22).
     func hostLink(_ link: HostLinkSession, didIssueShot shotId: String,
-                  t0Ns: Int64, t0TimebaseId: String)
+                  t0Ns: Int64, t0TimebaseId: String, candidateIds: [String])
 
     /// `MSG` 7.3 — the host wants an interval from this device's ring.
     func hostLink(_ link: HostLinkSession, didRequestCapture shotId: String,
@@ -168,6 +168,18 @@ public final class HostLinkSession {
     /// attached: `CaptureCore` opens no file (ground rule 8), so the bytes come
     /// from a closure the app layer supplies.
     private var offers: SessionOfferService?
+
+    /// The bulk queue of the hosted Session in force, if any.
+    ///
+    /// ⛔ **Held because `session_resume` needs it** — 4.3's message carries the
+    /// Captures still owed (`pendingForResume`), and the queue is the only thing
+    /// that knows what they are. ⚠ Set by `openHostedSession` and cleared when
+    /// the recording ends, so a resume never names payloads from a Session that
+    /// has closed.
+    private weak var transferQueue: PayloadTransferQueue?
+
+    /// REQ-STATE-5 — the outage this link is reporting, once it is back.
+    public private(set) var gap: GapWindow?
 
     /// The host's `session_open`, held from the moment it arrives.
     ///
@@ -278,9 +290,24 @@ public final class HostLinkSession {
                 guard let self else { return }
                 let now = MachClock.hostTimeNs
                 if let (state, clock) = try? await self.pump.perform({ [offers = self.offers,
-                                                                        host = self.counterpartPeerId] peer
+                                                                        host = self.counterpartPeerId,
+                                                                        queue = self.transferQueue,
+                                                                        session = self.hostSession?.sessionId
+                                                                            ?? self.sessionId] peer
                     -> (HostLinkState, ClockAgreement?) in
                     let state = try self.driver.pump(nowNs: now)
+                    // ⛔ **`MSG` 4.3's sequence, and the order is the whole of
+                    // it**: `session_resume` first so the host learns what exists,
+                    // then a fresh sync burst, then `publishRelations` — and only
+                    // then does bulk resume. A payload sent against the relation
+                    // that drifted through the outage would be read at the wrong
+                    // instant. `resume` returns false while it is still
+                    // converging, so the tick simply calls it again.
+                    if let queue, self.driver.isAwaitingResyncBurst {
+                        _ = try? self.driver.resume(sessionId: session,
+                                                    peerId: PeerIdentity.current,
+                                                    queue: queue, nowNs: now)
+                    }
                     // ⚠ **Drained between calls, which is what makes progress.**
                     // `pumpReplay` stops when the peer's outbound queue is full
                     // and `perform` flushes on the way out, so the next tick
@@ -402,9 +429,9 @@ public final class HostLinkSession {
                 }
             }
 
-        case .shotReceived(let id, let t0Ns, let t0TimebaseId, _):
+        case .shotReceived(let id, let t0Ns, let t0TimebaseId, let candidateIds, _):
             delegate?.hostLink(self, didIssueShot: id, t0Ns: t0Ns,
-                               t0TimebaseId: t0TimebaseId)
+                               t0TimebaseId: t0TimebaseId, candidateIds: candidateIds)
 
         case .captureRequested(let shotId, let t0Ns, let t0TimebaseId,
                                let streamIds, let preNs, let postNs, let replyTo):
@@ -437,6 +464,16 @@ public final class HostLinkSession {
             delegate?.hostLinkDidLoseLink(self)
 
         case .linkRestored:
+            // REQ-STATE-5 — the window during which this host was absent, stated
+            // explicitly rather than left for a consumer to notice from a hole.
+            //
+            // ⚠ **`GapWindow` does not cross the wire, and that is not an
+            // oversight.** What crosses on reconnect is `session_resume`'s
+            // minted shots and pending Captures; the gap is what a *person* is
+            // told, on B3. libppcp's own `gap` is a different thing entirely —
+            // lost data inside a segment on a `continuous` Stream (I11) — and
+            // conflating the two would report a dropout this device did not have.
+            gap = await gapOnRestore()
             delegate?.hostLinkDidRestoreLink(self)
 
         default:
@@ -445,6 +482,53 @@ public final class HostLinkSession {
             // `startSyncTicking`'s poll of the driver, not by an event case.
             break
         }
+    }
+
+    /// The outage that just ended, in wall-clock terms a person can read.
+    ///
+    /// ⚠ `CORE` 6.5b / I15 — the interval is computed in the timebase that
+    /// *measures* and only then labelled with the wall clock. The driver does
+    /// that; this supplies the epoch pair, read adjacently so the two readings
+    /// name the same moment.
+    private func gapOnRestore() async -> GapWindow? {
+        let epochWall = Date()
+        let epochAtNs = MachClock.hostTimeNs
+        return try? await pump.perform { [driver] _ in
+            driver.gap(endingAtNs: epochAtNs,
+                       shotsInGap: driver.mintedDuringOutage.count,
+                       epochWallUtcNs: Int64(epochWall.timeIntervalSince1970 * 1_000_000_000),
+                       epochAtNs: epochAtNs)
+        } ?? nil
+    }
+
+    /// `MSG` 6.2 / `CORE` 6.3h — how far this device's own acoustic fiducial sat
+    /// from the instant the host decided the shot happened.
+    ///
+    /// ⛔ **REQ-SYNC-4, and it is the only genuinely new arithmetic in E3.** Both
+    /// numbers exist and nothing had ever subtracted them: the Candidate's
+    /// `atNs` is when this device *heard* the ball, already corrected for
+    /// time of flight; the Shot's `t0` is when the host says it *happened*. The
+    /// difference is what the clock estimate is wrong by, per shot, and
+    /// accumulating it is also how REQ-MIC-4 eventually solves the
+    /// microphone-to-ball distance without anyone holding a tape measure.
+    ///
+    /// ⚠ **Skipped, silently, where the conversion has no relation to work
+    /// with.** 8.2i1 — a residual computed against no relation is not a small
+    /// residual, it is a meaningless one, and publishing it would poison exactly
+    /// the series E2.3 wants to estimate from.
+    public func reportResidual(shotId: String, heardAtNs: Int64,
+                               issuedT0Ns: Int64, t0TimebaseId: String) async -> Double? {
+        try? await pump.perform { [driver] peer -> Double? in
+            guard let heardInHostTerms = try peer.instant(heardAtNs,
+                                                          on: PpcpTimebases.captureId,
+                                                          expressedIn: t0TimebaseId)
+            else { return nil }
+            let residualNs = heardInHostTerms - issuedT0Ns
+            try peer.syncResidual(shotId: shotId, timebaseId: PpcpTimebases.captureId,
+                                  residualNs: residualNs)
+            driver.recordResidual(nanoseconds: residualNs)
+            return Double(residualNs) / 1_000_000
+        } ?? nil
     }
 
     // MARK: Offering stored Sessions (MSG §9.1)
@@ -483,10 +567,28 @@ public final class HostLinkSession {
     public func openHostedSession(promotion: @escaping PromotionPolicy)
         async throws -> HostedSessionContext? {
         guard let hostSession, let hostPeerId = counterpartPeerId else { return nil }
-        return try await HostedSessionContext.open(
+        let context = try await HostedSessionContext.open(
             pump: pump, parameters: hostSession,
             hostPeerId: hostPeerId, promotion: promotion)
+        transferQueue = context.queue
+        return context
     }
+
+    /// A Shot minted while the host was unreachable (`CORE` 8.3f).
+    ///
+    /// ⛔ **This is what `session_resume` carries**, and it is the whole reason a
+    /// device may mint during an outage without the host losing track: 4.3c says
+    /// the ids are not renumbered, so the host learns what happened rather than
+    /// being handed a renumbered history.
+    public func recordMintedDuringOutage(_ shotId: String) async {
+        try? await pump.perform { [driver] _ in
+            driver.recordMintedDuringOutage(shotId)
+        }
+    }
+
+    /// True while the link is down and this device is minting on its own
+    /// authority — which is what makes a Shot one to record for the resume.
+    public var isOutage: Bool { linkState == .lost }
 
     /// `ENC` 2.1d — the third channel, opened after the session is established.
     ///
@@ -560,7 +662,10 @@ public final class HostLinkSession {
         case .established:
             HostLink(state: linkState == .none ? .pairing : linkState,
                      hostName: hostDisplayName, hostVersion: negotiatedVersion,
-                     clock: clockAgreement, lastSeen: lastSeen)
+                     clock: clockAgreement, lastSeen: lastSeen,
+                     // REQ-STATE-5 — B3's *Gap reported to host* and *Shots in
+                     // the gap* have rendered "none" since they were written.
+                     gap: gap)
         case .closed, .failed:
             HostLink(state: .lost, hostName: hostDisplayName,
                      hostVersion: negotiatedVersion, lastSeen: lastSeen)

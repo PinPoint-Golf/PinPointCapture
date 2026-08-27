@@ -151,6 +151,15 @@ public final class AppModel {
     /// grown for the life of the app.
     private var shotIdByCapture: [String: UUID] = [:]
 
+    /// Candidate id → the instant this device's microphone heard that ball.
+    ///
+    /// ⛔ **REQ-SYNC-4's other operand.** The Candidate's `atNs` is
+    /// time-of-flight corrected and lives only in the detection; the host's `t0`
+    /// arrives later, on `shot`. Nothing kept the first, so the subtraction had
+    /// nothing to subtract. ⚠ Removed on use — a residual is per shot, and a
+    /// stale entry would attach one swing's hearing to another's arbitration.
+    private var heardInstantByCandidate: [String: Int64] = [:]
+
     public init(device: any CaptureDevice = CaptureDeviceFactory.create(),
                 store: SessionStore = SessionStore(
                     root: URL.documentsDirectory.appendingPathComponent("sessions",
@@ -523,6 +532,7 @@ public final class AppModel {
     private func startRecording() async {
         guard recording == nil else { return }
         shotIdByCapture.removeAll()
+        heardInstantByCandidate.removeAll()
         transferQueue = nil
         do {
             // ⚠ The host's Session id, where there is one: every Stream, Capture
@@ -941,6 +951,13 @@ public final class AppModel {
         do {
             let detections = try await recording.observe(window)
             candidateCount += detections.count
+            // REQ-SYNC-4's first operand, kept until the host arbitrates. ⚠ The
+            // Candidate's `atNs` is already time-of-flight corrected, which is
+            // what makes the eventual subtraction a clock residual rather than a
+            // measurement of how far away the ball was.
+            for detection in detections {
+                heardInstantByCandidate[detection.candidate.id] = detection.candidate.atNs
+            }
         } catch {
             recordingError = String(describing: error)
         }
@@ -974,6 +991,13 @@ public final class AppModel {
                 // and a `payload_ack` naming that Capture has nowhere else to
                 // land.
                 for captureId in shot.captureIds { shotIdByCapture[captureId] = row.id }
+                // ⛔ 8.3f — a Shot minted while the host was unreachable is one
+                // `session_resume` must name on reconnect, unrenumbered (4.3c).
+                // Capture never stopped (7.4d); this is how the host finds out
+                // what it missed rather than being handed a tidied history.
+                if let link, link.isOutage {
+                    Task { await link.recordMintedDuringOutage(shot.id) }
+                }
             }
         } catch {
             recordingError = String(describing: error)
@@ -1120,9 +1144,25 @@ extension AppModel: HostLinkSessionDelegate {
     }
 
     public func hostLink(_ link: HostLinkSession, didIssueShot shotId: String,
-                         t0Ns: Int64, t0TimebaseId: String) {
-        // ⛔ E3.5. The host's `t0` against this device's acoustic fiducial is
-        // REQ-SYNC-4's residual, and nothing computes it yet.
+                         t0Ns: Int64, t0TimebaseId: String, candidateIds: [String]) {
+        // ⛔ **REQ-SYNC-4 — the residual, and it needs the instant this device
+        // HEARD the ball.** That is the Candidate's own `atNs`, already corrected
+        // for time of flight, and the only place it survives is the detection
+        // that produced it. ⚠ Skipped where no candidate matches: a residual
+        // against a Shot this device did not nominate would be measuring the
+        // host's clock against nothing.
+        //
+        // ⚠ **Matched by Candidate, not by time.** The Shot names the nominations
+        // it arbitrated over — winners and losers both — so the join is exact.
+        // Pairing the nearest candidate to `t0` would work until two phones or a
+        // host microphone nominated the same ball, which is the ordinary case.
+        let heard = candidateIds.compactMap { heardInstantByCandidate.removeValue(forKey: $0) }
+        guard let heardAtNs = heard.first else { return }
+        Task { [weak self] in
+            _ = await self?.link?.reportResidual(shotId: shotId, heardAtNs: heardAtNs,
+                                                 issuedT0Ns: t0Ns,
+                                                 t0TimebaseId: t0TimebaseId)
+        }
     }
 
     public func hostLink(_ link: HostLinkSession, didRequestCapture shotId: String,

@@ -436,6 +436,68 @@ struct LiveLinkTests {
         #expect(host.pending(.control) > 0)
     }
 
+    // MARK: REQ-SYNC-4 — the per-shot residual
+
+    /// ⛔ **The residual, and what it must never be measured against.**
+    ///
+    /// `sync_residual` (`MSG` 6.2) is the difference between when this device
+    /// *heard* the ball and when the host says it *happened*. Both numbers
+    /// existed for months and nothing subtracted them, so B3's *Checked on last
+    /// impact* and C1's `sync` rail rendered "—" on every device.
+    ///
+    /// ⚠ **8.2i1 is the whole of this test.** A conversion with no relation
+    /// answers `nil`, and a residual computed against a substituted zero is not
+    /// a small residual — it is the *entire* offset between two unrelated clocks,
+    /// reported as though the acoustic detector had been that wrong. It would
+    /// poison exactly the series REQ-MIC-4 wants to estimate time-of-flight from.
+    @Test("A residual is refused where the clocks have no relation, not zeroed")
+    func residualNeedsARelation() throws {
+        let peer = try Self.peer()
+        try peer.addSyncTimebase(Self.timebase)
+
+        // No exchange has happened, so there is no relation to convert through.
+        #expect(peer.syncHasEstimate(Self.timebase) == false)
+        let converted = try peer.instant(1_000_000_000, on: Self.timebase,
+                                         expressedIn: "tb:host")
+        #expect(converted == nil, """
+                8.2i1 — no relation means no answer. A zero here would be \
+                reported as a residual and believed
+                """)
+
+        // ⛔ **And the library does NOT refuse the wire call — checked, not
+        // assumed.** `sync_residual` is accepted for a Shot in a Session that was
+        // never opened, against a timebase with no relation, carrying any number
+        // at all. So nothing below the application will stop a meaningless
+        // residual reaching a host: the `instant(_:on:expressedIn:) == nil` guard
+        // in `HostLinkSession.reportResidual` is the only thing standing between
+        // 8.2i1 and a poisoned series, and it must stay there.
+        #expect(throws: Never.self) {
+            try peer.syncResidual(shotId: "sht:1", timebaseId: Self.timebase,
+                                  residualNs: 1_000)
+        }
+    }
+
+    /// The arithmetic itself, which is a subtraction and must stay one.
+    ///
+    /// ⚠ The Candidate's instant is **already** time-of-flight corrected
+    /// (`CandidateFactory` subtracts it), which is what makes the difference a
+    /// statement about the *clocks* rather than about how far away the ball was.
+    /// Subtracting ToF twice would look like a residual that grew with distance.
+    @Test("The residual is heard-minus-issued, in the host's own terms")
+    func residualIsASubtraction() {
+        // The device heard the ball at 10.000 s on its own clock; converted into
+        // the host's terms that is 10.004 s; the host issued t0 at 10.000 s.
+        let heardInHostTerms: Int64 = 10_004_000_000
+        let issuedT0Ns: Int64 = 10_000_000_000
+        let residualNs = heardInHostTerms - issuedT0Ns
+        #expect(residualNs == 4_000_000)
+        #expect(Double(residualNs) / 1_000_000 == 4.0, "4 ms, as B3 renders it")
+
+        // ⚠ Signed, and the sign carries meaning: negative is this device
+        // hearing the strike *before* the host placed it.
+        #expect((9_996_000_000 - issuedT0Ns) == -4_000_000)
+    }
+
     // MARK: MSG 9.1 — a replay that is interrupted, and a link that dies under one
 
     /// Counts how often the bundle was read, because that is the observable half

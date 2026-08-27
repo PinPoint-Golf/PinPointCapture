@@ -347,7 +347,7 @@ public actor ConformanceHarness {
                         try offers.pumpReplay(hostPeerId: host)
                     }
 
-                case .shotReceived(let id, let t0Ns, let t0TimebaseId, let authority):
+                case .shotReceived(let id, let t0Ns, let t0TimebaseId, _, let authority):
                     // ⛔ **The conversion, not a substitution.** The instant
                     // arrives on the Session's reference clock; expressing it on
                     // this device's capture clock is the only way a ring could be

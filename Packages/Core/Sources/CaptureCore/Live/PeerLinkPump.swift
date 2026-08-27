@@ -90,8 +90,15 @@ public enum PeerLinkEvent: Sendable, Hashable {
     /// possible at the receiver at all — and the `authority` beside it is 8.3d's
     /// answer to "who decided this", which a device needs before it treats a
     /// Shot as issued rather than minted.
+    /// `MSG` 7.2 — a Shot, from whoever issued it.
+    ///
+    /// ⚠ **`candidateIds` carries the winners AND the losers** (5.13's own
+    /// comment on the field). It is here because REQ-SYNC-4's residual needs to
+    /// know *which* nomination the host arbitrated over: the instant this device
+    /// heard the ball lives with the Candidate, and the instant the host decided
+    /// it happened arrives here, and nothing else joins the two.
     case shotReceived(id: String, t0Ns: Int64, t0TimebaseId: String,
-                      authority: PpcpAuthority)
+                      candidateIds: [String], authority: PpcpAuthority)
     case sessionOffered(PpcpSessionOffer)
     case sessionAccepted(PpcpSessionAccept)
     /// 7.4c — three consecutive missed intervals. ⛔ Capture does not stop (7.4d).
@@ -458,15 +465,21 @@ public actor PeerLinkPump {
         case PPCP_EVENT_SHOT:
             guard let msg else {
                 return .shotReceived(id: "", t0Ns: 0, t0TimebaseId: "",
-                                     authority: .host)
+                                     candidateIds: [], authority: .host)
             }
             return body(msg, ppcp_body_shot.self) { shot in
                 // ⚠ Read here, while the pointer is alive — including the
                 // timebase id, which is a `ppcp_id` inside the instant and not a
                 // pointer into the arena.
-                .shotReceived(id: ppcpString(shot.pointee.shot.id),
+                var value = shot.pointee.shot
+                let candidates = withUnsafeBytes(of: &value.candidates) { raw -> [String] in
+                    let base = raw.bindMemory(to: ppcp_id.self)
+                    return (0..<shot.pointee.shot.candidate_count).map { ppcpString(base[$0]) }
+                }
+                return .shotReceived(id: ppcpString(shot.pointee.shot.id),
                               t0Ns: shot.pointee.shot.t0.ns,
                               t0TimebaseId: ppcpString(shot.pointee.shot.t0.tb),
+                              candidateIds: candidates,
                               authority: shot.pointee.shot.authority == PPCP_AUTHORITY_DEVICE
                                   ? .device : .host)
             }

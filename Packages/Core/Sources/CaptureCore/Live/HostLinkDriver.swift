@@ -137,6 +137,15 @@ public final class HostLinkDriver: @unchecked Sendable {
     }
 
     /// Records a Shot minted while the link was down (8.3f).
+    /// REQ-SYNC-4 — the last per-shot residual, for the row a person reads.
+    ///
+    /// ⚠ Kept here so `clockAgreement` can carry it: B3's *Checked on last
+    /// impact* and C1's `sync` rail have both been rendering `nil` since they
+    /// were written, because nothing computed one.
+    public private(set) var lastResidualNs: Int64?
+
+    public func recordResidual(nanoseconds: Int64) { lastResidualNs = nanoseconds }
+
     public func recordMintedDuringOutage(_ shotId: String) {
         guard state == .lost || isAwaitingResyncBurst else { return }
         mintedDuringOutage.append(shotId)
@@ -212,6 +221,10 @@ public final class HostLinkDriver: @unchecked Sendable {
             offsetMilliseconds: Double(relation.offset_ns) / 1_000_000,
             offsetSigmaMilliseconds: relation.offset_sigma_ns / 1_000_000,
             driftPPM: relation.skew_ppm,
+            // REQ-SYNC-4. ⚠ `nil` until a shot has actually been checked against
+            // the acoustic fiducial — "not yet" is what B3 shows, and it is a
+            // different statement from a residual of zero.
+            lastImpactResidualMilliseconds: lastResidualNs.map { Double($0) / 1_000_000 },
             exchangesCompleted: peer.syncExchangeCount(timebaseId),
             exchangesExpected: burstTarget)
     }
