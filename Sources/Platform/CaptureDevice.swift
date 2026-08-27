@@ -110,6 +110,14 @@ public protocol CaptureDevice: AnyObject, Sendable {
     func ppcpDeclarationInput(peerId: String,
                               viewpoint: PpcpViewpoint?) throws -> PpcpDeclarationInput
 
+    /// `CORE` §5.11.2 — take preview frames off the capture path, or stop.
+    ///
+    /// ⚠ Defaulted, because a device with no sample callback has nothing to tap
+    /// and saying so is better than every stub carrying an empty method. ⛔ The
+    /// default is a no-op **and preview then simply does not happen**: 5.11i
+    /// makes preview the first thing to lose, so its absence is never an error.
+    func attachPreviewTap(_ tap: PreviewFrameTap?)
+
     /// `CORE` 8.4b — the retained window around an interval, as a Core value.
     ///
     /// ⚠ **Adding this to the port surface was a decision** (REQ-PORT-2). The
@@ -180,4 +188,10 @@ public enum CaptureDeviceFactory {
         #error("No CaptureDevice implementation for this platform.")
         #endif
     }
+}
+
+
+public extension CaptureDevice {
+    /// A device that does not deliver sample buffers has no preview to give.
+    func attachPreviewTap(_ tap: PreviewFrameTap?) {}
 }

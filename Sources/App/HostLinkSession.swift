@@ -150,6 +150,10 @@ public final class HostLinkSession {
     public let hostDisplayName: String?
     public let sessionId: String
 
+    /// ⚠ Held so `ENC` 2.1d's third channel can be dialled later — a `preview`
+    /// arrives after the session is established, which 2.1d calls the expected
+    /// case, so the link cannot be a value the constructor consumed and dropped.
+    private let transport: any PeerTransport
     private let peer: DevicePeer
     private let pump: PeerLinkPump
     /// ⚠ `weak`, and `AppModel` owns both ends: the model holds the session and
@@ -209,6 +213,7 @@ public final class HostLinkSession {
         self.sessionId = sessionId
         self.hostDisplayName = hostDisplayName
         self.security = transport.security
+        self.transport = transport
 
         let peerId = PeerIdentity.current
         // ⛔ The three arguments the live path needs and the bundle path does not:
@@ -481,6 +486,33 @@ public final class HostLinkSession {
         return try await HostedSessionContext.open(
             pump: pump, parameters: hostSession,
             hostPeerId: hostPeerId, promotion: promotion)
+    }
+
+    /// `ENC` 2.1d — the third channel, opened after the session is established.
+    ///
+    /// ⛔ **The dialler's job, and only the dialler can do it.** 2.1d carries a
+    /// further stream with the **same** `link_id`; a new one would be a new link
+    /// and the listener would treat it as a stranger's first connection. So this
+    /// is `DiallingPeerLink.openChannel`, and a link that cannot dial (the
+    /// listener side, and the plaintext harness path) answers `nil` rather than
+    /// pretending.
+    ///
+    /// ⚠ **Preview refuses the bulk channel** (`PreviewProducer`, 5.11h), so
+    /// there is no fallback to be had: without a third channel there is no
+    /// preview, which is the honest outcome and not a degraded one. 5.11i's
+    /// ordering — preview degrades before transfer, transfer before capture — is
+    /// the reason that is acceptable.
+    ///
+    /// - Returns: `true` where the channel is open and the engine knows about it.
+    @discardableResult
+    public func openPreviewChannel() async -> Bool {
+        guard let dialling = transport as? any DiallingPeerLink else { return false }
+        guard let channel = try? await dialling.openChannel(.preview) else { return false }
+        await pump.attachPreview(channel)
+        let told = try? await pump.perform { peer in
+            try peer.openChannel(.preview)
+        }
+        return told != nil
     }
 
     /// `CORE` 7.3c — readiness again, whenever `settled` changes.

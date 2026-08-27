@@ -591,6 +591,89 @@ struct ConformanceHarnessTests {
         await model.disconnect()
         #expect(model.link == nil)
     }
+
+    // MARK: - E3.3/E3.4, against a host that opens a Session and arms
+
+    /// The composition root under a **real host**, and the one class of defect
+    /// this target cannot otherwise see.
+    ///
+    /// ⛔ **`make test-app` cannot find a missing call site**, and every level of
+    /// E3 is made of call sites. `HostLinkSession.handle`'s `default:` arm ate
+    /// `session_open`, `arm`, `capture_request`, `payload` and `link_lost` for
+    /// three levels' worth of work, and a green suite said nothing about it —
+    /// because a unit test injects the event it wants to see handled. Only a
+    /// counterpart that actually sends one can tell.
+    ///
+    ///     make conform SCENARIO=reference-host ROW=e34
+    ///
+    /// ⚠ **A simulator declares no camera**, so this proves the *link* half and
+    /// not the capture half: the arm arrives, and the answer to it is a
+    /// terminating `readiness` carrying a blocker rather than silence. A clip
+    /// crossing needs a phone, which is CT-S3's row and the hardware run.
+    @Test("E3.4 — a host opens a Session, arms, and the app answers")
+    @MainActor
+    func appModelIsDrivenByARealHost() async throws {
+        guard Self.row == "e34" else { return }
+        guard let port = Self.port else {
+            withKnownIssue("no ppcp-sim port in the environment — run `make conform`",
+                           isIntermittent: true) {
+                Issue.record("skipped")
+            }
+            return
+        }
+
+        let transport = try await PpcpDirectConnector()
+            .connect(to: PeerEndpoint(host: "127.0.0.1", port: port))
+
+        let model = AppModel()
+        let declaration = try PpcpDeclaration(
+            ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
+            allowingNoCameraSource: true)
+
+        await model.connect(transport: transport, sessionId: "ses:e34",
+                            hostDisplayName: "ppcp-sim", declaration: declaration)
+        let link = try #require(model.link, "no link was composed")
+        #expect(link.hasSettled, "hello and declare did not cross: \(link.phase)")
+
+        // `reference-host` opens the Session immediately after `declare` and
+        // arms shortly after. Give it both, plus the sync burst.
+        try await Task.sleep(for: .seconds(6))
+
+        // ⛔ **The Session reached the app.** Before this level it was dropped in
+        // `handle`'s `default:`, so `HostLinkDriver.derive` never saw
+        // arbitration and `hostLink` was pinned at `.pairing` for ever.
+        let hostSession = try #require(link.hostSession,
+                                       "session_open never reached the app")
+        #expect(hostSession.hasArbitration,
+                "5.10e — a host's Session carries both arbitration parameters")
+        #expect(hostSession.timebaseRefId.isEmpty == false, "I16 — timebase_ref is fixed")
+
+        // ⛔ **The arm reached the app**, which is the whole row. A simulator has
+        // no camera, so `arm()` cannot reach warm — and the observable proof
+        // that it *ran* is that it said why. If `default:` were still eating
+        // `arm`, nothing would have been attempted and this would be nil.
+        #expect(model.capabilityError != nil, """
+                the host armed and nothing happened — `arm` is being dropped \
+                again, which is the defect this row exists for
+                """)
+        // ⛔ **`permission_denied`, and the first run of this row expected
+        // `no_source`.** A bare `AppModel` on a simulator has granted nothing
+        // AND enumerated nothing, so two blockers apply at once — and the
+        // ordering decides which is reported. Permission outranks hardware
+        // deliberately: telling someone their camera is missing when they simply
+        // never granted access sends them to fix the wrong thing. The row
+        // catching a wrong expectation is that ordering doing its job.
+        #expect(model.currentBlocker() == .permissionDenied,
+                "an arm must terminate with a blocker, and this is the honest one")
+
+        // ⚠ And the measurement never carries a state name (5.2b).
+        let readiness = model.currentReadiness()
+        #expect(readiness.settled == false)
+        #expect(readiness.estimatedReadyMs > 0, "5.2a — mandatory when not settled")
+
+        #expect(model.hostLinkError == nil)
+        await model.disconnect()
+    }
 }
 
 // MARK: - Soaking the real path against PinPointStudio

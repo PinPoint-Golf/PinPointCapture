@@ -44,6 +44,13 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
     /// ⛔ `nil` until `startRetaining`.
     private var recorder: RingBufferRecorder?
 
+    /// `CORE` §5.11.2 — the preview tap, when a host has a channel for one.
+    ///
+    /// ⛔ **Owned by `sampleQueue`, like `recorder` and `routing`.** Its `offer`
+    /// is called from the frame callback and reads two integers it owns; nothing
+    /// about preview may cost the capture path a lock or an allocation.
+    private var previewTap: PreviewFrameTap?
+
     /// `CORE` §5.8's thermal timeline. ⛔ Written and uncalled until E1.3 — the
     /// health service read `ProcessInfo.thermalState` per tick and nothing kept
     /// the series, so every Capture carried an empty `thermal` and REQ-CLIP-1's
@@ -720,6 +727,22 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
                       ProcessInfo.processInfo.operatingSystemVersionString))
     }
 
+    /// `CORE` §5.11.2 — start or stop taking preview frames off the capture path.
+    ///
+    /// ⚠ **Through `sampleQueue`, because that queue owns the tap.** Installing
+    /// one from the MainActor while the callback is reading it is the race that
+    /// shows up as a preview which stops after one frame.
+    public func attachPreviewTap(_ tap: PreviewFrameTap?) {
+        sampleQueue.async { [weak self] in
+            guard let self else { return }
+            // The tap clears its own in-flight flag where that flag is read.
+            tap?.scheduleOnCaptureQueue = { [weak self] work in
+                self?.sampleQueue.async(execute: work)
+            }
+            self.previewTap = tap
+        }
+    }
+
     // MARK: - The retained window (CORE 8.4b)
 
     /// The frames the ring actually holds around an interval.
@@ -811,6 +834,13 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
             break
         case .retaining:
             recorder?.append(sampleBuffer, device: activeDevice)
+            // ⛔ **After the ring, always.** 5.11i: preview degrades before
+            // transfer and transfer before capture, so the frame reaches the
+            // thing that must not lose it first. ⚠ Two integer comparisons in
+            // the ordinary case — see `PreviewFrameTap.offer`.
+            previewTap?.offer(sampleBuffer,
+                              atNs: FrameTimeline.nanoseconds(
+                                  CMSampleBufferGetPresentationTimeStamp(sampleBuffer)))
         case .selfTesting(let probe):
             probe.observe(sampleBuffer)
         }

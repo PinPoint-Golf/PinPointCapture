@@ -637,7 +637,16 @@ public final class PpcpDeclaration: @unchecked Sendable {
                 viewpoint: input.viewpoint,
                 profiles: try modes
                     .sorted { ($0.height, $0.fps) > ($1.height, $1.fps) }
-                    .map { try cameraProfile($0, input: input) }))
+                    .map { try cameraProfile($0, input: input) }
+                    // ⛔ **One preview profile per lens, and it is not a mode
+                    // this camera can enter.** 5.11l lets a preview profile
+                    // describe a *derived view* — a decimation and downscale of
+                    // whatever the capture Stream is already producing — which
+                    // no other `CaptureProfile` may. A camera runs one
+                    // configuration at a time (5.11.2), so declaring 640×360@10
+                    // as though it were an independent mode would be a claim
+                    // this device cannot honour while capturing.
+                    + [try previewProfile(for: modes, input: input)]))
         }
         guard plans.isEmpty == false || allowingNoCameraSource else {
             throw PpcpDeclarationError.noCameraSource
@@ -780,6 +789,71 @@ public final class PpcpDeclaration: @unchecked Sendable {
             measured: try measuredCapability(from: input.capability.measured, for: mode,
                                              timebaseId: input.captureTimebaseId))
     }
+
+    /// `CORE` §5.11.2 — the one profile a `preview` Stream may name.
+    ///
+    /// ⛔ **`intrinsics: none`, and that is a positive declaration rather than an
+    /// omission** (5.11m). Decimation and downscaling change the intrinsic
+    /// matrix, so declaring the capture profile's would be false — and 5.11g
+    /// forbids anyone consuming a preview for measurement, so there is nothing
+    /// the matrix could be for. ⚠ `has_intrinsics == false` would mean *absent*,
+    /// which is a different claim and one I19 refuses on a camera Source.
+    ///
+    /// ⚠ **`geometry` is declared honestly and unchanged.** It describes the
+    /// sensor's readout, which decimation does not alter — so it is taken from
+    /// the same entry the capture profiles use rather than blanked.
+    ///
+    /// ⚠ **The rate is a request, not a promise** (5.11k). Where a capture
+    /// Stream is open on the same Source, what is actually produced is derived
+    /// from the active capture profile and reported per segment in
+    /// `AchievedSummary`. Where preview is the only Stream — setup and framing,
+    /// which 5.11.2 calls its main use — it is activated normally.
+    private static func previewProfile(for modes: [VideoMode],
+                                       input: PpcpDeclarationInput) throws -> ProfilePlan {
+        var timing = ppcp_timing()
+        try check(ppcp_timing_make_nominal_frame_start(
+            &timing,
+            input.timing.frameStartToExposureOffsetNs,
+            cProvenance(input.timing.offsetProvenance)))
+
+        // The geometry of the mode this preview will most often be derived from:
+        // the highest one, which is what capture opens by default.
+        let reference = modes.sorted { ($0.height, $0.fps) > ($1.height, $1.fps) }.first
+        var geometry = ppcp_geometry()
+        if let reference,
+           let entry = input.timing.geometryEntry(width: reference.width,
+                                                  height: reference.height,
+                                                  fps: reference.fps),
+           let readoutNs = entry.readout.readoutNs(rateMillihertz: reference.rateMillihertz) {
+            try check(ppcp_geometry_make_rolling_shutter(
+                &geometry, readoutNs, cProvenance(entry.readout.provenance),
+                entry.direction == .topToBottom ? PPCP_ROLL_TOP_TO_BOTTOM
+                                                : PPCP_ROLL_BOTTOM_TO_TOP,
+                UInt32(entry.rows ?? reference.height)))
+        } else {
+            // Same refusal as `cameraProfile`'s, and for the same reason: a
+            // model whose data file has no geometry entry must fail on a desk.
+            throw PpcpDeclarationError.noGeometryForProfile(Self.previewProfileId)
+        }
+
+        return ProfilePlan(
+            id: Self.previewProfileId,
+            timing: timing,
+            camera: (geometry, PPCP_INTR_NONE),
+            // ⚠ JPEG rather than the clip codec: a preview segment is a still
+            // per frame, not a container, and `ENC` 6g wants the media type of
+            // the bytes that actually cross.
+            format: (codec: "jpeg", width: 640, height: 360, pixelFormat: "jpeg"),
+            rate: Self.previewRateMillihertz,
+            optical: nil,
+            measured: nil)
+    }
+
+    /// ⚠ Stable, because a Stream names it and 5.11a/I5 make a Stream's profile
+    /// id something the declaration must actually carry.
+    public static let previewProfileId = "640x360@10"
+    /// ~10 fps. ⛔ Not on the 6.7 ms frame path — see the preview tap.
+    static let previewRateMillihertz: Int64 = 10_000
 
     /// A profile for a Source that is not a camera: `timing` only.
     ///

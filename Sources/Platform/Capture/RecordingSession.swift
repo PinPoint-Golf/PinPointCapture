@@ -223,7 +223,12 @@ public final class RecordingSession {
         streams = Self.streams(sessionId: sessionId, declaration: declaration,
                                mode: mode,
                                openedAtNs: MachClock.hostTimeNs)
-        for stream in streams { try recorder.open(stream: stream) }
+        // ⛔ 5.11j — a preview Capture is never written to a bundle, and the
+        // writer refuses one. So the preview Stream is not opened on the record
+        // peer at all: it belongs to the link.
+        for stream in streams where stream.kind != PpcpStreamKind.preview {
+            try recorder.open(stream: stream)
+        }
 
         // ⚠ **The composition D5 wrote and nothing performed.** `DetectAndMint`
         // existed with a full test suite and no caller: the application recorded
@@ -466,6 +471,23 @@ public final class RecordingSession {
                 profileId: profile, timebaseId: camera.timebaseId,
                 continuity: .shotWindowed, openedAtNs: openedAtNs))
         }
+        // ⛔ **The `preview` Stream** — 5.11f: "a second Stream from an existing
+        // Source, with its own `profile_id` … It needs no new Source, no new
+        // message and no new machinery." `continuous` is fixed by §5.11's own
+        // table; a preview is a view of time passing, not a window around a shot.
+        //
+        // ⚠ **Not opened on the record peer.** `SessionBundleWriter` refuses a
+        // preview Capture outright (5.11j — live-only, never retained, never
+        // written), so this Stream exists on the link and nowhere else. The
+        // caller filters on `kind` when it opens Streams for the bundle.
+        if let camera, camera.profileIds.contains(PpcpDeclaration.previewProfileId) {
+            built.append(PpcpStreamRecord(
+                id: "str:preview:\(camera.id)", sessionId: sessionId,
+                sourceId: camera.id, kind: PpcpStreamKind.preview,
+                profileId: PpcpDeclaration.previewProfileId,
+                timebaseId: camera.timebaseId,
+                continuity: .continuous, openedAtNs: openedAtNs))
+        }
         // ⛔ **A separate `audio` Stream, and it was missing.** 5.12.1a puts the
         // window that explains why detection fired on its own Stream, and D5's
         // `DetectAndMint` requires one — but this composition opened only video
@@ -503,6 +525,10 @@ public final class RecordingSession {
     /// The `video` Stream, for a Capture to land on.
     public var videoStream: PpcpStreamRecord? {
         streams.first { $0.kind == PpcpStreamKind.video }
+    }
+
+    public var previewStream: PpcpStreamRecord? {
+        streams.first { $0.kind == PpcpStreamKind.preview }
     }
 
     /// D4's attitude and gravity, on the `continuous` `metadata` Stream.
@@ -620,6 +646,21 @@ public final class RecordingSession {
     // MARK: The bulk drain (E3.4)
 
     private var transferTask: Task<Void, Never>?
+
+    /// `CORE` §5.11.2 — live-only frames for a human to look at.
+    ///
+    /// ⚠ `nil` is the ordinary case: no host, no third channel, or a transport
+    /// that cannot dial one. 5.11i puts preview first in the order of things to
+    /// lose, so its absence is never an error.
+    private var previewProducer: PreviewProducer?
+
+    /// Opens the `preview` Stream on the link, if there is one to open.
+    @discardableResult
+    public func openPreview() async -> Bool {
+        guard let hosted = control.hosted, let stream = previewStream else { return false }
+        previewProducer = try? await hosted.openPreview(stream)
+        return previewProducer != nil
+    }
 
     /// One 32 KiB chunk per `perform`, and that is not a tuning choice.
     ///

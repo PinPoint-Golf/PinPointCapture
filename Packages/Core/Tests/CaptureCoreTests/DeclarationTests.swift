@@ -122,15 +122,65 @@ struct DeclarationTests {
     /// `CORE` 5.6a / I19 — "every Source declares `timebase_id`, and every
     /// CaptureProfile it offers declares `timing`, `geometry` and `intrinsics`,
     /// regardless of which peer owns the Source."
+    ///
+    /// ⚠ **I19 is about `intrinsics` being DECLARED, not about its value.** This
+    /// asserted `== .perFrame` on every camera profile, which was true only
+    /// while every camera profile was a capture profile. 5.11m makes a preview
+    /// profile declare `intrinsics: none` — a positive declaration, because
+    /// decimation and downscaling change the intrinsic matrix and 5.11g forbids
+    /// anyone consuming a preview for measurement anyway. ⛔ `nil` here would be
+    /// *absent*, which is the thing I19 actually refuses.
     @Test("I19 — every camera profile declares timing, geometry and intrinsics")
     func everyCameraProfileIsFullyDeclared() throws {
         let declaration = try Self.declaration()
         for source in declaration.sources where source.kind == "camera" {
             for profile in source.profiles {
                 #expect(profile.geometry != nil, "\(profile.id) has no geometry")
-                #expect(profile.intrinsics == .perFrame, "\(profile.id) intrinsics")
                 #expect(profile.rateMillihertz != nil)
+                // I19 — declared, never absent.
+                let intrinsics = try #require(profile.intrinsics,
+                                              "\(profile.id) declares no intrinsics")
+                if profile.id == PpcpDeclaration.previewProfileId {
+                    // 5.11m.
+                    #expect(intrinsics == .none,
+                            "a preview profile declares intrinsics: none")
+                } else {
+                    #expect(intrinsics == .perFrame, "\(profile.id) intrinsics")
+                }
             }
+        }
+    }
+
+    /// `CORE` §5.11.2 — the profile a `preview` Stream names, and the things
+    /// about it that are deliberately unlike a capture profile.
+    @Test("5.11 — one preview profile per lens, derived and never a capture mode")
+    func everyLensDeclaresAPreviewProfile() throws {
+        let declaration = try Self.declaration()
+        let cameras = declaration.sources.filter { $0.kind == "camera" }
+        #expect(cameras.isEmpty == false)
+
+        for camera in cameras {
+            #expect(camera.profileIds.contains(PpcpDeclaration.previewProfileId),
+                    "no preview profile on \(camera.id) — 5.11a/I5 make a Stream's profile id something the declaration must carry")
+            let preview = try #require(
+                camera.profiles.first { $0.id == PpcpDeclaration.previewProfileId })
+
+            // 5.11m — `none` is the declaration; geometry is the sensor's and
+            // decimation does not change it, so it stays declared honestly.
+            //
+            // ⛔ **Spelled out, because `.none` on an `Optional` is `nil`.**
+            // `profile.intrinsics` is `Intrinsics?`, so `== .none` would assert
+            // that this profile declares no intrinsics AT ALL — which is
+            // *absent*, the one thing I19 refuses on a camera Source, and the
+            // exact opposite of what 5.11m asks for. The two readings differ by
+            // nothing visible at the call site.
+            #expect(preview.intrinsics == PpcpDeclaration.Intrinsics.none)
+            #expect(preview.geometry != nil,
+                    "readout is the sensor's and survives downscaling")
+
+            // ⚠ A rate that is a *request* (5.11k), and low enough that the tap
+            // is nowhere near the 6.7 ms frame path.
+            #expect(preview.rateMillihertz == 10_000)
         }
     }
 
