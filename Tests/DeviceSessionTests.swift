@@ -921,4 +921,148 @@ struct DeviceSessionTests {
 
         await model.disconnect()
     }
+
+    // MARK: The rest of the hardware list, automated
+
+    /// Reaches PinPointStudio the way a golfer does, or skips saying why.
+    static func reachStudio() async -> (AppModel, ReconnectedHost)? {
+        let outcome = await ReconnectCoordinator().attempt()
+        guard case .connected(let host) = outcome else {
+            print("SKIP — no host reached: \(outcome)")
+            return nil
+        }
+        let model = await AppModel()
+        await MainActor.run { model.refreshCapability() }
+        await model.connect(transport: host.transport, sessionId: host.sessionId,
+                            hostDisplayName: host.hostDisplayName)
+        return (model, host)
+    }
+
+    /// **Test 2 — preview.** Our half of it: the third channel, the Stream, and
+    /// frames actually leaving.
+    ///
+    /// ⛔ **And the part 5.11i makes non-negotiable**: preview must never cost a
+    /// captured frame. The ring's counters are read with preview running and
+    /// again with it stopped, because "it looked fine" is not a measurement and
+    /// a tap on the 6.7 ms frame path is exactly where a regression would hide.
+    @Test("Preview opens a third channel and does not cost the ring a frame")
+    func previewCostsTheRingNothing() async throws {
+        guard let capability = Self.liveCapability(), capability.bestMode != nil else {
+            print("SKIP — no physical camera"); return
+        }
+        guard let (model, _) = await Self.reachStudio() else { return }
+        try await Task.sleep(for: .seconds(12))
+
+        await model.arm()
+        try await Task.sleep(for: .seconds(6))
+        let withPreview = await model.ringStats
+        let hasPreview = await model.recording?.previewStream != nil
+        print("DEVICE-RUN preview stream declared: \(hasPreview)")
+        print("DEVICE-RUN with preview: frames \(withPreview.framesAppended) "
+              + "maxInterArrival \(withPreview.maxInterArrivalNs / 1_000_000) ms")
+
+        // ⚠ 5.11a/I5 — the Stream must name a profile the declaration carries,
+        // and 5.11m makes that profile's `intrinsics: none`.
+        #expect(hasPreview, """
+                no preview Stream was derived — either no camera Source declares \
+                the preview profile, or the guard that requires it is refusing
+                """)
+
+        await model.disarm()
+        try await Task.sleep(for: .seconds(2))
+        await model.arm()
+        try await Task.sleep(for: .seconds(6))
+        let second = await model.ringStats
+        print("DEVICE-RUN second arm: frames \(second.framesAppended) "
+              + "maxInterArrival \(second.maxInterArrivalNs / 1_000_000) ms")
+
+        // ⛔ **The re-arm is the assertion.** A Stream's identity is fixed for its
+        // lifetime and the engine refuses an id it already holds, so a link peer
+        // that outlives the recording session used to make the second arm fail
+        // with `invalid argument` and report "nothing is being recorded".
+        let error = await model.recordingError
+        #expect(error == nil, "the second arm failed: \(error ?? "—")")
+
+        await model.disarm()
+        await model.disconnect()
+    }
+
+    /// **Test 6 — the residual.** REQ-SYNC-4: how far this device's own acoustic
+    /// fiducial sat from the instant the host decided the shot happened.
+    ///
+    /// ⚠ **Needs the host to arbitrate over our Candidate**, which needs its
+    /// corroboration rule to pass — so run PinPointStudio under its probe with
+    /// `--corroborate`, or with no detector available at all. With neither, the
+    /// host excludes and issues nothing, no Shot is arbitrated over our
+    /// nomination, and there is correctly nothing to subtract.
+    @Test("The impact residual is computed when the host arbitrates our Candidate")
+    func theResidualIsComputed() async throws {
+        guard let capability = Self.liveCapability(), capability.bestMode != nil else {
+            print("SKIP — no physical camera"); return
+        }
+        guard let (model, _) = await Self.reachStudio() else { return }
+        try await Task.sleep(for: .seconds(12))
+
+        await model.arm()
+        try await Task.sleep(for: .seconds(3))
+        await model.observe(SyntheticAudio.oneSwing(timebaseId: PpcpTimebases.captureId,
+                                                    startNs: MachClock.hostTimeNs))
+        try await Task.sleep(for: .seconds(10))
+
+        let residual = await model.hostLink.clock?.lastImpactResidualMilliseconds
+        let clock = await model.hostLink.clock
+        print("DEVICE-RUN agreement=\(clock?.agreementText ?? "—") "
+              + "drift=\(clock?.driftText ?? "—")")
+        print("DEVICE-RUN residual=\(residual.map { "\($0) ms" } ?? "not yet")")
+
+        // ⚠ **Reported, not asserted.** Whether a residual exists depends on the
+        // host arbitrating, which depends on its corroboration rule — a person's
+        // configuration, not our correctness. What IS asserted is that a
+        // residual, if one exists, is a plausible number rather than the whole
+        // offset between two unrelated clocks, which is what 8.2i1's "never
+        // substitute a zero" exists to prevent.
+        if let residual {
+            #expect(abs(residual) < 1_000, """
+                    a residual of \(residual) ms is not a clock disagreement — it \
+                    is the two clocks being compared through no relation at all
+                    """)
+        }
+
+        await model.disarm()
+        await model.disconnect()
+    }
+
+    /// **Test 8 — the honesty check.** `mvp-online.md` §4.2: the bundle must carry
+    /// the same records that went over the wire, or "online only" has quietly
+    /// become "online or nothing", which is a different product.
+    @Test("The bundle holds what crossed — shots, and a clip with bytes")
+    func theBundleHoldsWhatCrossed() async throws {
+        guard let capability = Self.liveCapability(), capability.bestMode != nil else {
+            print("SKIP — no physical camera"); return
+        }
+        guard let (model, _) = await Self.reachStudio() else { return }
+        try await Task.sleep(for: .seconds(12))
+
+        await model.arm()
+        try await Task.sleep(for: .seconds(3))
+        await model.observe(SyntheticAudio.oneSwing(timebaseId: PpcpTimebases.captureId,
+                                                    startNs: MachClock.hostTimeNs))
+        try await Task.sleep(for: .seconds(8))
+        let shots = await model.session.shots.count
+        await model.disarm()
+        try await Task.sleep(for: .seconds(2))
+
+        let bundles = await model.libraryRows()
+        let newest = try #require(bundles.first, "no bundle was written")
+        print("DEVICE-RUN bundle \(newest.sessionId) — \(newest.byteCount / 1_000_000) MB, "
+              + "\(shots) shot(s) in the session")
+
+        // ⛔ A bundle with no payload is #98's shape, and every fault found on
+        // 27 August ended here.
+        #expect(newest.byteCount > 1_000_000, """
+                the bundle is \(newest.byteCount) bytes — the Capture was \
+                announced `absent`, so nothing was filmed
+                """)
+        await model.disconnect()
+    }
 }

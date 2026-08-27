@@ -857,10 +857,33 @@ public final class AppModel {
     /// C3's swipe-to-delete. ⛔ Device-local only — there is no host-side
     /// deletion or sync-state tracking yet, so this removes the bundle this
     /// phone holds and nothing else.
+    /// ⛔ **`try?` here was the whole bug.** A delete that failed looked exactly
+    /// like one that worked: the row stayed, nothing was said, and the sessions
+    /// "came back". Reported on hardware 27 Aug — the same shape as `warmUp`
+    /// shipping a dead *Arm* for weeks because a guard returned silently. When a
+    /// refusal can happen, it has to say so.
+    ///
+    /// ⛔ **And the session being recorded right now is in this list**, with an
+    /// open file handle on it. Removing its directory underneath the writer
+    /// leaves a `RecordingSession` appending to an unlinked inode — bytes going
+    /// nowhere, and a bundle that reappears the moment anything re-reads the
+    /// store. Refused explicitly, with the remedy named.
     public func deleteRecordedBundle(sessionId: String) {
         guard let bundles = try? store.bundles(),
-              let bundle = bundles.first(where: { $0.sessionId == sessionId }) else { return }
-        try? store.delete(bundle)
+              let bundle = bundles.first(where: { $0.sessionId == sessionId }) else {
+            recordingError = "That session is no longer on this phone."
+            return
+        }
+        if let recording, recording.sessionId == sessionId {
+            recordingError = "That session is still recording. End the session first, then delete it."
+            return
+        }
+        do {
+            try store.delete(bundle)
+            recordingError = nil
+        } catch {
+            recordingError = "Could not delete that session: \(error)"
+        }
     }
 
     private nonisolated static func directorySize(_ directory: URL) -> Int64 {

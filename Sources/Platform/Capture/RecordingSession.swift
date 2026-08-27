@@ -805,8 +805,44 @@ public final class RecordingSession {
     /// have. So whatever the tap dropped between this frame and the last is
     /// announced as absent before this one is announced as present, and the
     /// Stream's interval stays fully accounted for.
+    /// How many preview segments one session may announce.
+    ///
+    /// ⛔ **A budget, because the library has no way to release a transfer
+    /// entry.** `PPCP_TRANSFER_MAX` is 128 and the table only ever grows — every
+    /// announced Capture takes a slot for the peer's lifetime, whatever its
+    /// transfer state. Preview announces one per segment at ~10 fps, so it fills
+    /// the table in about thirteen seconds and the next **shot** announce fails
+    /// with `PPCP_ERR_LIMIT`, surfacing as "nothing is being recorded".
+    ///
+    /// ⛔ That is 5.11i inverted — preview degrades before transfer and transfer
+    /// before capture, and here preview was stopping capture outright. Observed
+    /// on hardware, 27 Aug.
+    ///
+    /// ⚠ **Half the table, and the number is arbitrary because the fix is not
+    /// ours.** libppcp needs to reclaim resolved entries, exactly as
+    /// `ppcp_mint_pump` was taught to reclaim resolved mint slots for #103. Until
+    /// it does, a bounded preview is the honest trade: framing keeps its picture
+    /// — 5.11.2 calls setup and framing preview's main use — and capture keeps
+    /// its slots.
+    nonisolated static let previewSegmentBudget = 64
+
+    private var previewSegments = 0
+
     private func deliverPreview(_ jpeg: Data, endingAtNs atNs: Int64) async {
         guard let hosted = control.hosted, let producer = previewProducer else { return }
+        guard previewSegments < Self.previewSegmentBudget else {
+            // ⚠ Announced as shed once, then silent. 5.11c3 — deliberate
+            // non-retention is an `absent` segment, never a gap.
+            if previewSegments == Self.previewSegmentBudget {
+                previewSegments += 1
+                try? await hosted.pump.perform { _ in
+                    _ = try producer.shed(throughNs: atNs)
+                }
+                stopPreview()
+            }
+            return
+        }
+        previewSegments += 1
         try? await hosted.pump.perform { _ in
             if producer.unaccountedNs(asOf: atNs) != nil {
                 _ = try producer.shed(throughNs: atNs - PreviewFrameTap.intervalNs)
