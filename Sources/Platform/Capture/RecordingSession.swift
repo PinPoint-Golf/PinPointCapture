@@ -513,6 +513,67 @@ public final class RecordingSession {
 
     public func stopMetadata() { motion.stop() }
 
+    /// Opens this session's own Stream records on the link.
+    ///
+    /// ⚠ Here rather than at the call site so the wire and the bundle cannot be
+    /// given two different derivations of the same Streams.
+    public func openHostedStreams() async throws {
+        try await control.hosted?.openStreams(streams)
+    }
+
+    /// What the library says has happened to each announced payload.
+    ///
+    /// ⚠ **Read from the library's transfer table, never from a count this file
+    /// kept.** `payload_ack` and `capture_committed` fill it, and 8.4b forbids an
+    /// owner setting `confirmed` on its own authority — so the only honest source
+    /// of `In Studio` is the receiver's own statement.
+    public var transferRows: [PpcpTransferRow] {
+        control.hosted?.live.transferRows ?? []
+    }
+
+    // MARK: The bulk drain (E3.4)
+
+    private var transferTask: Task<Void, Never>?
+
+    /// One 32 KiB chunk per `perform`, and that is not a tuning choice.
+    ///
+    /// ⛔ `libppcp` encodes each originated message into a **64 KiB per-channel**
+    /// queue (the cause of #98), and `perform` flushes once at the end — so at
+    /// most one chunk of `PayloadTransferQueue.chunkBytes` can clear per pass.
+    /// A larger budget would not send more; it would fail `PPCP_ERR_NOSPACE`
+    /// against a queue that has not been drained yet.
+    nonisolated static let transferBudgetBytes = 32 << 10
+
+    /// Drains queued payload onto the bulk channel for as long as there is any.
+    ///
+    /// ⚠ **A tight loop rather than a ticker, and off the MainActor.** `CORE` T2
+    /// makes the socket's backpressure the thing that decides how fast this
+    /// goes: each pass is one actor hop, one chunk, one flush, and the next pass
+    /// waits on the one before it. A 100 ms ticker at one chunk a tick would
+    /// move 320 KB/s and take well over a minute to shift a single clip.
+    ///
+    /// ⛔ The 20 ms sleep is only for the **idle** case, so an armed session with
+    /// nothing queued is not a spin.
+    public func startTransferring() {
+        guard let hosted = control.hosted else { return }
+        transferTask?.cancel()
+        transferTask = Task.detached(priority: .utility) {
+            while Task.isCancelled == false {
+                let sent = (try? await hosted.pump.perform { _ in
+                    try hosted.queue.pump(budgetBytes: Self.transferBudgetBytes)
+                }) ?? 0
+                if sent == 0 {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+            }
+        }
+    }
+
+    public func stopTransferring() {
+        transferTask?.cancel()
+        transferTask = nil
+    }
+
     /// The next `metadata` segment, if one is due.
     ///
     /// ⛔ **A `continuous` Stream must account for its whole open interval**
@@ -600,6 +661,10 @@ public final class RecordingSession {
                       closedAtNs: Int64? = nil) throws {
         guard isClosed == false else { return }
         isClosed = true
+        // ⚠ Whatever is still queued stops here. 5.14g's exits are the library's
+        // to decide, and an unsent payload is not lost — it is in the bundle,
+        // which is the whole of "live bytes are bundle bytes".
+        stopTransferring()
         try recorder.close(completeness: completeness, closedAtNs: closedAtNs)
         try handle.close()
     }

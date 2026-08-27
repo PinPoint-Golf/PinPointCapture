@@ -50,7 +50,21 @@ public enum PeerLinkEvent: Sendable, Hashable {
     case sessionOpened(sessionId: String)
     case sessionJoined(sessionId: String)
     case sessionClosed(reason: String?)
-    case streamOpened(streamId: String)
+    /// A counterpart **requested** a Stream from this peer.
+    ///
+    /// ⛔ `MSG` §5's direction table makes `stream_open` a **Request**, `any →
+    /// owner`, and `stream_open_ack` a **Response**, `owner → any`. So this is
+    /// not a notification that something opened: it is a host asking the owner
+    /// of a Source for a Stream on a particular `profile_id`, which is the only
+    /// carrier the protocol has for a capture-format choice. ⛔ Erratum E18's
+    /// clause 1c makes answering it a **MUST** — `stream_open_ack` or `error`,
+    /// never silence.
+    ///
+    /// ⚠ Carries what a verdict needs and nothing more. 5.11l requires refusing
+    /// a preview profile selected for a capture Stream, so the profile and the
+    /// kind both have to reach the decision.
+    case streamRequested(streamId: String, sourceId: String, profileId: String,
+                         kind: String, isContinuous: Bool, replyTo: UInt64)
     /// `CORE` 5.2a / `MSG` 5.2a — answer with a Readiness **measurement**.
     case armRequested
     case disarmRequested
@@ -390,10 +404,21 @@ public actor PeerLinkPump {
                 body(m, ppcp_body_session_close.self) { ppcpString($0.pointee.reason) }
             })
         case PPCP_EVENT_STREAM_OPEN:
-            guard let msg else { return .streamOpened(streamId: "") }
-            return .streamOpened(streamId: body(msg, ppcp_body_stream_open.self) {
-                ppcpString($0.pointee.stream.id)
-            })
+            guard let msg else {
+                return .streamRequested(streamId: "", sourceId: "", profileId: "",
+                                        kind: "", isContinuous: false, replyTo: 0)
+            }
+            let streamReplyTo = msg.pointee.env.msg_id
+            return body(msg, ppcp_body_stream_open.self) { request in
+                let stream = request.pointee.stream
+                return .streamRequested(
+                    streamId: ppcpString(stream.id),
+                    sourceId: ppcpString(stream.source_id),
+                    profileId: ppcpString(stream.profile_id),
+                    kind: ppcpString(stream.kind),
+                    isContinuous: stream.continuity == PPCP_CONTINUOUS,
+                    replyTo: streamReplyTo)
+            }
         case PPCP_EVENT_ARM: return .armRequested
         case PPCP_EVENT_DISARM: return .disarmRequested
         case PPCP_EVENT_CAPTURE_REQUEST:

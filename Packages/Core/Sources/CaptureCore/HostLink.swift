@@ -51,6 +51,28 @@ public enum ShotSyncState: Sendable, Hashable {
     /// ⛔ REQ-SESS-4 / `CORE` 5.14g1 — the eviction question, answered in one
     /// place. Only `confirmed` is safe, and `delivered` deliberately is not: the
     /// receiver has the bytes and has not said it kept them.
+    /// The in-flight state, computed from what the **receiver** has acknowledged.
+    ///
+    /// ⛔ **Here rather than at the call site because it is easy to get wrong in
+    /// two places.** `PpcpTransferRow` reports `in_flight` with a hardcoded zero
+    /// fraction, so the number a screen shows has to be derived — and the only
+    /// honest source is `acked_index`, which is the far end's word for how far it
+    /// has got, not this end's count of what it handed to a socket.
+    ///
+    /// ⚠ **The index is inclusive.** 8.3d makes resumption restart from the chunk
+    /// *after* the last acknowledged one, so an `ackedIndex` of 4 means five
+    /// chunks are known received. `nil` means none — and `nil` is not zero, which
+    /// is the distinction 8.3d exists to preserve.
+    ///
+    /// ⚠ Never exceeds 1. A receiver acking past the announced length is its bug,
+    /// and must not become a progress bar reading 140%.
+    public static func sending(bytes: UInt64?, ackedIndex: UInt32?,
+                               chunkBytes: UInt32) -> ShotSyncState {
+        guard let bytes, bytes > 0 else { return .sending(progress: 0) }
+        let acked = Double(ackedIndex.map { Double($0) + 1 } ?? 0) * Double(chunkBytes)
+        return .sending(progress: min(1, acked / Double(bytes)))
+    }
+
     public var isConfirmedByReceiver: Bool {
         if case .inStudio = self { true } else { false }
     }

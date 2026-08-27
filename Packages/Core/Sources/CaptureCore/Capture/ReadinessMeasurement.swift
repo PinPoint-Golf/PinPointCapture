@@ -42,12 +42,30 @@ public struct ReadinessMeasurement: Sendable, Hashable {
 
     /// `CORE` §5.15 `blocked_reason` — "set where the peer cannot become ready at
     /// all". An open registry (`Kind`) sharing its vocabulary with a Stream close
-    /// `reason` (5.11a1); these are the four §5.15 spells out.
+    /// `reason` (5.11a1). The first four are the ones §5.15 spells out.
+    ///
+    /// ⛔ **`sourceNotDelivering` is a registry addition, agreed with
+    /// PinPointStudio on 27 August 2026 under 10.3a, and it is not ours alone to
+    /// change.** A `blocked_reason` is rendered **verbatim** by a consumer — no
+    /// mapping onto a reason it already knew — so the string is shared
+    /// vocabulary from the moment it ships, whether or not anyone agreed to
+    /// share it. That is why the fifth was raised rather than coined.
+    ///
+    /// ⚠ **What it exists to stop being said.** The settle timeout — camera
+    /// present, permitted, configured, and delivering nothing inside 15 s — used
+    /// to report `no_source`, which sends a golfer looking at a phone with a
+    /// camera in it to fix a camera that is not missing. PinPointStudio's
+    /// argument, and it is a better one than "the nearest of the four".
+    ///
+    /// ⚠ **A state, not an event.** The other four describe what the peer *is*;
+    /// `warmup_timeout` would have named our own timer instead of the world, and
+    /// a consumer cannot act on somebody else's stopwatch.
     public enum Blocker: String, Sendable, Hashable, CaseIterable {
         case storageFull = "storage_full"
         case thermalLimit = "thermal_limit"
         case permissionDenied = "permission_denied"
         case noSource = "no_source"
+        case sourceNotDelivering = "source_not_delivering"
     }
 
     /// "If I arm now, will the first shot have settled exposure?"

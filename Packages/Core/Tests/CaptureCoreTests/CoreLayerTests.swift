@@ -251,6 +251,41 @@ struct SessionTests {
 
     /// ⚠ Pause is user-level. Backpressure is automatic and separate — a paused
     /// queue is not a stalled one.
+    /// ⛔ **`In Studio` is the receiver's word and nothing else.** 5.14h makes
+    /// `capture_committed` the host's statement that it holds the bytes, and
+    /// 8.4b forbids an owner setting `confirmed` on its own authority — so a
+    /// send completing is `delivered`, not `inStudio`, and the two states exist
+    /// precisely to keep "sent" and "kept" apart.
+    ///
+    /// ⚠ **And progress is computed from the receiver's `acked_index`**, because
+    /// the library reports `in_flight` with a hardcoded zero fraction: what a
+    /// screen shows is how far the far end says it has got, not how much this
+    /// end has handed to a socket.
+    @Test("Progress comes from the receiver's acked index, and In Studio from its commit")
+    func progressAndConfirmationComeFromTheReceiver() {
+        let chunk = Int64(PayloadTransferQueue.chunkBytes)
+
+        // Nothing acked yet: in flight, and honestly at zero.
+        #expect(progress(ShotSyncState.sending(bytes: UInt64(chunk * 10), ackedIndex: nil, chunkBytes: PayloadTransferQueue.chunkBytes)) == 0)
+
+        // Index 4 acked means five chunks are known received (8.3d — the index
+        // is inclusive, and resumption restarts *after* it).
+        let half = progress(ShotSyncState.sending(bytes: UInt64(chunk * 10), ackedIndex: 4, chunkBytes: PayloadTransferQueue.chunkBytes))
+        #expect(abs(half - 0.5) < 0.0001)
+
+        // ⚠ Never over one, whatever the far end says: a receiver acking past
+        // the announced length is its bug and must not become our progress bar
+        // reading 140%.
+        #expect(progress(ShotSyncState.sending(bytes: UInt64(chunk), ackedIndex: 99, chunkBytes: PayloadTransferQueue.chunkBytes)) == 1)
+
+        // The states a receiver can put a Capture in, and which of them mean
+        // this device may stop holding the bytes (5.14g).
+        #expect(ShotSyncState.delivered.isConfirmedByReceiver == false,
+                "sent is not kept")
+        #expect(ShotSyncState.inStudio.isConfirmedByReceiver)
+        #expect(ShotSyncState.inStudio.displayText == "In Studio")
+    }
+
     @Test("A paused queue is not active even with work outstanding")
     func pauseIsUserLevel() {
         var queue = TransferQueue(pendingShotIDs: [UUID()], totalShots: 1)
@@ -354,4 +389,11 @@ struct FixtureTests {
         #expect(clock?.exchangesCompleted == 14)
         #expect(clock?.exchangesExpected == 20)
     }
+}
+
+
+
+/// Reads the fraction back out, so the assertions above read as arithmetic.
+func progress(_ state: ShotSyncState) -> Double {
+    if case .sending(let fraction) = state { fraction } else { -1 }
 }

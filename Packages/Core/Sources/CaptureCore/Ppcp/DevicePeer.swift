@@ -710,6 +710,48 @@ public final class DevicePeer: @unchecked Sendable {
                                   inReplyTo != nil, inReplyTo ?? 0))
     }
 
+    /// `MSG` 5.1 — the owner's verdict on a Stream a counterpart asked for.
+    ///
+    /// ⛔ **Answering is a MUST** (erratum E18, clause 1c): a peer receiving a
+    /// Request answers it, `stream_open_ack` or `error`, never silence. And the
+    /// verdict is the **owner's** — `stream_open` is `any → owner`, so a host
+    /// naming a `profile_id` is asking, not telling.
+    ///
+    /// - Parameter openedAtNs: the owner's own reading, on the Stream's own
+    ///   timebase. ⛔ Present only on `opened`. I1 — a requester proposing an
+    ///   origin cannot stamp a clock it does not hold, which is exactly why the
+    ///   answer carries this and the request's proposal does not survive.
+    /// - Parameter reason: present only on `refused`, from the open vocabulary
+    ///   `Readiness.blocked_reason` shares (5.11a1).
+    public func streamOpenAck(streamId: String,
+                              opened: Bool,
+                              reason: String? = nil,
+                              openedAtNs: Int64? = nil,
+                              timebaseId: String? = nil,
+                              inReplyTo: UInt64,
+                              channel: PpcpChannel = .control) throws {
+        var message = ppcp_msg()
+        // ⚠ `msg_id` is the engine's to assign (`ENC` 5c); the correlation that
+        // matters is `reply_to`, which `MSG` 1a makes how a Response is matched
+        // to the Request it answers.
+        try check(ppcp_msg_init(&message, PPCP_MT_STREAM_OPEN_ACK, 0))
+        try check(ppcp_msg_set_reply_to(&message, inReplyTo))
+        try check(ppcp_id_set_z(&message.body.stream_open_ack.stream_id, streamId))
+        message.body.stream_open_ack.verdict = opened ? PPCP_STREAM_OPENED
+                                                      : PPCP_STREAM_REFUSED
+        if let reason, opened == false {
+            message.body.stream_open_ack.has_reason = true
+            try check(ppcp_id_set_z(&message.body.stream_open_ack.reason, reason))
+        }
+        if opened, let openedAtNs, let timebaseId {
+            var at = ppcp_instant()
+            try check(ppcp_instant_make_z(&at, timebaseId, openedAtNs))
+            message.body.stream_open_ack.has_opened_at = true
+            message.body.stream_open_ack.opened_at = at
+        }
+        try send(&message, on: channel)
+    }
+
     /// The general form, and what every function above is built on: queue one
     /// message on one channel. ⚠ Still C2-checked and still channel-checked by
     /// the library, so it is the route for messages that have no dedicated entry

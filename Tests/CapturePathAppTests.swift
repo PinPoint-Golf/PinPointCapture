@@ -535,8 +535,14 @@ struct ArmRefusalIsSpokenTests {
         let readiness = model.currentReadiness()
         #expect(readiness.estimatedReadyMs > 0,
                 "5.2a — an estimate is mandatory when not settled")
-        #expect(ReadinessMeasurement.Blocker.allCases.count == 4,
-                "§5.15's four. A fifth is a registry conversation, not a local edit")
+        // ⛔ §5.15's four, plus one added under 10.3a with PinPointStudio's
+        // agreement. ⚠ **The raw strings are pinned deliberately**: a consumer
+        // renders `blocked_reason` verbatim, so these are shared vocabulary and
+        // a rename here is a rename on someone else's screen.
+        #expect(Set(ReadinessMeasurement.Blocker.allCases.map(\.rawValue)) == [
+            "permission_denied", "no_source", "storage_full", "thermal_limit",
+            "source_not_delivering",
+        ], "a sixth is a registry conversation, not a local edit")
     }
 
     /// ⛔ 7.2 / REQ-PRIV-4 — both are needed, and a refusal must name the remedy

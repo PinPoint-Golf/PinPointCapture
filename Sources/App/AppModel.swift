@@ -143,6 +143,14 @@ public final class AppModel {
     /// *change* (not every 1 Hz tick) is what triggers a fresh sync burst.
     private var lastThermalStateForSync: ThermalState?
 
+    /// Capture id → the `Shot` it belongs to.
+    ///
+    /// ⛔ **The join nothing kept.** `PpcpShot.captureIds` is filled when the clip
+    /// is extracted and was then discarded, so a `payload_ack` naming a Capture
+    /// had no route back to the row on screen. ⚠ Cleared with the session, not
+    /// grown for the life of the app.
+    private var shotIdByCapture: [String: UUID] = [:]
+
     public init(device: any CaptureDevice = CaptureDeviceFactory.create(),
                 store: SessionStore = SessionStore(
                     root: URL.documentsDirectory.appendingPathComponent("sessions",
@@ -407,14 +415,16 @@ public final class AppModel {
                     // deliberately says nothing (see its own note) and this is
                     // the last moment an honest answer can be given.
                     //
-                    // ⚠ **`no_source` is the nearest of §5.15's four and it is a
-                    // stretch.** The camera exists and is permitted; it simply
-                    // delivered nothing inside 15 s. The registry is open (5.15)
-                    // so a fifth value could say that properly — but PinPointStudio
-                    // renders `blocked_reason` verbatim to a golfer, so inventing
-                    // vocabulary unilaterally is not ours to do. Raised rather
-                    // than coined; the alternative is a spinner that never ends.
-                    self.reportReadiness(blocked: .noSource)
+                    // ⛔ **`source_not_delivering`, and the distinction is not
+                    // pedantry.** This used to say `no_source`, which tells a
+                    // golfer looking at a phone with a camera in it that there is
+                    // no camera — sending them to fix the wrong thing. The
+                    // camera exists, is permitted and was configured; it
+                    // delivered nothing inside 15 s, which is a different fault
+                    // with a different remedy. Registry addition under 10.3a,
+                    // raised with PinPointStudio rather than coined here,
+                    // because they render the string verbatim.
+                    self.reportReadiness(blocked: .sourceNotDelivering)
                     self.disarm()
                     return
                 }
@@ -512,6 +522,8 @@ public final class AppModel {
     /// is what `SessionOfferService` exists to hand over.
     private func startRecording() async {
         guard recording == nil else { return }
+        shotIdByCapture.removeAll()
+        transferQueue = nil
         do {
             // ⚠ The host's Session id, where there is one: every Stream, Capture
             // and Shot in the bundle has to agree with it.
@@ -540,7 +552,12 @@ public final class AppModel {
 
             // ⛔ The link's Streams are the recording session's own records, so
             // the wire and the bundle name one `profile_id` and one `opened_at`.
-            if let hosted { try await hosted.openStreams(session.streams) }
+            if hosted != nil {
+                try await session.openHostedStreams()
+                // REQ-SESS-5/6 — payload follows the announce on its own channel,
+                // at whatever rate the socket allows.
+                session.startTransferring()
+            }
 
             // ⚠ **`readiness` is NOT reported here** — see `reportReadiness()`.
             // 7.3c confers it through Capture, and 5.15a makes it a measurement:
@@ -931,14 +948,20 @@ public final class AppModel {
             // August, on every device, forever.
             for shot in minted {
                 shotCount += 1
-                session.shots.append(Shot(
+                let row = Shot(
                     minted: shot,
                     ordinal: shotCount,
                     anchor: recording.anchor,
                     // ⛔ `nil`. Nothing records a clip (E1.1), and a duration
                     // here would be a measurement claim about video that does
                     // not exist.
-                    duration: nil))
+                    duration: nil)
+                session.shots.append(row)
+                // ⛔ The join. Kept here because this is the only moment both
+                // ids exist together: `capture_announce` has gone out by now
+                // and a `payload_ack` naming that Capture has nowhere else to
+                // land.
+                for captureId in shot.captureIds { shotIdByCapture[captureId] = row.id }
             }
         } catch {
             recordingError = String(describing: error)
@@ -1037,6 +1060,53 @@ extension AppModel: HostLinkSessionDelegate {
         disarm()
     }
 
+    public func hostLink(_ link: HostLinkSession, didRequestStream streamId: String,
+                         sourceId: String, profileId: String,
+                         kind: String) -> StreamVerdict {
+        // ⛔ **5.11l, and it is the one refusal with an answer both ends can
+        // test.** A preview profile describes a *derived view* — a decimation of
+        // whatever the capture Stream is already producing — and is activatable
+        // only on a Stream of `kind: preview`. A consumer MUST NOT select one for
+        // capture, and an owner MUST refuse it. Silently honouring it would hand
+        // an operator 640×360 where they asked for a capture format.
+        guard let declaration = recording?.declaration,
+              let source = declaration.sources.first(where: { $0.id == sourceId }) else {
+            // Nothing armed, so nothing to open a Stream on yet.
+            return .refused(reason: "not_needed")
+        }
+        guard let profile = source.profiles.first(where: { $0.id == profileId }) else {
+            // ⛔ 5.11a / I5 — a Stream names a profile the declaration actually
+            // carries. Refusing an undeclared one is what stops a Stream
+            // existing for a mode this camera cannot enter.
+            return .refused(reason: "not_needed")
+        }
+        // ⛔ **5.11l, and it is the refusal with an answer both ends can test.**
+        // A preview profile describes a *derived view* — a decimation of what
+        // the capture Stream is already producing — and 5.11m makes
+        // `intrinsics: none` the positive declaration that identifies one. A
+        // consumer MUST NOT select one for capture and an owner MUST refuse it;
+        // honouring it silently would hand an operator 640×360 where they asked
+        // for a capture format.
+        if kind != PpcpStreamKind.preview, profile.intrinsics == PpcpDeclaration.Intrinsics.none {
+            return .refused(reason: "not_needed")
+        }
+        // ⛔ **Everything else is refused too, for now, and deliberately.**
+        // Honouring a format choice means closing the Stream this device already
+        // opened and opening another (5.1b), reconfiguring the camera mid-session
+        // — which costs up to 8.85 s (#101) — and recording the result in this
+        // device's own bundle. `ENC` §7 has no way for a peer to record an entity
+        // it participates in but did not originate, which is the same gap as the
+        // hosted `session_open` and the host-opened Stream, now in a third place.
+        // ⚠ PinPointStudio asked to be refused freely rather than have a profile
+        // accepted that cannot be honoured, and shows the reason to the operator.
+        //
+        // ⛔ **`not_needed` is the wrong word and there is no right one.** 5.11a1's
+        // vocabulary — `thermal_limit`, `storage_full`, `not_needed`,
+        // `calibration_changed` — has no value for *declined, not built yet*.
+        // Fourth instance of the same shape: no way to state a terminal negative.
+        return .refused(reason: "not_needed")
+    }
+
     public func hostLink(_ link: HostLinkSession, didIssueShot shotId: String,
                          t0Ns: Int64, t0TimebaseId: String) {
         // ⛔ E3.5. The host's `t0` against this device's acoustic fiducial is
@@ -1053,8 +1123,68 @@ extension AppModel: HostLinkSessionDelegate {
     }
 
     public func hostLinkTransfersChanged(_ link: HostLinkSession) {
-        // ⛔ E3.4. `payload_ack` moves per-shot progress and `capture_committed`
-        // is the only honest route to `In Studio` (5.14h). Not built.
+        refreshTransferState()
+    }
+
+    /// Per-shot and per-session progress, from the library's own table.
+    ///
+    /// ⛔ **`.inStudio` comes from `capture_committed` and from nothing else.**
+    /// 5.14h makes it the receiver's statement that it holds the bytes and 8.4b
+    /// forbids an owner claiming it — so a send completing is `delivered`, and
+    /// the difference between "sent" and "kept" is the whole reason the two
+    /// states exist. ⚠ Nothing had ever mutated `Shot.syncState` after minting.
+    func refreshTransferState() {
+        guard let recording else { return }
+        let rows = recording.transferRows
+        guard rows.isEmpty == false else { return }
+
+        var remaining: Int64 = 0
+        var pending: [UUID] = []
+        var current: Int?
+
+        for row in rows {
+            let state = Self.syncState(for: row)
+            // ⚠ Still owing: neither confirmed by the receiver nor given up on.
+            // A failed transfer is not "queued" — it needs a decision, not a
+            // progress bar — and a confirmed one is done.
+            let stillOwing: Bool = switch state {
+            case .onDevice, .sending, .delivered: true
+            case .inStudio, .failed: false
+            }
+
+            if let shotId = shotIdByCapture[row.captureId],
+               let index = session.shots.firstIndex(where: { $0.id == shotId }) {
+                session.shots[index].syncState = state
+                if stillOwing {
+                    pending.append(shotId)
+                    if case .sending = state { current = session.shots[index].ordinal }
+                }
+            }
+
+            if stillOwing, let bytes = row.bytes {
+                let acked = Int64(row.ackedIndex.map { Int64($0) + 1 } ?? 0)
+                    * Int64(PayloadTransferQueue.chunkBytes)
+                remaining += max(0, Int64(bytes) - acked)
+            }
+        }
+
+        transferQueue = TransferQueue(
+            pendingShotIDs: pending,
+            // ⚠ The user's pause survives a refresh; it is the one field of this
+            // struct that is not derived.
+            isPaused: transferQueue?.isPaused ?? false,
+            bytesRemaining: remaining,
+            currentShotOrdinal: current,
+            totalShots: session.shots.count)
+    }
+
+    /// ⛔ **`progress` is recomputed because the library hardcodes zero.** The
+    /// arithmetic itself lives on `ShotSyncState` so that it exists once and a
+    /// native test can reach it — this is only which row it is applied to.
+    nonisolated static func syncState(for row: PpcpTransferRow) -> ShotSyncState {
+        guard case .sending = row.state else { return row.state }
+        return ShotSyncState.sending(bytes: row.bytes, ackedIndex: row.ackedIndex,
+                                     chunkBytes: PayloadTransferQueue.chunkBytes)
     }
 
     public func hostLinkDidLoseLink(_ link: HostLinkSession) {
@@ -1109,8 +1239,8 @@ extension AppModel: HostLinkSessionDelegate {
     ///
     /// ⛔ `blocked_reason` is an **open registry** (5.15) and PinPointStudio
     /// carries whatever we send verbatim to a screen a golfer may read — so
-    /// these four values are the vocabulary, spelled as `ReadinessMeasurement
-    /// .Blocker` spells them, and never a sentence of our own.
+    /// these values are the vocabulary as `ReadinessMeasurement.Blocker` spells
+    /// them, and never a sentence of our own.
     func currentBlocker() -> ReadinessMeasurement.Blocker? {
         if permissions.canCapture == false { return .permissionDenied }
         if activeMode == nil { return .noSource }

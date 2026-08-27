@@ -50,6 +50,16 @@ import CaptureCore
 /// ⚠ **This carries commands. `hostLink` still carries state**, polled at 250 ms
 /// by `AppModel`. Collapsing the two would turn a rendered snapshot into a
 /// command, and a missed poll into a missed arm.
+/// The owner's answer to a requested Stream (`MSG` 5.1).
+///
+/// ⚠ `reason` is from the open vocabulary a Stream close shares (5.11a1) —
+/// `not_needed`, `thermal_limit`, `storage_full`, `calibration_changed` — and
+/// PinPointStudio renders it to an operator as written.
+public enum StreamVerdict: Sendable, Hashable {
+    case opened
+    case refused(reason: String)
+}
+
 @MainActor
 public protocol HostLinkSessionDelegate: AnyObject {
 
@@ -65,6 +75,17 @@ public protocol HostLinkSessionDelegate: AnyObject {
     func hostLinkDidRequestArm(_ link: HostLinkSession) -> ReadinessMeasurement
 
     func hostLinkDidRequestDisarm(_ link: HostLinkSession)
+
+    /// `MSG` 5.1 — a counterpart asks **this** peer, as the Source's owner, for a
+    /// Stream on a `profile_id` it chose.
+    ///
+    /// ⛔ **Returning is the answer**, as it is for `arm`. A verdict is required
+    /// (E18 1c) and 5.11l makes one of the refusals mandatory: a preview profile
+    /// selected for a capture Stream MUST be refused, and a consumer MUST NOT
+    /// select one.
+    func hostLink(_ link: HostLinkSession, didRequestStream streamId: String,
+                  sourceId: String, profileId: String,
+                  kind: String) -> StreamVerdict
 
     /// `MSG` 7.2 — the host arbitrated and issued. The timebase travels with the
     /// number so the receiver can convert it (I22).
@@ -330,6 +351,29 @@ public final class HostLinkSession {
 
         case .disarmRequested:
             delegate?.hostLinkDidRequestDisarm(self)
+
+        case .streamRequested(let streamId, let sourceId, let profileId,
+                              let kind, _, let replyTo):
+            // ⛔ **Answering is a MUST** (erratum E18, 1c) — `stream_open_ack` or
+            // `error`, never silence. `stream_open` is `any → owner`, so this is
+            // a host asking us for a Stream on a `profile_id` it chose, which is
+            // the only carrier the protocol has for a capture-format choice.
+            let verdict = delegate?.hostLink(self, didRequestStream: streamId,
+                                             sourceId: sourceId,
+                                             profileId: profileId, kind: kind)
+                ?? .refused(reason: "not_needed")
+            try? await pump.perform { [openedAt = MachClock.hostTimeNs] peer in
+                switch verdict {
+                case .opened:
+                    try peer.streamOpenAck(streamId: streamId, opened: true,
+                                           openedAtNs: openedAt,
+                                           timebaseId: PpcpTimebases.captureId,
+                                           inReplyTo: replyTo)
+                case .refused(let reason):
+                    try peer.streamOpenAck(streamId: streamId, opened: false,
+                                           reason: reason, inReplyTo: replyTo)
+                }
+            }
 
         case .shotReceived(let id, let t0Ns, let t0TimebaseId, _):
             delegate?.hostLink(self, didIssueShot: id, t0Ns: t0Ns,
