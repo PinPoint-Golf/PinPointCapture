@@ -317,6 +317,24 @@ public final class AppModel {
     /// did, so a device with no camera reported itself armed and retaining
     /// nothing. §9.2 makes capture the thing that must not be quietly wrong.
     public func arm() async {
+        // ⛔ **Re-entrancy, and it is not theoretical.** Every statement below is
+        // preceded by an `await`, and `startRecording`'s own `recording == nil`
+        // guard is separated from its assignment by two more — so two arms in
+        // flight both pass every check and both open this device's Streams on
+        // the *same* link peer. 5.1a fixes a Stream's identity for its lifetime
+        // and `peer_stream_add` enforces it, so the loser gets
+        // `PPCP_ERR_INVALID` and the session reports "nothing is being
+        // recorded" while the winner's ring runs happily.
+        //
+        // ⚠ Evidence it happens: PinPointStudio's log, 27 Aug 17:03:08 — a
+        // fourth stream dialled and never `link_bind`-ed, timed out at their
+        // end. Two concurrent `openPreviewChannel()` calls, one attached and one
+        // abandoned. ⛔ Set **before** the first suspension point, or the guard
+        // is the bug it is guarding against.
+        guard isArming == false else { return }
+        isArming = true
+        defer { isArming = false }
+
         await warmUp()
         // ⛔ `warmUp` has stated the reason by now — it no longer fails silently
         // — so this returns to a screen that can say what happened.
@@ -370,6 +388,12 @@ public final class AppModel {
     /// what it has always meant, and every screen that reads `.armed` keeps
     /// being right without being touched.
     public private(set) var isSettling = false
+
+    /// True from the first line of `arm()` until it returns.
+    ///
+    /// ⚠ Distinct from `isSettling`, which only becomes true at the *end* of a
+    /// successful arm — far too late to keep a second one out.
+    private var isArming = false
 
     /// How long the last arm took to produce frames. ⛔ **A measurement**, and
     /// the one `assumedSettleMs` was written waiting for.
@@ -670,6 +694,21 @@ public final class AppModel {
         // next suspension drops again.
         stopSearchingForHost()
         guard link != nil else { return }
+
+        // ⛔ **An open recording keeps its link.** 7.4d — losing the host must
+        // not cost a captured frame, and dropping it *deliberately* because
+        // someone glanced at another app is the same cost taken on purpose. A
+        // hosted Session's Mint engine lives on the link peer, so disconnecting
+        // under one does not merely lose the host: it stops this device minting
+        // at all, and every subsequent tick fails with `channelClosed`.
+        //
+        // ⚠ Observed on hardware, 27 Aug: switching apps for ten seconds ended
+        // the session and left "Nothing is being recorded" over a ring that was
+        // still perfectly healthy. iOS may suspend us and kill the socket
+        // anyway — that is the *link* being lost, which 7.4c and `HostLinkDriver`
+        // already handle honestly. This is about not doing it to ourselves.
+        guard recording == nil else { return }
+
         await disconnect(.cancelled)
         hostLink = HostLink(state: .lost)
     }
@@ -975,10 +1014,18 @@ public final class AppModel {
             // issued.** `minted` was counted and discarded, and C1 and C3
             // rendered `PreviewFixtures.session` — 41 invented shots dated 21
             // August, on every device, forever.
-            for shot in minted {
+            for entry in minted {
+                let shot = entry.shot
                 shotCount += 1
+                // ⚠ Surfaced on screen, because a diagnostic nobody can read on
+                // a range is a diagnostic that does not exist.
+                if let diagnostic = entry.clipDiagnostic { recordingError = diagnostic }
                 let row = Shot(
-                    minted: shot,
+                    // ⛔ **Capture time.** `shot.t0Ns` is in the host's
+                    // `timebase_ref` (5.13c); the anchor labels instants on this
+                    // device's clock. Using the wire value put every shot on a
+                    // real device roughly two hours out (27 Aug).
+                    minted: shot, atNs: entry.captureT0Ns,
                     ordinal: shotCount,
                     anchor: recording.anchor,
                     // ⛔ `nil`. Nothing records a clip (E1.1), and a duration
@@ -1086,6 +1133,8 @@ extension AppModel: HostLinkSessionDelegate {
     }
 
     public func hostLinkDidRequestArm(_ link: HostLinkSession) -> ReadinessMeasurement {
+        // ⚠ `arm()` guards its own re-entry; this is only about not queueing a
+        // Task per repeated `arm` from a host that sends several.
         // ⛔ **The measurement is the answer and it goes back now** (5.2a,
         // 5.15a), before the camera is touched — so a host learns what this
         // device *is* rather than waiting on what it is about to do.

@@ -653,6 +653,25 @@ public final class DevicePeer: @unchecked Sendable {
         try check(ppcp_peer_stream_open(try handle(), &stream))
     }
 
+    /// `MSG` 5.1 / `CORE` 5.11a1 — this peer is done producing on a Stream.
+    ///
+    /// ⛔ **Needed because a Stream's identity is fixed for its lifetime (5.1a)
+    /// and the engine enforces it**: `peer_stream_add` refuses an id it already
+    /// holds. A link peer outlives the recording session that opened its
+    /// Streams, so without this the second arm on one link re-opens ids the
+    /// first arm left behind and is refused — which is `PPCP_ERR_INVALID` from
+    /// `stream_open`, and reads as "nothing is being recorded".
+    ///
+    /// ⚠ `closed_at` is **this peer's** reading, on the Stream's own timebase
+    /// (I1). A consumer closing someone else's Stream omits it (erratum E17);
+    /// an owner carries it, which is what this is.
+    public func closeStream(id: String, timebaseId: String, atNs: Int64,
+                            reason: String = "not_needed") throws {
+        var closedAt = ppcp_instant()
+        try check(ppcp_instant_make_z(&closedAt, timebaseId, atNs))
+        try check(ppcp_peer_stream_close(try handle(), id, &closedAt, reason))
+    }
+
     /// `CORE` 5.2a / 7.3c — emitted in response to `arm` and whenever `settled`
     /// changes. ⚠ Conferred by **Capture**, not Live, which is why a hostless
     /// peer records it in a bundle nobody armed (7.3b).

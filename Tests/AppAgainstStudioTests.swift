@@ -195,6 +195,21 @@ struct AppAgainstStudioTests {
         }
 
         print("APP-VS-STUDIO candidates=\(model.candidateCount) shots=\(model.shotCount)")
+
+        // ⛔ **Asserted now, because the host has been made deterministic.** Under
+        // `tools/probes/ppcp_assert.qml` PinPointStudio either has no detector
+        // available — every Shot accepted unweighed — or injects one per foreign
+        // Shot with `--corroborate`. Either way the outcome no longer depends on
+        // whether a person swung a club, so this stops being a report.
+        //
+        // ⚠ **What it does NOT prove**, and the line must stay in: injection
+        // exercises the corroboration *rule*, not either side's acoustic
+        // detector. A green run means a Shot corroborated by something was
+        // recorded, and nothing at all about whether we hear golf balls.
+        #expect(model.candidateCount > 0, """
+                no Candidate left this device — the injected swing never reached \
+                the detector, which is ours and not the host's
+                """)
         for shot in model.session.shots {
             print("APP-VS-STUDIO shot ordinal=\(shot.ordinal) state=\(shot.syncState.displayText)")
         }

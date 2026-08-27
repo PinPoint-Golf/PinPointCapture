@@ -317,13 +317,22 @@ public final class RecordingSession {
     /// stays on the MainActor, which is the path that ships with no host at all.
     public func observe(_ window: AudioWindow) async throws -> [DetectAndMint.Detection] {
         guard let detect else { return [] }
-        let detections: [DetectAndMint.Detection]
-        if let hosted = control.hosted {
-            detections = try await hosted.pump.perform { _ in try detect.observe(window) }
-        } else {
-            detections = try detect.observe(window)
-        }
+        // ⛔ **The detector runs HERE, outside the door.** Nine windows in ten
+        // produce nothing, and the tenth reaches the ring through
+        // `sampleQueue.sync` — neither belongs inside `perform`, which is the
+        // link's only serialised entrance and is shared with sync, liveness,
+        // flushes and the transfer drain. Doing this inside cost a real device
+        // ~24 seconds of queued audio and every clip with it (27 Aug).
+        let detections = try detect.detect(window)
         for _ in detections { recorder.countCandidate() }
+        guard detections.isEmpty == false else { return [] }
+
+        // Only the three sends need the peer.
+        if let hosted = control.hosted {
+            try await hosted.pump.perform { _ in try detect.nominate(detections) }
+        } else {
+            try detect.nominate(detections)
+        }
         return detections
     }
 
@@ -340,30 +349,124 @@ public final class RecordingSession {
     /// ⚠ **8.2i1 — no substitution.** Where no relation to the host's clock
     /// exists yet, `instant` answers `nil` and nothing is minted. A zero
     /// substituted here would mint every Candidate at the epoch.
+    /// A minted Shot, and the instant it happened **in this device's own clock**.
+    ///
+    /// ⚠ Both are needed above: `shot.t0Ns` is what crosses the wire (5.13c, the
+    /// host's `timebase_ref`), and `captureT0Ns` is what indexes the ring, keys
+    /// the clip file and labels the row a person reads.
+    public struct MintedShot: Sendable {
+        public let shot: PpcpShot
+        public let captureT0Ns: Int64
+        /// ⚠ Non-nil where the ring had nothing for this Shot, and it says why.
+        public let clipDiagnostic: String?
+    }
+
     @discardableResult
-    public func pumpMint(nowNs: Int64) async throws -> [PpcpShot] {
+    public func pumpMint(nowNs: Int64) async throws -> [MintedShot] {
         guard let detect else { return [] }
         let minted: [PpcpShot]
+        var captureInstants: [Int64] = []
+        var diagnostics: [String] = []
         if let hosted = control.hosted {
             let reference = hosted.parameters.timebaseRefId
-            minted = try await hosted.pump.perform { peer in
-                guard let nowRefNs = try peer.instant(nowNs,
-                                                      on: PpcpTimebases.captureId,
-                                                      expressedIn: reference) else { return [] }
-                return try detect.pump(nowRefNs: nowRefNs)
+            // 1 — decide what is due. Peer, and cheap: usually nothing.
+            let (due, captureT0Ns) = try await hosted.pump
+                .perform { peer -> ([PpcpShot], [Int64]) in
+                    guard let nowRefNs = try peer.instant(nowNs,
+                                                          on: PpcpTimebases.captureId,
+                                                          expressedIn: reference)
+                    else { return ([], []) }
+                    let minted = try detect.mintDue(nowRefNs: nowRefNs)
+                    // ⛔ **Back into this device's clock, here, while the peer is
+                    // in hand.** 5.13c puts `t0` in the host's `timebase_ref`;
+                    // the ring indexes in `tb:hosttime`. ⚠ 8.2i1 — a Shot whose
+                    // `t0` cannot be converted is dropped rather than extracted
+                    // against a substituted number.
+                    var local: [Int64] = []
+                    var kept: [PpcpShot] = []
+                    for shot in minted {
+                        // ⛔ **The Candidate's own instant first, and the
+                        // conversion only as a fallback.** This device heard the
+                        // ball on the clock the ring indexes; round-tripping
+                        // through the host's clock applies a rate across the gap
+                        // between two boot origins and lands tens of seconds
+                        // out — 47 s, measured, while sync reported 0.0 ms.
+                        //
+                        // ⚠ The fallback covers a Shot the HOST issued for a
+                        // Candidate we never nominated (7.3a's case), where
+                        // there is no local instant and a conversion is the only
+                        // thing available.
+                        if let heard = detect.captureInstant(forShot: shot) {
+                            kept.append(shot)
+                            local.append(heard)
+                        } else if let atNs = try peer.instant(
+                            shot.t0Ns, on: reference,
+                            expressedIn: PpcpTimebases.captureId) {
+                            kept.append(shot)
+                            local.append(atNs)
+                        }
+                    }
+                    return (kept, local)
+                }
+            guard due.isEmpty == false else { return [] }
+
+            // 2 — ⛔ **Outside the door.** This reaches the ring through
+            // `sampleQueue.sync` and then writes the clip to disk. Holding the
+            // link's only entrance for as long as tens of megabytes take is what
+            // starved detection and made every `t0` roll out of a ten-second
+            // ring before it could be extracted.
+            let pending = detect.extract(due, captureT0Ns: captureT0Ns)
+            captureInstants = captureT0Ns
+            // ⛔ **Say why there is no clip.** On hardware today "timed, not
+            // filmed" has meant an interval in the wrong clock, an interval that
+            // had rolled out of a ten-second ring, and a ring that was not
+            // retaining — and the Capture record says only `absent` for all
+            // three. The reason, the window asked for, and how far behind
+            // *now* it was, are what separate them.
+            // ⛔ **All three clocks, side by side.** The window came back 59 s in
+            // the FUTURE on hardware while sync reported 0.0 ms agreement, and
+            // those two cannot both be true. Printing the wire value, the
+            // converted value and the capture clock together is what says which
+            // of them is wrong — and whether the conversion is even doing
+            // anything (identity would mean `timebase_ref` is ours already, and
+            // the fault is upstream in the Candidate's own instant).
+            diagnostics = zip(due, pending).compactMap { shot, entry -> String? in
+                guard entry.clip == nil else { return nil }
+                let now = MachClock.hostTimeNs
+                let converted = entry.requestedNs.lowerBound + 1_500_000_000
+                let seconds = { (ns: Int64) in String(format: "%.3f", Double(ns) / 1e9) }
+                let stats = device.ringStats
+                return """
+                    no clip: \(entry.assembly.record.absentReason ?? "no reason") \
+                    · t0(wire, \(reference))=\(seconds(shot.t0Ns)) \
+                    · t0(capture)=\(seconds(converted)) \
+                    · now(capture)=\(seconds(now)) \
+                    · ahead by \(String(format: "%.1f", Double(converted - now) / 1e9))s \
+                    · ring \(stats.framesAppended) frames, \
+                    \(stats.fragmentsWritten - stats.fragmentsEvicted) fragments
+                    """
             }
+
+            // 3 — announce. Peer again.
+            minted = try await hosted.pump.perform { _ in try detect.commit(pending) }
         } else {
             minted = try detect.pump(nowRefNs: nowNs)
         }
-        for shot in minted {
+        let localT0 = control.hosted == nil ? minted.map(\.t0Ns) : captureInstants
+        var results: [MintedShot] = []
+        for (shot, atNs) in zip(minted, localT0) {
             recorder.countShot()
             // E1.2's thumbnail. ⚠ Only reachable here: the clip is written under
             // a `t0` key inside `videoClip`, because `pump` mints the Capture id
             // *after* asking for the clip — so the two are joined up once the
             // Shot comes back carrying it.
-            adoptClip(forT0Ns: shot.t0Ns, captureId: shot.captureIds.first)
+            // ⛔ Capture time — this is the key `persist` wrote the file under,
+            // because `videoClip` was asked for a capture-time interval.
+            adoptClip(forT0Ns: atNs, captureId: shot.captureIds.first)
+            results.append(MintedShot(shot: shot, captureT0Ns: atNs,
+                                      clipDiagnostic: diagnostics.first))
         }
-        return minted
+        return results
     }
 
     // MARK: The clip on disk (E1.2)
@@ -551,6 +654,23 @@ public final class RecordingSession {
     }
 
     public func stopMetadata() { motion.stop() }
+
+    /// ⚠ Best-effort and deliberately not throwing: this runs from `close`,
+    /// which runs from `disarm`, and a link that has already gone is the
+    /// ordinary reason it fails. The Streams die with the link in that case.
+    private func closeHostedStreams() {
+        guard let hosted = control.hosted else { return }
+        let records = streams
+        let atNs = MachClock.hostTimeNs
+        Task { [hosted, records, atNs] in
+            try? await hosted.pump.perform { peer in
+                for stream in records {
+                    try? peer.closeStream(id: stream.id, timebaseId: stream.timebaseId,
+                                          atNs: atNs)
+                }
+            }
+        }
+    }
 
     /// Opens this session's own Stream records on the link.
     ///
@@ -833,6 +953,13 @@ public final class RecordingSession {
         // which is the whole of "live bytes are bundle bytes".
         stopTransferring()
         stopPreview()
+        // ⛔ **Close this session's Streams on the LINK peer, which outlives it.**
+        // 5.1a fixes a Stream's identity for its lifetime and `peer_stream_add`
+        // refuses an id the peer already holds — so without this, the second arm
+        // on one link re-opens the ids the first left behind and is refused.
+        // 5.1d makes an owner-initiated close legal, and PinPointStudio began
+        // handling `stream_close` on 27 Aug (their own missing-call-site list).
+        closeHostedStreams()
         try recorder.close(completeness: completeness, closedAtNs: closedAtNs)
         try handle.close()
     }

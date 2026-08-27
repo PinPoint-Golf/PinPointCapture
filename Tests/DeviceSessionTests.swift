@@ -832,4 +832,91 @@ struct DeviceSessionTests {
         print("RV 10.4  Z     \(hex(Z))")
         #expect(hex(Z) == "7c79d7b5f31b9aac367477f5f7c7a68b5c44cac28ed5c902a59ec48c02956a6a")
     }
+
+    // MARK: The whole loop, hosted — what the manual run kept doing by hand
+
+    /// ⛔ **Test 1 of the hardware list, automated.**
+    ///
+    /// Connect to a real PinPointStudio, arm, inject a swing, assert a clip with
+    /// real bytes reached the bundle. Six manual runs on 27 August found five
+    /// separate faults that this would have caught in one: `stream_open` refused
+    /// on a re-arm, `t0` read in the host's clock and handed to the ring, the
+    /// clip keyed on the wrong instant, the wall clock two hours out, and a
+    /// relation extrapolated across two boot origins landing 47 s in the future.
+    ///
+    /// ⚠ **Injected audio is not a compromise** — `CONF` §2a's *injected* method
+    /// exists for exactly this. What cannot be injected is the camera, which is
+    /// why this suite has to run on a phone at all.
+    ///
+    /// ⚠ Skips without `HOST`/`PSK`, so `make test-device` alone still proves the
+    /// hostless camera halves above.
+    @Test("The hosted loop — a real link, an injected swing, and a clip with bytes")
+    func aHostedSwingProducesAClip() async throws {
+        guard let capability = Self.liveCapability(), capability.bestMode != nil else {
+            print("SKIP — no physical camera"); return
+        }
+        guard let endpoint = InteropTests.endpoint("HOST"),
+              let pskText = InteropTests.value("PSK"),
+              let tlsKey = InteropTests.hex(pskText) else {
+            print("SKIP — no PPCP_INTEROP_HOST/PSK; run `make test-device HOST=… PSK=…`")
+            return
+        }
+        let identityText = InteropTests.value("IDENTITY") ?? ""
+        let identity = InteropTests.hex(identityText) ?? Data(identityText.utf8)
+        let credentials = try FixedPskCredentials(tlsKey: tlsKey, identity: identity)
+
+        let model = await AppModel()
+        await MainActor.run { model.refreshCapability() }
+
+        // `ENC` 2.1d's third channel up front — preview needs it, and a refusal
+        // here is a finding in itself.
+        let transport = try await PpcpConnector()
+            .connect(to: endpoint, credentials: credentials,
+                     channels: PpcpChannel.required + [.preview])
+        await model.connect(transport: transport, sessionId: "ses:device-run",
+                            hostDisplayName: "PinPointStudio")
+        let link = try #require(await model.link, "no link was composed")
+
+        // Studio opens the Session at `declare`; allow that and the sync burst.
+        try await Task.sleep(for: .seconds(12))
+        let session = try #require(await link.hostSession, "session_open never arrived")
+        print("DEVICE-RUN session=\(session.sessionId) ref=\(session.timebaseRefId)")
+
+        await model.arm()
+        try await Task.sleep(for: .seconds(3))
+        let armed = await model.captureStatus.state
+        let why = await model.capabilityError ?? "—"
+        #expect(armed == .armed, "did not reach armed: \(why)")
+
+        // ⛔ One swing. PinPointStudio's pipeline is unavailable for 15–40 s after
+        // each, so a burst measures their backlog rather than our capture.
+        await model.observe(SyntheticAudio.oneSwing(timebaseId: PpcpTimebases.captureId,
+                                                    startNs: MachClock.hostTimeNs))
+        // 8.2i's deadline is `issue_hold` plus a heartbeat, then the clip is cut.
+        try await Task.sleep(for: .seconds(8))
+
+        let shots = await model.session.shots
+        let candidates = await model.candidateCount
+        print("DEVICE-RUN candidates=\(candidates) shots=\(shots.count)")
+        for shot in shots {
+            print("DEVICE-RUN shot \(shot.ordinal) at \(shot.impact) — \(shot.syncState.displayText)")
+        }
+        if let diagnostic = await model.recordingError {
+            print("DEVICE-RUN recordingError: \(diagnostic)")
+        }
+        #expect(shots.isEmpty == false, "no Shot was minted")
+
+        // ⛔ **The assertion every manual run failed.** A bundle with no payload
+        // is #98's shape, and all five of today's faults ended here.
+        await model.disarm()
+        try await Task.sleep(for: .seconds(2))
+
+        let bundles = await model.libraryRows()
+        let newest = try #require(bundles.first, "no bundle was written")
+        print("DEVICE-RUN bundle \(newest.sessionId) — \(newest.byteCount / 1_000_000) MB")
+        #expect(newest.byteCount > 1_000_000,
+                "bundle is \(newest.byteCount) bytes — the Capture was announced absent")
+
+        await model.disconnect()
+    }
 }

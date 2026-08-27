@@ -18,6 +18,18 @@
 import Foundation
 import CaptureCore
 
+/// Why a Stream this device owns could not be opened on the link.
+public enum HostedSessionError: Error, CustomStringConvertible {
+    case streamRefused(id: String, kind: String, profileId: String, underlying: any Error)
+
+    public var description: String {
+        switch self {
+        case .streamRefused(let id, let kind, let profileId, let underlying):
+            "stream_open refused for \(id) (kind: \(kind), profile: \(profileId)) — \(underlying)"
+        }
+    }
+}
+
 /// The pieces a hosted `RecordingSession` needs from the live link.
 ///
 /// ⚠ **`Sendable` and deliberately not `@MainActor`.** Every member is already
@@ -102,7 +114,18 @@ public struct HostedSessionContext: Sendable {
     public func openStreams(_ streams: [PpcpStreamRecord]) async throws {
         try await pump.perform { peer in
             for stream in streams where stream.kind != PpcpStreamKind.preview {
-                try peer.openStream(stream)
+                do {
+                    try peer.openStream(stream)
+                } catch {
+                    // ⛔ **Name the Stream.** `libppcp: invalid argument
+                    // (openStream)` on a device tells nobody which of four it
+                    // was, and `arm` shipped dead for weeks once before because
+                    // a guard refused silently. 5.1a's duplicate-id refusal and
+                    // a malformed record are the same message otherwise.
+                    throw HostedSessionError.streamRefused(
+                        id: stream.id, kind: stream.kind,
+                        profileId: stream.profileId, underlying: error)
+                }
             }
         }
     }

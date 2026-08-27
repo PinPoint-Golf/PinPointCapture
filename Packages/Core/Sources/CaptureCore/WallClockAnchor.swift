@@ -70,12 +70,21 @@ public extension Shot {
     ///   - duration: the clip window this shot would carry. ⚠ Not yet a measured
     ///     value — nothing records a clip (E1.1) — so callers pass the intended
     ///     window and the screen must not imply video exists.
-    init(minted: PpcpShot, ordinal: Int, anchor: WallClockAnchor,
+    /// - Parameter atNs: the Shot's `t0` **in the timebase this anchor labels** —
+    ///   this device's capture clock.
+    ///
+    ///   ⛔ **Not `minted.t0Ns` unless the two are the same clock.** 5.13c puts a
+    ///   Shot's `t0` in `Session.timebase_ref`, which is this device's capture
+    ///   timebase only in a hostless Session (I4). With a host it is the host's,
+    ///   and labelling it with this anchor produces a wall clock out by however
+    ///   far apart the two machines' since-boot origins are — measured at about
+    ///   two hours on real hardware, 27 Aug.
+    init(minted: PpcpShot, atNs: Int64, ordinal: Int, anchor: WallClockAnchor,
          duration: TimeInterval? = nil, club: String? = nil,
          detectionConfidence: Double? = nil) {
         self.init(id: Self.stableID(for: minted.id),
                   ordinal: ordinal,
-                  impact: anchor.label(minted.t0Ns),
+                  impact: anchor.label(atNs),
                   duration: duration,
                   club: club,
                   syncState: .onDevice,

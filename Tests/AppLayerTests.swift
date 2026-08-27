@@ -168,7 +168,11 @@ struct FixtureRemovalTests {
                                   authority: .device,
                                   issuedBy: "peer:test",
                                   firstCandidateId: "cand:test")
-        let shot = Shot(minted: minted, ordinal: 1, anchor: anchor)
+        // ⚠ `atNs` explicitly, and in a hostless Session it is `t0Ns` — I4's
+        // identity. With a host it is not, which is why the parameter exists:
+        // labelling a host-clock instant with this anchor put every shot on a
+        // real device about two hours out (27 Aug).
+        let shot = Shot(minted: minted, atNs: minted.t0Ns, ordinal: 1, anchor: anchor)
 
         #expect(abs(shot.impact.timeIntervalSince(anchor.wallClock) - 2.5) < 0.000_001)
         #expect(shot.duration == nil)          // nothing filmed it

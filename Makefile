@@ -253,6 +253,15 @@ test-app: gen
 	@# passing suite looks like an empty one. Filter to the result lines instead.
 	@# ⚠ The two allowances below are kept because they catch a SLOW test, but
 	@# they did NOT catch a HUNG one on 2026-08-24 — $(GUARD) is what does.
+	@# ⛔ **OUTPUT GOES TO A FILE AND IS FILTERED AFTERWARDS, NOT PIPED.**
+	@# `xcodebuild test | grep` does not return when the tests finish: the
+	@# simulator and `testmanagerd` inherit xcodebuild's stdout, so the pipe
+	@# never reaches EOF while a surviving child still holds the descriptor —
+	@# `grep` waits on a writer that has stopped writing. The suite completes,
+	@# the results are written, and the command hangs until something kills it.
+	@# Diagnosed 27 Aug after three wrong explanations (a slow build, a slow
+	@# test, an editing race); the tell is that killing it prints the whole
+	@# transcript at once, which a genuinely stuck run cannot do.
 	@# ⚠ xcodebuild's status is written to a FILE, not read from the pipeline.
 	@# `set -o pipefail` reports the RIGHTMOST non-zero status, and `grep` exits 1
 	@# when a killed xcodebuild printed nothing to match — so the timeout's 142 is
@@ -260,7 +269,8 @@ test-app: gen
 	@# while adding this guard, which is exactly the class of bug it exists for.
 	@set -o pipefail; \
 	mkdir -p $(DERIVED); rm -f $(DERIVED)/.xcodebuild-status; \
-	{ $(GUARD) $(TEST_TIMEOUT_S) xcodebuild test \
+	log=$(DERIVED)/.test-app.log; \
+	$(GUARD) $(TEST_TIMEOUT_S) xcodebuild test \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -269,8 +279,9 @@ test-app: gen
 		-jobs $(JOBS) \
 		-default-test-execution-time-allowance 120 \
 		-maximum-test-execution-time-allowance 300 \
-		; echo $$? > $(DERIVED)/.xcodebuild-status; } \
-		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST'; \
+		>"$$log" 2>&1 </dev/null; \
+	echo $$? > $(DERIVED)/.xcodebuild-status; \
+	grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' "$$log" || true; \
 	status=$$(cat $(DERIVED)/.xcodebuild-status 2>/dev/null || echo 1); \
 	if [ $$status -eq $(GUARD_STATUS) ]; then \
 		echo ""; \
@@ -448,7 +459,7 @@ conform-sim: gen
 	if [ -z "$$port" ]; then echo "make conform: ppcp-sim never reported a port"; \
 		cat "$$log"; exit 1; fi; \
 	echo "ppcp-sim listening on $$port, scenario $(SCENARIO)"; \
-	set -o pipefail; \
+	testlog=$$(mktemp -t ppcp-conform-test); \
 	TEST_RUNNER_PPCP_CONFORM_PORT=$$port \
 	TEST_RUNNER_PPCP_CONFORM_ROW=$(ROW) \
 	TEST_RUNNER_PPCP_CONFORM_SCENARIO=$(SCENARIO) xcodebuild test-without-building \
@@ -460,8 +471,10 @@ conform-sim: gen
 		-only-testing:PinPointCaptureTests/ConformanceHarnessTests \
 		-default-test-execution-time-allowance 120 \
 		-maximum-test-execution-time-allowance 300 \
-		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' \
-		|| { echo "--- ppcp-sim ---"; cat "$$log"; exit 1; }; \
+		>"$$testlog" 2>&1 </dev/null \
+		|| { echo "--- ppcp-sim ---"; cat "$$log"; \
+		     grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' "$$testlog" || true; exit 1; }; \
+	grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' "$$testlog" || true; \
 	wait $$simpid || { echo "--- ppcp-sim ---"; cat "$$log"; \
 		echo "make conform: ppcp-sim exited non-zero — a violation or an unmet expectation"; \
 		exit 1; }; \
@@ -628,7 +641,8 @@ conform-iop: gen
 		$(IOP_TESTS) \
 		-default-test-execution-time-allowance 300 \
 		-maximum-test-execution-time-allowance 600 \
-		2>&1 | grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || rc=$$?; \
+		>$(DERIVED)/.conform-iop.log 2>&1 </dev/null || rc=$$?; \
+	grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' $(DERIVED)/.conform-iop.log || true; \
 	echo "--- ppcp-sim, IOP-2 (three-timebase-host) ---"; tail -3 "$$l2"; \
 	echo "--- ppcp-sim, IOP-1 (reference-host) ---";      tail -3 "$$l1"; \
 	kill $$sim1 $$sim2 2>/dev/null || true; \
@@ -743,7 +757,8 @@ interop: gen
 		-only-testing:PinPointCaptureTests/InteropTests \
 		-default-test-execution-time-allowance 300 \
 		-maximum-test-execution-time-allowance 600 \
-		| grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' || true
+		>$(DERIVED)/.interop.log 2>&1 </dev/null || true; \
+	grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' $(DERIVED)/.interop.log || true
 	@$(MAKE) --no-print-directory pull-bundles || true
 	@if [ -f $(CONFORM_OUT)/interop-summary.json ]; then \
 		for f in $(CONFORM_OUT)/interop-summary.json $(CONFORM_OUT)/interop-acoustic-summary.json; do \
@@ -803,7 +818,112 @@ interop-app: gen
 		-only-testing:PinPointCaptureTests/AppAgainstStudioTests \
 		-default-test-execution-time-allowance 300 \
 		-maximum-test-execution-time-allowance 600 \
-		| grep -E '^(◇|✔|✘|↳)|APP-VS-STUDIO|error:|Test run|\*\* TEST'
+		>$(DERIVED)/.interop-app.log 2>&1 </dev/null; \
+	grep -E '^(◇|✔|✘|↳)|APP-VS-STUDIO|error:|Test run|\*\* TEST' \
+		$(DERIVED)/.interop-app.log || true
+
+# ⛔ **The hardware suite, on the connected phone, without a person in the loop.**
+#
+# Everything a simulator cannot do -- a real sensor, a real encoder, a real ring,
+# real clip bytes -- is already covered by `DeviceSessionTests`, which injects
+# synthetic swings through the app's own `observe`. What was missing was a way to
+# RUN it on the device: `make deploy` installs the app, and nothing ran the tests.
+#
+#   make test-device                       # the camera halves, hostless
+#   make test-device HOST=127.0.0.1:<port> PSK=<64 hex> IDENTITY=<id>
+#                                          # ...and against a live PinPointStudio
+#
+# ⚠ Every test in the suite self-skips where there is no physical camera, so this
+# is safe to point at anything; it simply proves nothing on a simulator.
+#
+# ⚠ A device build needs provisioning, so this is `-allowProvisioningUpdates` and
+# will be slower than the simulator suite the first time.
+test-device: gen
+	@udid=$$($(MAKE) --no-print-directory _udid); \
+	if [ -z "$$udid" ]; then \
+		echo "make test-device: no connected physical device."; \
+		$(MAKE) --no-print-directory _udid_paired; exit 1; \
+	fi; \
+	echo "device: $$udid"; \
+	set -o pipefail; \
+	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
+	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination "id=$$udid" \
+		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		-allowProvisioningUpdates \
+		-only-testing:PinPointCaptureTests/DeviceSessionTests \
+		-default-test-execution-time-allowance 300 \
+		-maximum-test-execution-time-allowance 600 \
+		>$(DERIVED)/.test-device.log 2>&1 </dev/null; \
+	grep -E '^(◇|✔|✘|↳)|DEVICE-RUN|SKIP|error:|Test run|\*\* TEST' \
+		$(DERIVED)/.test-device.log || true
+
+# ⛔ **Both halves of an integration run, in one command, with no person in it.**
+#
+#   make integration STUDIO=/path/to/PinPointStudio \
+#                    HOST=127.0.0.1:<port> PSK=<64 hex> IDENTITY=<id> \
+#                    [CORROBORATE=1] [EXPECT_SHOTS=1]
+#
+# PinPointStudio runs offscreen under `tools/probes/ppcp_assert.qml`, which polls
+# its own `ppcpStats()`/`shotStats()` and exits non-zero with the corroboration
+# verdict in the failure line. This device drives the SHIPPING app -- AppModel,
+# its delegate, its recording session -- from the simulator over real TLS.
+#
+# ⚠ **CORROBORATE=1 is the half a simulator cannot otherwise reach.** A simulator
+# makes no sound, so a host with a working microphone hears nothing and the
+# corroboration rule refuses every Shot -- the rule becomes untestable by exactly
+# the automation that most needs it. `injectDetection` supplies that one input,
+# which `PPCP-CONF` §2a's *injected* method already blesses.
+#
+# ⛔ **And it tests the RULE, not the detector.** Nothing here says either side's
+# acoustic onset detection works: only that a Shot corroborated by something is
+# recorded and one corroborated by nothing is not. A green run must not be read
+# as more than that (PinPointStudio's own caveat, 27 Aug).
+STUDIO_PROBE ?= $(HOME)/Projects/PinPointStudio/tools/probes/ppcp_assert.qml
+EXPECT_SHOTS ?= 1
+integration: gen
+	@if [ -z "$(STUDIO)" ] || [ -z "$(HOST)" ] || [ -z "$(PSK)" ]; then \
+		echo "make integration: STUDIO=<binary> HOST=<host:port> PSK=<64 hex> are required."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(STUDIO_PROBE)" ]; then \
+		echo "make integration: no probe at $(STUDIO_PROBE)"; exit 1; \
+	fi
+	set -o pipefail && xcodebuild build-for-testing \
+		-project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' -derivedDataPath $(DERIVED) -jobs $(JOBS) | $(XCB)
+	@set -e; \
+	probelog=$(DERIVED)/.integration-studio.log; \
+	QT_QPA_PLATFORM=offscreen "$(STUDIO)" \
+		--probe-qml "$(STUDIO_PROBE)" \
+		$(if $(CORROBORATE),--corroborate,) \
+		--expect-shots $(EXPECT_SHOTS) >"$$probelog" 2>&1 & \
+	studiopid=$$!; \
+	trap 'kill $$studiopid 2>/dev/null || true' EXIT; \
+	echo "PinPointStudio offscreen (pid $$studiopid), corroborate=$(if $(CORROBORATE),on,off), expect $(EXPECT_SHOTS)"; \
+	sleep 8; \
+	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
+	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building \
+		-project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' -derivedDataPath $(DERIVED) \
+		-only-testing:PinPointCaptureTests/AppAgainstStudioTests \
+		-default-test-execution-time-allowance 300 \
+		-maximum-test-execution-time-allowance 600 \
+		>$(DERIVED)/.integration-device.log 2>&1 </dev/null || true; \
+	grep -E '^(◇|✔|✘|↳)|APP-VS-STUDIO|error:|Test run|\*\* TEST' \
+		$(DERIVED)/.integration-device.log || true; \
+	echo "--- PinPointStudio ---"; \
+	grep -E "PROBE (START|RESULT|STATS)" "$$probelog" || tail -5 "$$probelog"; \
+	wait $$studiopid; rc=$$?; \
+	if [ $$rc -ne 0 ]; then \
+		echo "make integration: the HOST half failed — see its PROBE RESULT line"; exit $$rc; \
+	fi
 
 device:
 	@xcrun devicectl list devices

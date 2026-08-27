@@ -165,8 +165,33 @@ public final class DetectAndMint: @unchecked Sendable {
     }
 
     /// One window of microphone audio, all the way to nomination.
+    ///
+    /// ⚠ Kept for the hostless path and the conformance harness, where nothing
+    /// is serialised behind a link peer. **A hosted session must use `detect`
+    /// and `nominate` separately** — see their notes.
     @discardableResult
     public func observe(_ window: AudioWindow) throws -> [Detection] {
+        let detections = try detect(window)
+        try nominate(detections)
+        return detections
+    }
+
+    /// Everything about a window that does **not** touch the peer.
+    ///
+    /// ⛔ **Split out because it was costing a link its throughput.** With a host,
+    /// the Mint engine lives on the link peer and every call into it must go
+    /// through `PeerLinkPump.perform`, which is a single serialised door shared
+    /// with sync, liveness, flushes and the transfer drain. Running the detector
+    /// *inside* that door made every 100 ms audio window an actor round trip —
+    /// and nine windows in ten produce nothing at all.
+    ///
+    /// ⛔ Worse, `extractAudio` reaches the ring through `sampleQueue.sync`, so a
+    /// window with an onset blocked the socket on a camera queue saturated at
+    /// 238 fps. Measured on hardware, 27 Aug: audio windows queued for ~24
+    /// seconds, minting ran long after each `t0` had rolled out of a ten-second
+    /// ring, and every Capture came out `absent` with no clip. The ring was
+    /// fine; the door was the problem.
+    public func detect(_ window: AudioWindow) throws -> [Detection] {
         var detections: [Detection] = []
         for onset in detector.observe(window) {
             // Step 2 — the evidence Capture id is minted first, because the
@@ -192,14 +217,51 @@ public final class DetectAndMint: @unchecked Sendable {
             let anchored = CaptureAssembly(record: record,
                                            achievedFrames: evidence.achievedFrames)
 
-            try sink.announce(anchored, clip: nil)
-            try sink.record(candidate: candidate)
-            try mint.observe(own: candidate)
-
+            // The instant on this device's own clock, kept for the ring.
+            heardAt[candidate.id] = candidate.atNs
             detections.append(Detection(candidate: candidate, evidence: anchored,
                                         wouldPromote: promotion(candidate)))
         }
         return detections
+    }
+
+    /// Candidate id → when this device **heard** it, in its own capture clock.
+    ///
+    /// ⛔ **Kept so the ring is never indexed through the host's clock.** A
+    /// Shot's `t0` is in `Session.timebase_ref` (5.13c) and converting it back
+    /// is not free: the relation carries an offset *and* a rate, and applying
+    /// that rate across the gap between two machines' boot origins turns a few
+    /// ppm of skew error into tens of seconds. Measured on hardware, 27 Aug: a
+    /// 6752 s baseline produced a `t0` **47 seconds in the future**, while the
+    /// sync estimator reported 0.0 ms agreement.
+    ///
+    /// ⚠ The Candidate's own instant needs no conversion at all — it is what
+    /// this device's microphone heard, on the same clock the ring indexes, and
+    /// already corrected for time of flight. The round trip could only ever lose
+    /// precision; this keeps the authoritative `t0` on the wire and the local
+    /// instant for local use, which is what I1 is about.
+    private var heardAt: [String: Int64] = [:]
+
+    /// When this device heard the ball for a Shot it minted, in capture time.
+    public func captureInstant(forShot shot: PpcpShot) -> Int64? {
+        for candidateId in shot.candidateIds {
+            if let atNs = heardAt[candidateId] { return atNs }
+        }
+        return nil
+    }
+
+    /// The three sends, and nothing else.
+    ///
+    /// ⛔ **Every line here touches the peer**, so with a host this is the only
+    /// part that belongs inside `perform`. 7.1d — every nomination is emitted,
+    /// including the ones this peer's own promotion policy would not have
+    /// promoted; `wouldPromote` is reported, never used to filter.
+    public func nominate(_ detections: [Detection]) throws {
+        for detection in detections {
+            try sink.announce(detection.evidence, clip: nil)
+            try sink.record(candidate: detection.candidate)
+            try mint.observe(own: detection.candidate)
+        }
     }
 
     /// 8.2i–j / 8.3a — mint what is due and extract a clip for each Shot.
@@ -209,29 +271,89 @@ public final class DetectAndMint: @unchecked Sendable {
     ///   Capture id.
     @discardableResult
     public func pump(nowRefNs: Int64) throws -> [PpcpShot] {
-        var minted: [PpcpShot] = []
-        for var shot in try mint.pump(nowRefNs: nowRefNs) {
-            let lower = shot.t0Ns - configuration.clipPreNs
-            let upper = shot.t0Ns + configuration.clipPostNs
+        // ⚠ The hostless path only: `Session.timebase_ref` IS this device's
+        // capture timebase there, so `t0` is already in capture terms (I4).
+        let due = try mintDue(nowRefNs: nowRefNs)
+        return try commit(extract(due, captureT0Ns: due.map(\.t0Ns)))
+    }
+
+    /// A Shot the mint deadline has made due, and nothing more.
+    ///
+    /// ⛔ Touches the peer: `ppcp_mint_pump` reads `timebase_ref`, the session id
+    /// and the relation set off it, and sends the Shot under 8.2j.
+    public func mintDue(nowRefNs: Int64) throws -> [PpcpShot] {
+        try mint.pump(nowRefNs: nowRefNs)
+    }
+
+    /// A Shot, its clip, and the Capture that describes it.
+    public struct PendingShot: Sendable {
+        public var shot: PpcpShot
+        public let assembly: CaptureAssembly
+        public let clip: CaptureSessionRecorder.ClipProvider?
+        /// The window asked of the ring, in **capture** time.
+        ///
+        /// ⚠ Carried so a Capture that came back `absent` can say what it asked
+        /// for. "No clip" has meant four different things on hardware today and
+        /// the record alone cannot tell them apart: an interval in the wrong
+        /// clock, an interval that has rolled out, a ring that was not
+        /// retaining, and a write that failed.
+        public let requestedNs: Range<Int64>
+    }
+
+    /// The expensive half, and **none of it touches the peer**.
+    ///
+    /// ⛔ **`videoClip` reaches the ring through `sampleQueue.sync` and then
+    /// writes the clip to disk.** Running that inside `PeerLinkPump.perform`
+    /// held the link's only door for as long as tens of megabytes took to
+    /// materialise, behind which sync, liveness and every candidate queued. It
+    /// is the caller's job to run this outside.
+    /// - Parameter captureT0Ns: `shot.t0Ns` expressed in **this device's capture
+    ///   timebase**, one per shot and in the same order.
+    ///
+    ///   ⛔ **Not `shot.t0Ns`, and the difference is not cosmetic.** 5.13c puts a
+    ///   Shot's `t0` in `Session.timebase_ref`. Hostless that is this device's
+    ///   own capture clock and the conversion is the identity (I4); **with a
+    ///   host it is the host's clock**, whose since-boot origin has nothing to do
+    ///   with ours. Handing that number to the ring asks for an interval hours
+    ///   from anything it holds, which answers `outside_buffer` — a Capture with
+    ///   no bytes, and a session of shots marked "timed, not filmed". Measured on
+    ///   hardware, 27 Aug: every clip absent, every displayed time ~2 hours wrong.
+    public func extract(_ shots: [PpcpShot], captureT0Ns: [Int64]) -> [PendingShot] {
+        zip(shots, captureT0Ns).map { shot, t0Ns in
+            let lower = t0Ns - configuration.clipPreNs
+            let upper = t0Ns + configuration.clipPostNs
             let clip = videoClip(lower..<upper)
-            let captureId = mintCaptureId()
             let assembly = CaptureBuilder.shotCapture(
-                id: captureId,
+                id: mintCaptureId(),
                 shotId: shot.id,
                 stream: configuration.videoStream,
                 extraction: clip.extraction,
                 exposure: clip.exposure,
                 intrinsics: clip.intrinsics,
                 thermal: clip.thermal)
-
             // ⛔ `absent` is a **result, not a failure** (I10, 8.4b). A ring that
             // no longer holds the interval answers `outside_buffer` and the Shot
             // still exists — a Shot with no Capture is a legitimate record.
             let isAbsent = assembly.record.completeness == PpcpCaptureRecord.Completeness.absent
-            try sink.announce(assembly, clip: isAbsent ? nil : clip.payload)
-            try shot.add(captureId: captureId)
-            try sink.record(shot: shot)
-            minted.append(shot)
+            return PendingShot(shot: shot, assembly: assembly,
+                               clip: isAbsent ? nil : clip.payload,
+                               requestedNs: lower..<upper)
+        }
+    }
+
+    /// The announce and the Shot's extension, both of which touch the peer.
+    @discardableResult
+    public func commit(_ pending: [PendingShot]) throws -> [PpcpShot] {
+        // ⚠ A Shot that has been minted will not be extracted again.
+        for entry in pending {
+            for candidateId in entry.shot.candidateIds { heardAt[candidateId] = nil }
+        }
+        var minted: [PpcpShot] = []
+        for var entry in pending {
+            try sink.announce(entry.assembly, clip: entry.clip)
+            try entry.shot.add(captureId: entry.assembly.record.id)
+            try sink.record(shot: entry.shot)
+            minted.append(entry.shot)
         }
         return minted
     }
