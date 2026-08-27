@@ -37,6 +37,55 @@ import Foundation
 import Observation
 import CaptureCore
 
+/// What the live link needs to tell the application, as distinct from what it
+/// lets the application *read*.
+///
+/// ⛔ **A delegate rather than an `AsyncStream`, and the reason is `arm`.**
+/// `PeerLinkPump.takeEvents` already rejects a stream in its own documentation:
+/// the consumer has to be able to call back into the peer between two events.
+/// `arm`'s answer is a Readiness *measurement* (`MSG` 5.2a), so the reply has to
+/// come back from the call — a stream would leave the ordering of that answer to
+/// whoever happened to be draining.
+///
+/// ⚠ **This carries commands. `hostLink` still carries state**, polled at 250 ms
+/// by `AppModel`. Collapsing the two would turn a rendered snapshot into a
+/// command, and a missed poll into a missed arm.
+@MainActor
+public protocol HostLinkSessionDelegate: AnyObject {
+
+    /// The host opened a Session (`MSG` 4.1). ⚠ PinPointStudio does this at
+    /// `declare`, before any arm, so this is the ordinary first event.
+    func hostLink(_ link: HostLinkSession,
+                  didOpenSession sessionId: String,
+                  parameters: PpcpSessionParameters)
+
+    /// `CORE` 5.2a / 5.15a — **returning is the answer.** The measurement is put
+    /// on the wire before anything slow happens, and a device that will not arm
+    /// says so here with a `blocked` reason rather than by staying silent.
+    func hostLinkDidRequestArm(_ link: HostLinkSession) -> ReadinessMeasurement
+
+    func hostLinkDidRequestDisarm(_ link: HostLinkSession)
+
+    /// `MSG` 7.2 — the host arbitrated and issued. The timebase travels with the
+    /// number so the receiver can convert it (I22).
+    func hostLink(_ link: HostLinkSession, didIssueShot shotId: String,
+                  t0Ns: Int64, t0TimebaseId: String)
+
+    /// `MSG` 7.3 — the host wants an interval from this device's ring.
+    func hostLink(_ link: HostLinkSession, didRequestCapture shotId: String,
+                  streamIds: [String], preNs: Int64, postNs: Int64, replyTo: UInt64)
+
+    /// A `payload_ack` or a `capture_committed` moved something in the transfer
+    /// table. ⚠ Deliberately carries nothing: `PeerLinkEvent.capture` has no
+    /// capture id, so the truth is re-read from the table rather than inferred.
+    func hostLinkTransfersChanged(_ link: HostLinkSession)
+
+    /// `CORE` 7.4c — three consecutive missed intervals.
+    /// ⛔ **Never disarms** (7.4d). REQ-STATE-3's lapse is warm → cold only.
+    func hostLinkDidLoseLink(_ link: HostLinkSession)
+    func hostLinkDidRestoreLink(_ link: HostLinkSession)
+}
+
 /// A single live host link.
 @MainActor
 @Observable
@@ -80,6 +129,18 @@ public final class HostLinkSession {
 
     private let peer: DevicePeer
     private let pump: PeerLinkPump
+    /// ⚠ `weak`, and `AppModel` owns both ends: the model holds the session and
+    /// the session calls back into the model.
+    public weak var delegate: (any HostLinkSessionDelegate)?
+
+    /// The host's `session_open`, held from the moment it arrives.
+    ///
+    /// ⚠ **Held, not acted on.** PinPointStudio opens the Session at `declare`,
+    /// which is long before an arm; Streams open at arm, on both peers, from one
+    /// set of records. I16 makes these immutable, so this is read once and never
+    /// recomputed.
+    public private(set) var hostSession: PpcpSessionParameters?
+
     /// E3.2 — turns liveness + sync into `HostLinkState` and the clock estimate.
     /// ⛔ **Touched only from inside a `pump.perform` closure.** It is a plain
     /// class, not an actor; `pump.perform` is what serialises every call into it,
@@ -101,7 +162,7 @@ public final class HostLinkSession {
     /// Builds a peer and a pump over an already-handshaken transport.
     ///
     /// ⚠ **The declaration comes from the device**, through
-    /// `ppcpDeclarationInput` — the same non-DEBUG path `HostlessRecordingSession`
+    /// `ppcpDeclarationInput` — the same non-DEBUG path `RecordingSession`
     /// uses. `ConformanceHarness.honestDeclaration` is `#if DEBUG` and its
     /// no-camera fallback exists for a simulator, not for a shipping link.
     /// - Parameter declaration: injected only by tests and by the conformance
@@ -120,7 +181,7 @@ public final class HostLinkSession {
         let peerId = PeerIdentity.current
         // ⛔ The three arguments the live path needs and the bundle path does not:
         // a clock to stamp sync probes with, a health source for 7.4b, and the
-        // timebase sync is expressed in. `HostlessRecordingSession` builds its peer
+        // timebase sync is expressed in. `RecordingSession` builds its peer
         // with none of them, which is why this is a second peer — see #24's note
         // on resolving that at E3.4.
         self.peer = try DevicePeer(
@@ -250,14 +311,81 @@ public final class HostLinkSession {
             events?.cancel()
             events = nil
 
+        case .sessionOpened(let id), .sessionJoined(let id):
+            // ⛔ Read the parameters through `perform` — they live in the engine.
+            hostSession = try? await pump.perform { $0.sessionParameters }
+            if let hostSession {
+                delegate?.hostLink(self, didOpenSession: id, parameters: hostSession)
+            }
+
+        case .armRequested:
+            // ⛔ **The answer is a measurement and it goes first** (5.2a, 5.15a).
+            // The delegate returns synchronously and nothing slow happens in
+            // between, so a host learns what this device is before it learns
+            // whether the camera eventually settled.
+            guard let measurement = delegate?.hostLinkDidRequestArm(self) else { break }
+            try? await pump.perform { peer in
+                try peer.reportReadiness(measurement.ppcpReadiness())
+            }
+
+        case .disarmRequested:
+            delegate?.hostLinkDidRequestDisarm(self)
+
+        case .shotReceived(let id, let t0Ns, let t0TimebaseId, _):
+            delegate?.hostLink(self, didIssueShot: id, t0Ns: t0Ns,
+                               t0TimebaseId: t0TimebaseId)
+
+        case .captureRequested(let shotId, let streamIds, let preNs, let postNs, let replyTo):
+            delegate?.hostLink(self, didRequestCapture: shotId, streamIds: streamIds,
+                               preNs: preNs, postNs: postNs, replyTo: replyTo)
+
+        case .payload, .capture:
+            // ⚠ Carries no id (`PeerLinkPump` maps both to a bare case), so the
+            // model re-reads the library's transfer table rather than inferring.
+            delegate?.hostLinkTransfersChanged(self)
+
+        case .linkLost:
+            delegate?.hostLinkDidLoseLink(self)
+
+        case .linkRestored:
+            delegate?.hostLinkDidRestoreLink(self)
+
         default:
-            // ⚠ Every other event belongs to a level that is not built yet —
-            // arm (E3.3), capture and payload (E3.4), resume (E3.5). They are
-            // dropped here rather than half-handled, because a half-handled
-            // `session_open` is worse than an ignored one. Sync is E3.2's and is
-            // handled by `startSyncTicking`'s own poll of the driver, not by an
-            // event case — `relation_update`/`sync` are informational only.
+            // ⚠ What is left is genuinely informational: `hello`, `heartbeat`,
+            // `sync` and `relation_update` are E3.2's and are read by
+            // `startSyncTicking`'s poll of the driver, not by an event case.
             break
+        }
+    }
+
+    // MARK: The hosted Session (E3.3/E3.4)
+
+    /// Opens this device's Streams on the link and builds the live half a hosted
+    /// `RecordingSession` needs.
+    ///
+    /// ⛔ **Called at arm, not when `session_open` arrived.** The Streams
+    /// themselves are opened afterwards, through `HostedSessionContext
+    /// .openStreams`, from the recording session's own records — so the wire and
+    /// the bundle name one `profile_id` and one `opened_at`.
+    ///
+    /// ⚠ Returns `nil` where no host has opened a Session, which is the ordinary
+    /// hostless path and not a failure.
+    public func openHostedSession(promotion: @escaping PromotionPolicy)
+        async throws -> HostedSessionContext? {
+        guard let hostSession, let hostPeerId = counterpartPeerId else { return nil }
+        return try await HostedSessionContext.open(
+            pump: pump, parameters: hostSession,
+            hostPeerId: hostPeerId, promotion: promotion)
+    }
+
+    /// `CORE` 7.3c — readiness again, whenever `settled` changes.
+    ///
+    /// ⚠ Best-effort: a link that cannot carry the measurement is still a link,
+    /// and the bundle records it either way.
+    public func report(_ measurement: ReadinessMeasurement,
+                       streamIds: [String] = []) async {
+        try? await pump.perform { peer in
+            try peer.reportReadiness(measurement.ppcpReadiness(), streamIds: streamIds)
         }
     }
 

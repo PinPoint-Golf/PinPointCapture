@@ -119,7 +119,7 @@ public final class AppModel {
 
     /// `CORE` §9 — the open Session, written to a bundle as it happens. `nil`
     /// when nothing is being recorded.
-    public private(set) var recording: HostlessRecordingSession?
+    public private(set) var recording: RecordingSession?
     /// ⛔ Surfaced rather than swallowed. A session that failed to open is a
     /// session whose swings are not being kept, and §9.2 makes that the one thing
     /// the UI must not be quiet about.
@@ -303,9 +303,13 @@ public final class AppModel {
         await warmUp()
         // ⛔ `warmUp` has stated the reason by now — it no longer fails silently
         // — so this returns to a screen that can say what happened.
-        guard captureStatus.state == .warm else { return }
-        startRecording()
-        guard let recording, let mode = activeMode else { return }
+        // ⛔ **Every exit from here reports.** An `arm` that leaves a host
+        // holding the `settled: false` it got in reply, with no settled and no
+        // blocker ever following, is an arm with no terminal state — which is
+        // the same hole as sending no `readiness` at all (PinPointStudio, 27 Aug).
+        guard captureStatus.state == .warm else { reportReadiness(); return }
+        await startRecording()
+        guard let recording, let mode = activeMode else { reportReadiness(); return }
         // ⛔ REQ-BUF-1, and the same rule the comment above states for warm-up:
         // a device that cannot retain must not reach `armed`. This is the half
         // that used to be missing — the state said `armed` and the ring held
@@ -315,6 +319,7 @@ public final class AppModel {
         } catch {
             capabilityError = String(describing: error)
             stopRecording()
+            reportReadiness()
             return
         }
         startDetecting()
@@ -398,6 +403,18 @@ public final class AppModel {
                         The camera did not start delivering frames. Try again, or \
                         move to a mode this device can sustain.
                         """
+                    // ⛔ The host is told before the teardown, because `disarm`
+                    // deliberately says nothing (see its own note) and this is
+                    // the last moment an honest answer can be given.
+                    //
+                    // ⚠ **`no_source` is the nearest of §5.15's four and it is a
+                    // stretch.** The camera exists and is permitted; it simply
+                    // delivered nothing inside 15 s. The registry is open (5.15)
+                    // so a fifth value could say that properly — but PinPointStudio
+                    // renders `blocked_reason` verbatim to a golfer, so inventing
+                    // vocabulary unilaterally is not ours to do. Raised rather
+                    // than coined; the alternative is a spinner that never ends.
+                    self.reportReadiness(blocked: .noSource)
                     self.disarm()
                     return
                 }
@@ -410,15 +427,30 @@ public final class AppModel {
     /// ⛔ **It used to go out at session open**, before a single frame had
     /// arrived, carrying `exposureHasSettled: true` and an *assumed* estimate.
     /// 5.15a makes readiness a measurement; that one was a hope.
-    private func reportReadiness() {
-        guard let recording else { return }
-        let measuredMs = measuredSettleNs.map { UInt32($0 / 1_000_000) }
-        do {
-            try recording.report(ReadinessMeasurement.measuring(
-                .armed, exposureHasSettled: true,
-                settleEstimateMs: measuredMs ?? Self.assumedSettleMs))
-        } catch {
-            recordingError = String(describing: error)
+    /// `CORE` 7.3c / `MSG` 5.2a — "when it is armed, and **again whenever
+    /// `settled` changes**".
+    ///
+    /// ⛔ **Both halves, and the second one is not optional.** This used to write
+    /// to the bundle alone, which was invisible even once a host existed. Worse,
+    /// the only measurement a host ever saw was the immediate answer to `arm`,
+    /// carrying `settled: false` and a nine-second estimate — so PinPointStudio's
+    /// screen would show *Arming — 9000 ms* and never leave it. An arm with no
+    /// terminal state is the same hole as sending no `readiness` at all, reached
+    /// a different way (raised by PinPointStudio, 27 Aug 2026).
+    private func reportReadiness(blocked override: ReadinessMeasurement.Blocker? = nil) {
+        var measurement = currentReadiness()
+        if let override { measurement.blocked = override }
+        if let recording {
+            do {
+                try recording.report(measurement)
+            } catch {
+                recordingError = String(describing: error)
+            }
+        }
+        // ⚠ Unsolicited, and that is the point — 7.3c makes the *change* the
+        // trigger, not the request.
+        if let link {
+            Task { await link.report(measurement) }
         }
     }
 
@@ -430,6 +462,20 @@ public final class AppModel {
     }
 
     /// The local override of a host-controlled state (REQ-STATE-1).
+    ///
+    /// ⛔ **No `readiness` is sent from here, and that is a decision.** The
+    /// obvious move is to report on the way down, since `settled` changes. But a
+    /// `Readiness` can say only *settled* or *not settled, ready in N ms* — and
+    /// a device that has just been disarmed is neither. Sending `settled: false`
+    /// with an estimate would tell a host this device is **arming**, which is the
+    /// opposite of what happened, and 5.15a forbids the state name that would
+    /// have said so plainly.
+    ///
+    /// ⚠ So a locally-disarmed device cannot tell a host it has stopped. That is
+    /// a genuine expressiveness gap of the same shape as the `shot_disposition`
+    /// one: no way to state a terminal negative. `blocked_reason` does not fit —
+    /// nothing is blocked. Raised with PinPointStudio 27 Aug 2026; their arming
+    /// timeout is the honest interim on their side.
     public func disarm() {
         settleTask?.cancel()
         settleTask = nil
@@ -457,17 +503,31 @@ public final class AppModel {
     /// `CORE` 4.1b / 7.3b — a hostless `session_open`, its Streams, and a
     /// `readiness`. ⛔ No `arm` frame: that is conferred by **Live** and nobody
     /// sent one (7.3b).
-    private func startRecording() {
+    ///
+    /// ⛔ **Which regime this Session opens in is decided here and never again.**
+    /// A host that opened a Session before the arm gets a hosted recording; an
+    /// arm with no host gets a hostless one, and a host arriving later does not
+    /// convert it — `Session.timebase_ref` is immutable (I16) and the bundle's
+    /// `session_open` is already written. The hostless Session it leaves behind
+    /// is what `SessionOfferService` exists to hand over.
+    private func startRecording() async {
         guard recording == nil else { return }
         do {
-            let session = try HostlessRecordingSession(
+            // ⚠ The host's Session id, where there is one: every Stream, Capture
+            // and Shot in the bundle has to agree with it.
+            let hosted = try? await link?.openHostedSession(
+                promotion: DetectAndMint.defaultPromotion())
+            let sessionId = link?.hostSession?.sessionId
+                ?? "ses:\(UUID().uuidString.lowercased())"
+            let session = try RecordingSession(
                 store: store, device: device,
-                sessionId: "ses:\(UUID().uuidString.lowercased())",
+                sessionId: sessionId,
+                control: hosted.map(RecordingSession.Control.hosted) ?? .hostless,
                 // ⛔ **The mode, not `activeMode?.id`** (#102). `id` names a
                 // mode to this app — `1920x1080@240.0-wide` — and the profile
                 // the declaration actually emits is `1920x1080@240`, so every
                 // Stream this app opened named a profile that did not exist
-                // (5.11a, I5). `HostlessRecordingSession` now derives both the
+                // (5.11a, I5). `RecordingSession` now derives both the
                 // Source and the profile from the mode itself.
                 mode: activeMode,
                 micToBall: micToBallDistance,
@@ -477,6 +537,10 @@ public final class AppModel {
                 retention: audioRetention.policy)
             recording = session
             recordingError = nil
+
+            // ⛔ The link's Streams are the recording session's own records, so
+            // the wire and the bundle name one `profile_id` and one `opened_at`.
+            if let hosted { try await hosted.openStreams(session.streams) }
 
             // ⚠ **`readiness` is NOT reported here** — see `reportReadiness()`.
             // 7.3c confers it through Capture, and 5.15a makes it a measurement:
@@ -513,6 +577,9 @@ public final class AppModel {
                                               device: device,
                                               declaration: declaration)
             link = session
+            // ⛔ Commands come back this way. State is still polled — see
+            // `startHostLinkPolling` — and the two are deliberately separate.
+            session.delegate = self
             hostLink = session.hostLink
             await session.open()
             hostLink = session.hostLink
@@ -805,7 +872,7 @@ public final class AppModel {
             // than hop: 7.4d makes capture the thing that must not degrade, and a
             // Swift allocation on that thread is how a dropout gets caused
             // somewhere else.
-            Task { @MainActor [weak self] in self?.observe(window) }
+            Task { @MainActor [weak self] in await self?.observe(window) }
         }
         do {
             try source.start()
@@ -819,7 +886,7 @@ public final class AppModel {
         }
         mintTicker = Task { @MainActor [weak self] in
             while Task.isCancelled == false, self?.recording != nil {
-                self?.pumpMint()
+                await self?.pumpMint()
                 // 8.2i's deadline is a local one and fires whether or not a host
                 // answers, so the pump runs on its own clock rather than on the
                 // arrival of audio.
@@ -840,20 +907,23 @@ public final class AppModel {
     /// ⚠ `internal` rather than private so a test can inject a window: a
     /// simulator has no microphone worth timing, and `CONF` §2a's *injected*
     /// method is what that case is for.
-    func observe(_ window: AudioWindow) {
+    func observe(_ window: AudioWindow) async {
         guard let recording else { return }
         do {
-            let detections = try recording.observe(window)
+            let detections = try await recording.observe(window)
             candidateCount += detections.count
         } catch {
             recordingError = String(describing: error)
         }
     }
 
-    func pumpMint() {
+    func pumpMint() async {
         guard let recording else { return }
         do {
-            let minted = try recording.pumpMint(nowRefNs: MachClock.hostTimeNs)
+            // ⛔ **Capture time.** The conversion into the Session's reference
+            // clock belongs to `RecordingSession`, which is the only place that
+            // knows whether the two are the same clock (5.13c, I4).
+            let minted = try await recording.pumpMint(nowNs: MachClock.hostTimeNs)
             guard minted.isEmpty == false else { return }
             // ⛔ **The shots the library shows, from the shots the Mint engine
             // issued.** `minted` was counted and discarded, and C1 and C3
@@ -926,4 +996,136 @@ public final class AppModel {
     /// Exposed so the preview view can attach. It hands over the *device*, not the
     /// session — `AVCaptureSession` never becomes reachable from a view model.
     public var captureDevice: any CaptureDevice { device }
+}
+
+// MARK: - Under host control (E3.3, E3.4, E3.5)
+
+/// The commands half of the live link. State still arrives by polling
+/// `HostLinkSession.hostLink`; this is what the host *asks for*.
+///
+/// ⚠ **Every method here is a call site, and this file's history says that is
+/// the thing to check.** Three defects on 25 August were all "written, correct,
+/// never called", and this target cannot test for one — so the methods that are
+/// not built yet say so out loud rather than being empty.
+@MainActor
+extension AppModel: HostLinkSessionDelegate {
+
+    public func hostLink(_ link: HostLinkSession, didOpenSession sessionId: String,
+                         parameters: PpcpSessionParameters) {
+        // ⛔ Nothing opens here. PinPointStudio opens the Session at `declare`,
+        // long before an arm, and a Session opened now would be one the host's
+        // arbitration parameters could not reach. `startRecording` reads
+        // `link.hostSession` when the arm actually happens.
+        refreshHostLink()
+    }
+
+    public func hostLinkDidRequestArm(_ link: HostLinkSession) -> ReadinessMeasurement {
+        // ⛔ **The measurement is the answer and it goes back now** (5.2a,
+        // 5.15a), before the camera is touched — so a host learns what this
+        // device *is* rather than waiting on what it is about to do.
+        let measurement = currentReadiness()
+        // REQ-STATE-1 — the host controls capture. The local button stays; this
+        // is the other half of that, and it has never existed before.
+        if captureStatus.state != .armed, isSettling == false {
+            Task { await self.arm() }
+        }
+        return measurement
+    }
+
+    public func hostLinkDidRequestDisarm(_ link: HostLinkSession) {
+        guard captureStatus.state == .armed || isSettling else { return }
+        disarm()
+    }
+
+    public func hostLink(_ link: HostLinkSession, didIssueShot shotId: String,
+                         t0Ns: Int64, t0TimebaseId: String) {
+        // ⛔ E3.5. The host's `t0` against this device's acoustic fiducial is
+        // REQ-SYNC-4's residual, and nothing computes it yet.
+    }
+
+    public func hostLink(_ link: HostLinkSession, didRequestCapture shotId: String,
+                         streamIds: [String], preNs: Int64, postNs: Int64,
+                         replyTo: UInt64) {
+        // ⛔ E3.4. 8.4a converts the host's window into this device's timebase
+        // and answers from the ring; 8.4b makes `outside_buffer` a result rather
+        // than a failure. Not built — a host asking today gets silence, which is
+        // the MUST violation we told PinPointStudio not to commit.
+    }
+
+    public func hostLinkTransfersChanged(_ link: HostLinkSession) {
+        // ⛔ E3.4. `payload_ack` moves per-shot progress and `capture_committed`
+        // is the only honest route to `In Studio` (5.14h). Not built.
+    }
+
+    public func hostLinkDidLoseLink(_ link: HostLinkSession) {
+        // ⛔ **7.4d — capture does not stop, and `armed` is never dropped here.**
+        // REQ-STATE-3 scopes the keepalive lapse to warm → cold, which is a
+        // battery mechanism, not a capture one.
+        guard captureStatus.state == .warm else { return }
+        device.goCold()
+        captureStatus.state = .cold
+        stopHealthPolling()
+    }
+
+    public func hostLinkDidRestoreLink(_ link: HostLinkSession) {
+        // ⛔ E3.5. `session_resume` with a fresh sync burst before bulk resumes,
+        // and the gap reported explicitly. Not built.
+    }
+
+    /// What this device can honestly say about itself right now.
+    ///
+    /// ⚠ **A measurement, never a state name** (5.2b). `settled` and an estimate
+    /// in milliseconds is the whole vocabulary; `armed`/`warm`/`cold` never cross.
+    func currentReadiness() -> ReadinessMeasurement {
+        let estimate = measuredSettleNs.map { UInt32($0 / 1_000_000) }
+            ?? Self.assumedSettleMs
+        // ⚠ **`settled` only from `.armed`, and that is conservative on purpose.**
+        // 5.15a would let a settled `.warm` device answer `true` — the question
+        // is "would the next shot be settled", not "are you recording". But
+        // nothing measures AE/AF convergence while warm; `isSettling` runs only
+        // across an arm. So a warm device answers `false` with an estimate,
+        // which costs a host one `Arming` tick and never claims a convergence
+        // this device has not watched happen. #101 is what claiming it looks
+        // like: `armed` was reported over a ring receiving nothing for 8.85 s.
+        return ReadinessMeasurement.measuring(
+            captureStatus.state,
+            exposureHasSettled: captureStatus.state == .armed && isSettling == false,
+            settleEstimateMs: estimate,
+            blocked: currentBlocker())
+    }
+
+    /// Why this device will not arm, where it will not.
+    ///
+    /// ⛔ **This is what makes `arm` a contract rather than a hope.** Without a
+    /// blocker there is no terminal answer on the failure path: a host holds the
+    /// `settled: false` it got in reply to `arm` and waits for a settled that is
+    /// never coming, because the camera was never going to start. Raised by
+    /// PinPointStudio, 27 Aug 2026, and they were right that it is not polish.
+    ///
+    /// ⚠ **Ordered, and the order is a claim.** The first one that fires is the
+    /// one reported, so it has to be the one a person would act on: permission
+    /// before hardware, hardware before storage, storage before heat. A thermal
+    /// warning shown to someone who never granted camera access is noise.
+    ///
+    /// ⛔ `blocked_reason` is an **open registry** (5.15) and PinPointStudio
+    /// carries whatever we send verbatim to a screen a golfer may read — so
+    /// these four values are the vocabulary, spelled as `ReadinessMeasurement
+    /// .Blocker` spells them, and never a sentence of our own.
+    func currentBlocker() -> ReadinessMeasurement.Blocker? {
+        if permissions.canCapture == false { return .permissionDenied }
+        if activeMode == nil { return .noSource }
+        if storage.freeBytes > 0,
+           Self.storageFloor.verdict(freeBytes: UInt64(storage.freeBytes)) == .refuseToArm {
+            return .storageFull
+        }
+        // ⛔ 5.8's ordinal vocabulary, not the platform's. `critical` is the only
+        // level at which this device refuses; `serious` is a warning and capture
+        // continues, because 7.4d's "capture degrades last" applies to heat as
+        // much as to the link.
+        if captureStatus.thermal == .critical { return .thermalLimit }
+        return nil
+    }
+
+    /// REQ-BUF-2 — the floor below which arming is refused rather than attempted.
+    nonisolated static let storageFloor = StorageFloor()
 }

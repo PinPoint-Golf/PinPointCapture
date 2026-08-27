@@ -175,7 +175,7 @@ struct CapturePathAppTests {
             declaresMicrophone: true,
             declaresIMU: true))
 
-        let streams = HostlessRecordingSession.streams(
+        let streams = RecordingSession.streams(
             sessionId: "ses:1", declaration: declaration,
             mode: nil, openedAtNs: 1_000_000_000)
 
@@ -229,7 +229,7 @@ struct CapturePathAppTests {
             clipCodec: "hevc"))
 
         for mode in [wide, ultra] {
-            let streams = HostlessRecordingSession.streams(
+            let streams = RecordingSession.streams(
                 sessionId: "ses:1", declaration: declaration,
                 mode: mode, openedAtNs: 1_000_000_000)
             let video = try #require(streams.first { $0.kind == PpcpStreamKind.video })
@@ -491,6 +491,52 @@ struct ArmRefusalIsSpokenTests {
 
         #expect(model.captureStatus.state == .cold)
         #expect(model.capabilityError != nil)
+    }
+
+    /// ⛔ **What a host is told when this device will not arm.**
+    ///
+    /// `MSG` 5.2a makes the answer to `arm` a `readiness`, and until today the
+    /// only one this application ever produced went into its own bundle. Worse,
+    /// on the paths that *fail* it produced none at all — so a host held the
+    /// `settled: false` it got in reply and waited for a settled that was never
+    /// coming. PinPointStudio described that hole before we hit it; this is the
+    /// half of the fix that a test in this target can see.
+    ///
+    /// ⚠ **The ordering is the claim.** Permission before hardware, hardware
+    /// before storage, storage before heat — because the first blocker that
+    /// fires is the one reported, and a thermal warning shown to someone who
+    /// never granted camera access is noise. `blocked_reason` is an open
+    /// registry (5.15) and PinPointStudio renders it **verbatim** to a screen a
+    /// golfer may read, so these are §5.15's own four words and never a sentence
+    /// of ours.
+    @Test("A device that will not arm says which of the four reasons it is")
+    func theBlockerNamesTheReasonAHostShows() async {
+        let root = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString,
+                                                                 isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = AppModel(device: StubCaptureDevice(), store: SessionStore(root: root))
+
+        // Nothing granted: permission outranks everything below it.
+        model.permissions = Permissions(camera: .denied, microphone: .allowed,
+                                        localNetwork: .allowed, motion: .allowed)
+        #expect(model.currentBlocker() == .permissionDenied)
+        #expect(model.currentReadiness().blocked == .permissionDenied)
+        #expect(model.currentReadiness().settled == false)
+
+        // Granted, but nothing enumerated — the state a fresh launch is in, and
+        // the one that made *Arm* dead on every device for weeks.
+        model.permissions = Permissions(camera: .allowed, microphone: .allowed,
+                                        localNetwork: .allowed, motion: .allowed)
+        #expect(model.activeMode == nil)
+        #expect(model.currentBlocker() == .noSource)
+
+        // ⛔ And the measurement never carries a state name (5.2b): `settled`
+        // and an estimate is the whole vocabulary that crosses.
+        let readiness = model.currentReadiness()
+        #expect(readiness.estimatedReadyMs > 0,
+                "5.2a — an estimate is mandatory when not settled")
+        #expect(ReadinessMeasurement.Blocker.allCases.count == 4,
+                "§5.15's four. A fifth is a registry conversation, not a local edit")
     }
 
     /// ⛔ 7.2 / REQ-PRIV-4 — both are needed, and a refusal must name the remedy

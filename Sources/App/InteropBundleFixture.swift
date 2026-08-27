@@ -82,7 +82,7 @@ enum InteropBundleFixture {
         // ⛔ Derived from the declaration, never assembled by hand: a Stream's
         // `source_id`, `profile_id` and `timebase_id` must name things the peer
         // actually declared (5.11a, I5).
-        let streams = HostlessRecordingSession.streams(
+        let streams = RecordingSession.streams(
             sessionId: sessionId, declaration: declaration,
             mode: nil, openedAtNs: openedAt)
         for stream in streams { try recorder.open(stream: stream) }

@@ -386,8 +386,8 @@ struct DeviceSessionTests {
         // Four swings, spaced, injected as the microphone would deliver them.
         for index in 0..<4 {
             try await Task.sleep(for: .seconds(5))
-            model.observe(SyntheticAudio.oneSwing(timebaseId: PpcpTimebases.captureId,
-                                                  startNs: MachClock.hostTimeNs))
+            await model.observe(SyntheticAudio.oneSwing(timebaseId: PpcpTimebases.captureId,
+                                                        startNs: MachClock.hostTimeNs))
         }
         try await Task.sleep(for: .seconds(8))
 
@@ -469,7 +469,7 @@ struct DeviceSessionTests {
             let url = dir.appendingPathComponent("clip-\(index).mp4")
 
             if variant == "atomicWrite" || variant == "both", let bytes {
-                // ⚠ Exactly what `HostlessRecordingSession.persist` does, on the
+                // ⚠ Exactly what `RecordingSession.persist` does, on the
                 // main actor, with `.atomic`.
                 try await MainActor.run { try bytes.write(to: url, options: .atomic) }
             }
@@ -631,7 +631,7 @@ struct DeviceSessionTests {
         // ⛔ **Consumed while retention is still live**, and the first version of
         // this test got it wrong. The provider reads the ring; stopping first
         // tears down the writer and it answers `notRecording` — the same hazard
-        // `HostlessRecordingSession.persist` exists to close for the shipping
+        // `RecordingSession.persist` exists to close for the shipping
         // path, arriving through the port surface where nothing documented it.
         let bytes = try payload()
 

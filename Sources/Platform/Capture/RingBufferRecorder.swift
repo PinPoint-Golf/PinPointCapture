@@ -426,7 +426,7 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
         return RetainedClip(
             extraction: extraction,
             // ⛔ The measured value, not the `.lockedConstant(0)` that stood
-            // here in `HostlessRecordingSession` — 5.8d makes exposure
+            // here in `RecordingSession` — 5.8d makes exposure
             // mandatory precisely because I17's conversion needs it, and zero
             // would have converted every instant by the wrong amount.
             exposure: FrameTimeline.exposure(batch, lockedNs: lockedExposureNs),

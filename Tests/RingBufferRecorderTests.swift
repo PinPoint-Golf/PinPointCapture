@@ -253,7 +253,7 @@ struct RingBufferRecorderTests {
         #expect(try await asset.load(.duration).seconds > 0.4)
     }
 
-    /// ⛔ **The hardcoded exposure is gone.** `HostlessRecordingSession` supplied
+    /// ⛔ **The hardcoded exposure is gone.** `RecordingSession` supplied
     /// `.lockedConstant(0)` to every Capture this application ever announced.
     /// 5.8d makes exposure mandatory on a camera Capture with frames precisely
     /// because I17's canonical-instant conversion needs it, and converting by

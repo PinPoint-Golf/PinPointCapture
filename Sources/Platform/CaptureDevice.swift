@@ -133,7 +133,7 @@ public protocol CaptureDevice: AnyObject, Sendable {
     /// ⚠ **Adding this was a decision** (REQ-PORT-2), and the reason is that
     /// `extractClip` above answers only half the question. A `Capture` needs
     /// four more things and none of them was reachable through the port, so
-    /// `HostlessRecordingSession` filled the gap with a hardcoded
+    /// `RecordingSession` filled the gap with a hardcoded
     /// `.lockedConstant(0)` exposure, no intrinsics and no payload — an
     /// announced Capture with a fabricated number in the one field 5.8d calls
     /// mandatory. One method that returns what the builder consumes is what
@@ -146,7 +146,7 @@ public protocol CaptureDevice: AnyObject, Sendable {
     ///
     /// ⛔ **`RetainedClip.payload` must be consumed while retention is still
     /// live.** It reads the rolling buffer, so a caller that stops retaining —
-    /// or simply waits ten seconds — gets nothing back. `HostlessRecordingSession`
+    /// or simply waits ten seconds — gets nothing back. `RecordingSession`
     /// closes this by materialising the bytes to `clips/` the moment the clip is
     /// extracted and handing on a file-backed provider; any other caller must do
     /// the same or consume immediately. ⚠ Not a defect in the laziness, which

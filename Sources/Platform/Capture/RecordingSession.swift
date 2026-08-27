@@ -1,4 +1,4 @@
-//  HostlessRecordingSession.swift
+//  RecordingSession.swift
 //  The composition D3 left open: a `DevicePeer`, a `SessionBundleWriter` and a
 //  `CaptureSessionRecorder`, wired to a file and to the real capture stack.
 //
@@ -7,13 +7,29 @@
 //  suites — which is a working library and not a working application. This is the
 //  first place the two meet a real device and a real file.
 //
-//  ⛔ **This is the hostless path** (`CORE` 4.1b, 7.3b): the peer opens its own
-//  Session with **no arbitration parameters**, records no `arm` and no `disarm`,
-//  and records `readiness` because 7.3c confers that through **Capture** rather
-//  than through Live. None of those rules is remembered here — `ppcp_session_make_
-//  hostless` cannot be given the parameters, `ppcp_peer_arm` refuses a peer that
-//  is not `role: host`, and the writer refuses an `arm` after a hostless
-//  `session_open`.
+//  ⛔ **Two control regimes, one recording.** `Control.hostless` is `CORE` 4.1b /
+//  7.3b: the peer opens its own Session with **no arbitration parameters**,
+//  records no `arm` and no `disarm`, and records `readiness` because 7.3c confers
+//  that through **Capture** rather than through Live. `Control.hosted` is a
+//  Session PinPointStudio opened at `declare`, whose parameters arrive on the
+//  wire and whose Shots the host issues.
+//
+//  ⛔ **What the regime changes is the Mint engine's peer, and that is the whole
+//  of it.** `ppcp_mint_pump` reads `timebase_ref`, the session id and the
+//  relation set off the peer it was built with, so a mint on the bundle peer
+//  while a host is arbitrating would ignore `issue_hold_ns`, stamp `t0` in this
+//  device's own clock, and never see the host's Shots. Hosted therefore mints on
+//  the **link** peer; hostless mints on the record peer.
+//
+//  ⛔ **What it does NOT change is the bundle's `session_open`, and not by
+//  choice.** `ppcp_peer_session_open` refuses arbitration parameters from a peer
+//  that is not `role: host` (5.10e, 7.3a, made structural), and `ENC` 7a/7b make
+//  a bundle the owner's outbound frames. So even a hosted recording writes a
+//  hostless `session_open` — carrying the host's `Session.id` and `timebase_ref`,
+//  which is what every Stream, Capture and Shot in the file must agree with. The
+//  consequence is pinned by a test and raised with the protocol team: a bundle
+//  from a Session a host arbitrated is indistinguishable from one where no host
+//  was present.
 //
 //  ⚠ **Bytes go through a file handle and nowhere else.** `CaptureCore` opens no
 //  file (ground rule 8); the writer hands back every byte in order and this is
@@ -53,7 +69,27 @@ public enum PeerIdentity {
 
 /// One recording session, written to a bundle as it happens.
 @MainActor
-public final class HostlessRecordingSession {
+public final class RecordingSession {
+
+    /// Who controls this Session, decided when it opens and fixed for its life.
+    ///
+    /// ⛔ **Fixed, because `Session.timebase_ref` is immutable (I16)** and the
+    /// bundle's `session_open` is already written by the time a host could turn
+    /// up. A host appearing mid-session does not convert one — the next arm opens
+    /// a hosted Session, and the hostless one it replaces is what
+    /// `SessionOfferService` exists to hand over.
+    public enum Control {
+        case hostless
+        case hosted(HostedSessionContext)
+
+        var hosted: HostedSessionContext? {
+            if case .hosted(let context) = self { context } else { nil }
+        }
+    }
+
+    /// ⚠ Kept so `disarm` and the transfer drain know which regime they are in
+    /// without re-deriving it.
+    public let control: Control
 
     public let bundle: SessionBundle
     public let sessionId: String
@@ -105,13 +141,22 @@ public final class HostlessRecordingSession {
     ///     ⛔ It reaches every Candidate through `CandidateFactory`; before S4
     ///     nothing supplied one and every device Candidate went out with no
     ///     `tof_correction` at all.
+    ///   - control: `.hostless` is the shipping path with no host. `.hosted`
+    ///     carries the live link, and moves the Mint engine onto its peer — see
+    ///     this file's header for why that is the whole of the difference.
+    ///   - declaration: injected when hosted, because `HostLinkSession` already
+    ///     built one from this device and sent it. ⛔ Building a second here
+    ///     would let the bundle record a declaration the host was never given.
     public init(store: SessionStore,
                 device: any CaptureDevice,
                 sessionId: String,
+                control: Control = .hostless,
                 peerId: String = PeerIdentity.current,
                 mode: VideoMode? = nil,
+                declaration injected: PpcpDeclaration? = nil,
                 micToBall: MicToBallDistance = MicToBallDistanceStore.load(),
                 retention: CandidateAudioRetention = CandidateAudioRetention()) throws {
+        self.control = control
         self.micToBall = micToBall
         self.retention = retention
         self.sessionId = sessionId
@@ -134,7 +179,7 @@ public final class HostlessRecordingSession {
         let writer = try SessionBundleWriter(peer: peer) { [handle] bytes in
             try handle.write(contentsOf: bytes)
         }
-        let declaration = try PpcpDeclaration(
+        let declaration = try injected ?? PpcpDeclaration(
             device.ppcpDeclarationInput(peerId: peerId, viewpoint: nil))
         self.declaration = declaration
 
@@ -144,9 +189,14 @@ public final class HostlessRecordingSession {
             // ⛔ `PpcpSessionRecord` has no arbitration parameters to give, and
             // `epoch` is a LABEL (I15) — a wall instant paired with the capture
             // instant it was read beside, never used to compute an interval.
+            // ⛔ Hostless in shape either way — see the header. What changes is
+            // WHOSE ids it carries: a hosted recording takes the host's
+            // `Session.id` and `timebase_ref`, because every Stream, Capture and
+            // Shot in this file has to agree with them.
             session: PpcpSessionRecord(
                 id: sessionId,
-                timebaseRef: PpcpTimebases.captureId,
+                timebaseRef: control.hosted?.parameters.timebaseRefId
+                    ?? PpcpTimebases.captureId,
                 epochWallUtcNs: Int64(epochWall.timeIntervalSince1970 * 1_000_000_000),
                 epochAtNs: epochAtNs,
                 epochTimebaseId: PpcpTimebases.captureId))
@@ -178,16 +228,33 @@ public final class HostlessRecordingSession {
                 // conversion to apply.
                 profileId: nil,
                 timeOfFlight: micToBall.timeOfFlight)
-            let mint = try DeviceMint(peer: peer,
-                                      promotion: DetectAndMint.defaultPromotion())
+            // ⛔ **The Mint engine's peer is the whole of the regime.**
+            // `ppcp_mint_pump` reads `timebase_ref`, the session id and the
+            // relation set off the peer it was built with — so hosted mints on
+            // the link peer, where the host's arbitration parameters and its
+            // issued Shots live, and hostless mints on the record peer.
+            let mint = try control.hosted?.mint
+                ?? DeviceMint(peer: peer, promotion: DetectAndMint.defaultPromotion())
+            // ⛔ **Live bytes are bundle bytes.** The composite exists so the
+            // same records reach the file and the wire, and so a dead link
+            // cannot stop the file being written — the secondary's error is
+            // captured, not thrown.
+            let sink: any DetectionSink = if let live = control.hosted?.live {
+                CompositeDetectionSink(primary: recorder, secondary: live)
+            } else {
+                recorder
+            }
             detect = DetectAndMint(
-                peer: peer, sink: recorder, mint: mint, factory: factory,
+                peer: peer, sink: sink, mint: mint, factory: factory,
                 configuration: DetectAndMint.Configuration(
                     sessionId: sessionId, peerId: peerId,
                     // 5.13c — in a hostless Session `timebase_ref` is this
                     // device's own capture timebase, so the conversion is the
-                    // identity (I4) and **no relation is asserted for it**.
-                    timebaseRefId: PpcpTimebases.captureId,
+                    // identity (I4) and **no relation is asserted for it**. With
+                    // a host it is the host's, and the identity breaks — which is
+                    // the first of the three causes CT-S4 (6) took to find.
+                    timebaseRefId: control.hosted?.parameters.timebaseRefId
+                        ?? PpcpTimebases.captureId,
                     audioStream: audio, videoStream: video,
                     retention: retention),
                 promotion: DetectAndMint.defaultPromotion(),
@@ -225,18 +292,51 @@ public final class HostlessRecordingSession {
     /// peer does not believe. The promotion decision is the Mint engine's and
     /// happens in `pumpMint`.
     @discardableResult
-    public func observe(_ window: AudioWindow) throws -> [DetectAndMint.Detection] {
+    /// ⛔ **Hosted runs inside `perform`, and that is not tidiness.** With a host
+    /// the Mint engine and the fan-out's live half both sit on the link peer,
+    /// which is a C engine with no internal locking; `PeerLinkPump.perform` is
+    /// the only door to it. Hostless touches only this session's own peer and
+    /// stays on the MainActor, which is the path that ships with no host at all.
+    public func observe(_ window: AudioWindow) async throws -> [DetectAndMint.Detection] {
         guard let detect else { return [] }
-        let detections = try detect.observe(window)
+        let detections: [DetectAndMint.Detection]
+        if let hosted = control.hosted {
+            detections = try await hosted.pump.perform { _ in try detect.observe(window) }
+        } else {
+            detections = try detect.observe(window)
+        }
         for _ in detections { recorder.countCandidate() }
         return detections
     }
 
     /// 8.2i–j / 8.3a — mint what is due, extract a clip for each Shot.
+    ///
+    /// - Parameter nowNs: **capture** time, `tb:hosttime`. ⛔ Not reference time.
+    ///   The conversion into `Session.timebase_ref` is done here because only
+    ///   here is it known whether the two are the same clock: hostless makes
+    ///   `timebase_ref` this device's own capture timebase, so the conversion is
+    ///   the identity (I4), and with a host it is emphatically not. Passing
+    ///   capture time straight in as if it were reference time is cause 1 of the
+    ///   three CT-S4 (6) took to find — 5.13c exactly.
+    ///
+    /// ⚠ **8.2i1 — no substitution.** Where no relation to the host's clock
+    /// exists yet, `instant` answers `nil` and nothing is minted. A zero
+    /// substituted here would mint every Candidate at the epoch.
     @discardableResult
-    public func pumpMint(nowRefNs: Int64) throws -> [PpcpShot] {
+    public func pumpMint(nowNs: Int64) async throws -> [PpcpShot] {
         guard let detect else { return [] }
-        let minted = try detect.pump(nowRefNs: nowRefNs)
+        let minted: [PpcpShot]
+        if let hosted = control.hosted {
+            let reference = hosted.parameters.timebaseRefId
+            minted = try await hosted.pump.perform { peer in
+                guard let nowRefNs = try peer.instant(nowNs,
+                                                      on: PpcpTimebases.captureId,
+                                                      expressedIn: reference) else { return [] }
+                return try detect.pump(nowRefNs: nowRefNs)
+            }
+        } else {
+            minted = try detect.pump(nowRefNs: nowNs)
+        }
         for shot in minted {
             recorder.countShot()
             // E1.2's thumbnail. ⚠ Only reachable here: the clip is written under
