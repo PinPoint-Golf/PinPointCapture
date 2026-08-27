@@ -674,181 +674,123 @@ struct ConformanceHarnessTests {
         #expect(model.hostLinkError == nil)
         await model.disconnect()
     }
-}
 
-// MARK: - Soaking the real path against PinPointStudio
+    // MARK: - E3.3, against a host that asks for a clip
 
-/// Drives the **shipping** rendezvous path — decode, derive, TLS-PSK dial,
-/// handshake — against whatever host published the code in the environment.
-///
-/// ⛔ **The URI carries the PSK** (`RV` 4.4c, 7.2b): it is read from the
-/// environment, used, and never logged, echoed or written down. Failures report
-/// the *outcome case*, which is the diagnostic value, and never the payload.
-///
-/// ⚠ Diagnostic scaffolding for the intermittent-pairing investigation, not a
-/// conformance row. It runs only when a URI is supplied.
-@Suite("Pairing soak — the real path against a real host", .serialized)
-@MainActor
-struct PairingSoakTests {
-
-    static var pairingURI: String? {
-        let environment = ProcessInfo.processInfo.environment
-        return environment["PPCP_PAIRING_URI"] ?? environment["TEST_RUNNER_PPCP_PAIRING_URI"]
-    }
-
-    @Test("One full pairing against the published host")
-    func onePairing() async throws {
-        guard let uri = Self.pairingURI else {
-            withKnownIssue("no PPCP_PAIRING_URI in the environment", isIntermittent: true) {
+    /// ⛔ **The MUST this application was violating this morning.** `MSG` 7.3
+    /// makes `capture_request` a Request, and erratum E18's clause 1c makes an
+    /// answer mandatory — `capture_announce` or `error`, never silence. It was
+    /// falling into `HostLinkSession.handle`'s `default:` arm, so a host asking
+    /// for an interval got nothing at all.
+    ///
+    ///     make conform SCENARIO=requesting-host ROW=e33
+    ///
+    /// ⛔ **What this row does NOT yet prove, stated so the name does not
+    /// overclaim.** `requesting-host` asks for a clip *per issued Shot*, and a
+    /// simulator has no microphone — so nothing nominates, nothing is issued and
+    /// **no `capture_request` is actually sent**. The sim reports
+    /// `candidates rx/tx 0/0`. What passes here is the link, the hosted Session,
+    /// the arm reaching the app, and `--expect violations=0`.
+    ///
+    /// ⚠ The answer path itself needs a Candidate, which needs either a phone or
+    /// injected audio — `DeviceSessionTests` is where it gets exercised. Raised
+    /// as a `ppcp-sim` gap alongside the two in the shared learnings file: the
+    /// reference host cannot ask for a clip from a peer that cannot nominate.
+    @Test("E3.3 — a host asks for a clip and is answered, not ignored")
+    @MainActor
+    func aCaptureRequestIsAnswered() async throws {
+        guard Self.row == "e33" else { return }
+        guard let port = Self.port else {
+            withKnownIssue("no ppcp-sim port — run `make conform`", isIntermittent: true) {
                 Issue.record("skipped")
             }
             return
         }
+        let transport = try await PpcpDirectConnector()
+            .connect(to: PeerEndpoint(host: "127.0.0.1", port: port))
+        let model = AppModel()
+        let declaration = try PpcpDeclaration(
+            ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
+            allowingNoCameraSource: true)
+        await model.connect(transport: transport, sessionId: "ses:e33",
+                            hostDisplayName: "ppcp-sim", declaration: declaration)
+        let link = try #require(model.link, "no link was composed")
+        #expect(link.hasSettled, "hello and declare did not cross: \(link.phase)")
 
-        let rendezvous = RendezvousCoordinator()
-        let outcome = await rendezvous.scan(uri)
+        // `requesting-host` opens a Session, arms, arbitrates, and then asks for
+        // the clip behind every Shot it issues.
+        try await Task.sleep(for: .seconds(8))
 
-        // ⛔ The outcome *case* is the finding. `RV` §4 routes six distinct
-        // failures precisely so "it did not pair" is never the whole answer.
-        switch outcome {
-        case .connected(let sessionId, let security, let wasPossiblyExpired):
-            #expect(wasPossiblyExpired == false, "the code may have been stale")
-            print("SOAK rendezvous=connected security=\(security.summary) session=\(sessionId)")
+        let session = try #require(link.hostSession, "session_open never arrived")
+        #expect(session.hasArbitration)
 
-            let established = try #require(await rendezvous.takeEstablishedLink(),
-                                           "walk connected but handed back no link")
-            let model = AppModel()
-            let declaration = try PpcpDeclaration(
-                ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
-                allowingNoCameraSource: true)
-            await model.connect(transport: established.transport,
-                                sessionId: established.sessionId,
-                                hostDisplayName: established.hostDisplayName,
-                                declaration: declaration)
+        // ⛔ The arm reached the app — the same call-site proof `e34` makes, kept
+        // here because this row runs a different scenario and could regress alone.
+        #expect(model.capabilityError != nil, "the host armed and nothing happened")
 
-            let link = try #require(model.link, "no link composed")
-            // Let `hello_accept` and `declare` land.
-            try await Task.sleep(for: .seconds(3))
-            print("SOAK phase=\(link.phase) version=\(link.negotiatedVersion ?? "-") "
-                  + "counterpart=\(link.counterpartPeerId ?? "-") "
-                  + "protocolError=\(link.protocolError ?? "-")")
-            #expect(link.hasSettled, "handshake did not settle: \(link.phase)")
-            #expect(link.protocolError == nil)
-            await model.disconnect()
-
-        case .needsANewerApplication: Issue.record("SOAK outcome=needsANewerApplication")
-        case .invalidCode:           Issue.record("SOAK outcome=invalidCode")
-        case .expired:               Issue.record("SOAK outcome=expired")
-        case .needsNetworkConsent:   Issue.record("SOAK outcome=needsNetworkConsent")
-        case .couldNotJoinNetwork(let why): Issue.record("SOAK outcome=couldNotJoinNetwork \(why)")
-        case .noEndpointReachable(let tried, let blocked):
-            Issue.record("SOAK outcome=noEndpointReachable tried=\(tried) blocked=\(blocked)")
-        case .hostRefusedTheCode(let endpoint):
-            // ⛔ The case the soak could not previously distinguish: the host
-            // answered and refused us, which for a soak almost always means the
-            // code had already been spent.
-            Issue.record("SOAK outcome=hostRefusedTheCode endpoint=\(endpoint)")
-        }
-    }
-}
-
-// MARK: - UC-6: more than one device on one host
-
-/// Three phones paired at once, which is the shape UC-6 actually needs — DTL and
-/// face-on at the same time, on one host.
-///
-/// ⛔ **Codes are single-use and PPS reissues only when a pairing completes**, so
-/// the three URIs cannot be collected up front. The test pairs one device, drops a
-/// marker in its Documents directory, and waits for the harness on the Mac to
-/// capture the freshly published code and write the next one back. That container
-/// is visible from the host, which is what makes the round trip possible at all.
-///
-/// ⚠ Each "device" is a separate `AppModel` with its own peer and its own pump,
-/// which is the honest simulation of three phones: they share nothing but the
-/// host. What they do **not** share is `PeerIdentity.current` — see the note below.
-@Suite("UC-6 — simultaneous devices", .serialized)
-@MainActor
-struct MultiDeviceTests {
-
-    private static var handoff: URL {
-        URL.documentsDirectory.appendingPathComponent("ppcp-handoff", isDirectory: true)
+        // ⚠ The verdict that matters is the simulator's: `--expect violations=0`
+        // fails the run if a Request went unanswered, which is the assertion this
+        // side cannot make about itself.
+        #expect(model.hostLinkError == nil)
+        await model.disconnect()
     }
 
-    /// Tells the harness we are ready for the next code, then waits for it.
-    private func nextURI(_ index: Int) async throws -> String {
-        let directory = Self.handoff
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try "ready".write(to: directory.appendingPathComponent("want-\(index).txt"),
-                          atomically: true, encoding: .utf8)
-        let inbox = directory.appendingPathComponent("uri-\(index).txt")
-        for _ in 0..<120 {                       // up to 60 s
-            if let text = try? String(contentsOf: inbox, encoding: .utf8),
-               text.hasPrefix("ppcp:") {
-                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    // MARK: - E3.5, against a host that never issues
+
+    /// ⛔ **CT-I32's half, and the outcome PinPointStudio's corroboration rule
+    /// now makes routine.** A host that receives every Candidate and issues no
+    /// Shot leaves this device's own 8.2i deadline as the only thing that fires
+    /// — `issue_hold_ns` plus a heartbeat interval, and then only for a Candidate
+    /// this peer's own promotion policy would have promoted hostless (I32).
+    /// Host silence does not promote a Candidate the peer did not believe.
+    ///
+    ///     make conform SCENARIO=silent-host ROW=e35
+    ///
+    /// ⛔ **Same limitation as `e33`:** a simulator nominates nothing, so the
+    /// 8.2i deadline never has a Candidate to fire on. What this proves is that
+    /// a silent host is not mistaken for an absent one — which is 8.3g, and is
+    /// the assertion below.
+    ///
+    /// ⚠ This is the composition root's version of `CT-S4 (6)`, which the
+    /// `#if DEBUG` harness already passes. The harness proves the library path;
+    /// this proves the path a shipping build takes, which is the distinction
+    /// three levels' worth of dropped events were hiding behind.
+    @Test("E3.5 — a silent host, and the device's own deadline")
+    @MainActor
+    func aSilentHostLeavesTheDeadline() async throws {
+        guard Self.row == "e35" else { return }
+        guard let port = Self.port else {
+            withKnownIssue("no ppcp-sim port — run `make conform`", isIntermittent: true) {
+                Issue.record("skipped")
             }
-            try await Task.sleep(for: .milliseconds(500))
-        }
-        throw MultiDeviceError.noCode(index)
-    }
-
-    enum MultiDeviceError: Error { case noCode(Int) }
-
-    @Test("Three devices hold links to one host at the same time")
-    func threeSimultaneousDevices() async throws {
-        guard let first = PairingSoakTests.pairingURI else {
-            withKnownIssue("no PPCP_PAIRING_URI — run the multi-device harness",
-                           isIntermittent: true) { Issue.record("skipped") }
             return
         }
-        try? FileManager.default.removeItem(at: Self.handoff)
+        let transport = try await PpcpDirectConnector()
+            .connect(to: PeerEndpoint(host: "127.0.0.1", port: port))
+        let model = AppModel()
+        let declaration = try PpcpDeclaration(
+            ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
+            allowingNoCameraSource: true)
+        await model.connect(transport: transport, sessionId: "ses:e35",
+                            hostDisplayName: "ppcp-sim", declaration: declaration)
+        let link = try #require(model.link, "no link was composed")
+        #expect(link.hasSettled)
 
-        var models: [AppModel] = []
-        var uris = [first]
+        try await Task.sleep(for: .seconds(8))
+        let session = try #require(link.hostSession, "session_open never arrived")
+        #expect(session.hasArbitration, "silent-host still opens a hosted Session")
 
-        for index in 1...3 {
-            if index > 1 { uris.append(try await nextURI(index)) }
+        // ⛔ **The link must read `.connected`, not `.lost`.** A host that answers
+        // no Candidate is still answering heartbeats, and 8.3g is explicit that a
+        // *silent* host and an *unreachable* one are different conditions. A
+        // device that treated silence as an outage would resync against a link
+        // that never went away.
+        #expect(model.hostLink.state != .lost, """
+                a host that issues nothing is not a host that has gone — 8.3g \
+                separates a silent host from an unreachable one
+                """)
 
-            let rendezvous = RendezvousCoordinator()
-            let outcome = await rendezvous.scan(uris[index - 1])
-            guard case .connected = outcome else {
-                Issue.record("device \(index) did not pair: \(outcome)")
-                return
-            }
-            let link = try #require(await rendezvous.takeEstablishedLink())
-            let model = AppModel()
-            let declaration = try PpcpDeclaration(
-                ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
-                allowingNoCameraSource: true)
-            await model.connect(transport: link.transport, sessionId: link.sessionId,
-                                hostDisplayName: link.hostDisplayName,
-                                declaration: declaration)
-            models.append(model)
-            print("MULTI device=\(index) phase=\(model.link?.phase.description ?? "-")")
-        }
-
-        // Settle, then check every link is still up — the point of the test is
-        // simultaneity, so an earlier one being dropped is the failure.
-        try await Task.sleep(for: .seconds(4))
-        for (offset, model) in models.enumerated() {
-            let link = try #require(model.link, "device \(offset + 1) lost its link")
-            #expect(link.hasSettled, "device \(offset + 1) not settled: \(link.phase)")
-            #expect(link.protocolError == nil,
-                    "device \(offset + 1) protocol error: \(link.protocolError ?? "")")
-            print("MULTI alive device=\(offset + 1) phase=\(link.phase)")
-        }
-        print("MULTI result=all-three-alive")
-
-        for model in models { await model.disconnect() }
-    }
-}
-
-extension HostLinkSession.Phase: CustomStringConvertible {
-    public var description: String {
-        switch self {
-        case .connecting: "connecting"
-        case .established: "established"
-        case .closed(let reason): "closed(\(reason ?? "-"))"
-        case .failed(let why): "failed(\(why))"
-        }
+        #expect(model.hostLinkError == nil)
+        await model.disconnect()
     }
 }

@@ -855,26 +855,28 @@ struct DeviceSessionTests {
         guard let capability = Self.liveCapability(), capability.bestMode != nil else {
             print("SKIP — no physical camera"); return
         }
-        guard let endpoint = InteropTests.endpoint("HOST"),
-              let pskText = InteropTests.value("PSK"),
-              let tlsKey = InteropTests.hex(pskText) else {
-            print("SKIP — no PPCP_INTEROP_HOST/PSK; run `make test-device HOST=… PSK=…`")
+        // ⛔ **No credentials needed, and that is the point.** This phone already
+        // holds a pairing, so the honest way to reach PinPointStudio is the one a
+        // golfer takes: browse `_ppcp._tcp`, resolve the advertisement's `rid`
+        // against every held pairing (3.4b), and dial. Requiring a PSK on the
+        // command line would be testing a path this app does not ship.
+        //
+        // ⚠ 3.6a — finding nothing is **not an error**. It means Studio is not
+        // running, or this network does not carry discovery between its clients,
+        // and neither is a failure of the thing under test.
+        let outcome = await ReconnectCoordinator().attempt()
+        guard case .connected(let host) = outcome else {
+            print("SKIP — no host reached: \(outcome). Is PinPointStudio running "
+                  + "on a network that carries multicast?")
             return
         }
-        let identityText = InteropTests.value("IDENTITY") ?? ""
-        let identity = InteropTests.hex(identityText) ?? Data(identityText.utf8)
-        let credentials = try FixedPskCredentials(tlsKey: tlsKey, identity: identity)
+        print("DEVICE-RUN reached \(host.hostDisplayName ?? host.instanceName) "
+              + "— \(host.security.summary)")
 
         let model = await AppModel()
         await MainActor.run { model.refreshCapability() }
-
-        // `ENC` 2.1d's third channel up front — preview needs it, and a refusal
-        // here is a finding in itself.
-        let transport = try await PpcpConnector()
-            .connect(to: endpoint, credentials: credentials,
-                     channels: PpcpChannel.required + [.preview])
-        await model.connect(transport: transport, sessionId: "ses:device-run",
-                            hostDisplayName: "PinPointStudio")
+        await model.connect(transport: host.transport, sessionId: host.sessionId,
+                            hostDisplayName: host.hostDisplayName)
         let link = try #require(await model.link, "no link was composed")
 
         // Studio opens the Session at `declare`; allow that and the sync burst.
