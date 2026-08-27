@@ -1011,8 +1011,14 @@ struct DeviceSessionTests {
 
         let residual = await model.hostLink.clock?.lastImpactResidualMilliseconds
         let clock = await model.hostLink.clock
+        // ⚠ **The exchange count separates the two explanations** for a drift of
+        // −184515 ppm: an estimator that never converged, or one fed samples
+        // whose `t4` includes queueing delay. 6.3c's burst is 16; if it finished
+        // and the estimate is still this wide, the samples are bad.
         print("DEVICE-RUN agreement=\(clock?.agreementText ?? "—") "
-              + "drift=\(clock?.driftText ?? "—")")
+              + "drift=\(clock?.driftText ?? "—") "
+              + "exchanges=\(clock?.exchangesCompleted ?? 0)"
+              + "/\(clock?.exchangesExpected ?? 0)")
         print("DEVICE-RUN residual=\(residual.map { "\($0) ms" } ?? "not yet")")
 
         // ⚠ **Reported, not asserted.** Whether a residual exists depends on the

@@ -41,6 +41,12 @@ public enum ShotSyncState: Sendable, Hashable {
     public var displayText: String {
         switch self {
         case .onDevice: "On device"
+        // ⛔ **"Sending 0%" was a lie a golfer could read.** A Capture whose
+        // payload has never been acknowledged is not *in progress* — it may be
+        // one a host declined to record and can never tell us about (#105), and
+        // there is no `capture_committed` coming for it. Nothing moving is
+        // "Waiting to send"; movement is what earns a percentage.
+        case .sending(let p) where p <= 0: "Waiting to send"
         case .sending(let p): "Sending \(Int((p * 100).rounded()))%"
         case .delivered: "Sent, not confirmed"
         case .inStudio: "In Studio"
