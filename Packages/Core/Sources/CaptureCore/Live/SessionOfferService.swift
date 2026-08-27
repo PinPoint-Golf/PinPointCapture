@@ -36,6 +36,18 @@ public final class SessionOfferService: @unchecked Sendable {
     private var dispositions: [String: [String: Disposition]] = [:]
     private var replay: BundleReplay?
     private var replaying: SessionBundle?
+    /// The bytes of the replay in flight, and how far through them the peer has
+    /// taken us.
+    ///
+    /// ⛔ **Both are instance state because `pumpReplay` returns mid-bundle.**
+    /// They used to be locals, so a pump that stopped on a full outbound queue
+    /// threw its position away and the next call re-fed the bundle from byte
+    /// zero — into a `BundleReplay` that had already consumed part of it, over a
+    /// file it re-read in full every time. `bundle.h`'s own call sequence is a
+    /// loop over the file advancing by `consumed`; this is that loop, spread
+    /// across calls because the drain happens between them.
+    private var replayBytes: Data?
+    private var replayOffset = 0
 
     public init(peer: DevicePeer, store: SessionStore,
                 read: @escaping @Sendable (SessionBundle) throws -> Data) {
@@ -90,6 +102,9 @@ public final class SessionOfferService: @unchecked Sendable {
             // redundant, not the fact.
             replay = try BundleReplay(peer: peer, haveDigests: accept.haveDigests)
             replaying = bundle
+            // Read once per replay, not once per pump.
+            replayBytes = try read(bundle)
+            replayOffset = 0
         }
     }
 
@@ -103,18 +118,35 @@ public final class SessionOfferService: @unchecked Sendable {
     /// - Returns: `true` once the whole bundle has been replayed.
     @discardableResult
     public func pumpReplay(hostPeerId: String) throws -> Bool {
-        guard let replay, let bundle = replaying else { return true }
-        let bytes = try read(bundle)
-        var offset = 0
-        while offset < bytes.count {
-            let consumed = try replay.feed(bytes.subdata(in: offset..<bytes.count))
-            guard consumed > 0 else { return false }   // queue full; drain and call again
-            offset += consumed
+        guard let replay, let bundle = replaying, let bytes = replayBytes else { return true }
+        while replayOffset < bytes.count {
+            let consumed = try replay.feed(bytes.subdata(in: replayOffset..<bytes.count))
+            // Queue full. ⛔ Keep the offset — drain and call again.
+            guard consumed > 0 else { return false }
+            replayOffset += consumed
         }
         dispositions[hostPeerId, default: [:]][bundle.sessionId] = .replayed
-        self.replay = nil
-        replaying = nil
+        forgetReplay()
         return true
+    }
+
+    /// The link died with a replay in flight.
+    ///
+    /// ⛔ **Without this the service pumps at a dead peer for ever.** A replay is
+    /// not resumable across links — `BundleReplay` holds the host's
+    /// `have_digests` from a `session_accept` that belonged to the link that just
+    /// went — so the honest move is to drop it and let `offerAll` offer the
+    /// Session again on the next one. ⚠ The disposition stays `.accepted`, which
+    /// is deliberately **not** in `offerAll`'s skip set, so the re-offer happens.
+    public func linkLost() {
+        forgetReplay()
+    }
+
+    private func forgetReplay() {
+        replay = nil
+        replaying = nil
+        replayBytes = nil
+        replayOffset = 0
     }
 
     public func disposition(ofSession sessionId: String,

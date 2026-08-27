@@ -328,7 +328,12 @@ public final class SessionBundleWriter: @unchecked Sendable {
         try flush(.control)
     }
 
-    /// `CORE` 4.1b — the hostless `session_open` this device records.
+    /// `CORE` 4.1b — the `session_open` this device records.
+    ///
+    /// ⚠ **Hostless or hosted is `session.arbitration`'s to say, not this
+    /// method's.** A bundle written while a host held the Session records the
+    /// host's parameters, which is what lets `isHostless` below stay a fact about
+    /// the recorded Session rather than about which call site wrote it.
     public func open(session: PpcpSessionRecord) throws {
         try peer.openSession(session)
         try flush(.control)

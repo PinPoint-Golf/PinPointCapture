@@ -304,6 +304,56 @@ struct SessionBundleTests {
         #expect(writer.frameCount >= 3)
     }
 
+    /// What a device's bundle can and cannot say about a Session **a host**
+    /// opened — 5.10e and 7.3a, made structural one layer below us.
+    ///
+    /// ⛔ `ppcp_session_make_hosted` exists, and this device can never reach it:
+    /// `ppcp_peer_session_open` refuses `has_arbitration` from any peer that is
+    /// not `role: host` (`libppcp/src/ppcp_peer.c:1015`). Combined with `ENC`
+    /// 7a/7b — a bundle is the *owner's outbound* frames — the only
+    /// `session_open` this application could ever write is a hostless one, even
+    /// while PinPointStudio holds the Session.
+    ///
+    /// ⚠ **So this test pins a known imprecision rather than hiding it.** The
+    /// bundle carries the host's `Session.id` and `timebase_ref`, which is what
+    /// every Stream, Capture and Shot in the file must agree with, and
+    /// `isHostless` nonetheless reads `true`. Arbitration stays recoverable from
+    /// the Shots' `authority: host`; the flag is narrower than its name. Raised
+    /// with the protocol team 27 Aug 2026.
+    @Test("A capture peer cannot open a hosted Session, so its bundle records the host's ids hostless")
+    func aCapturePeersBundleCannotClaimArbitration() throws {
+        var body = ppcp_body_session_open()
+        #expect(ppcp_id_set_z(&body.session_id, "ses:from-the-host") == PPCP_OK)
+        #expect(ppcp_id_set_z(&body.timebase_ref, "tb:host") == PPCP_OK)
+        body.has_arbitration = true
+        body.coincidence_window_ns = 50_000_000
+        body.issue_hold_ns = 200_000_000
+
+        // The host's ids cross; the arbitration parameters do not.
+        let record = PpcpSessionRecord(PpcpSessionParameters(body))
+        #expect(record.id == "ses:from-the-host")
+        #expect(record.timebaseRef == "tb:host")
+
+        let sink = Self.Sink()
+        let peer = try Self.peer()
+        let writer = try SessionBundleWriter(peer: peer) { sink.append($0) }
+        try writer.record(declaration: try Self.declaration())
+        try writer.open(session: record)
+        #expect(writer.isHostless,
+                "narrower than its name — this peer did not arbitrate, the host did")
+
+        // ⛔ And the refusal itself, so nobody re-adds the branch that was here
+        // first: a capture peer offering arbitration parameters is rejected at
+        // the engine, not by a check of ours.
+        peer.withHandle { handle in
+            var hosted = ppcp_session()
+            #expect(ppcp_session_make_hosted(&hosted, "ses:from-the-host", "tb:host",
+                                             50_000_000, 200_000_000) == PPCP_OK,
+                    "the constructor is fine — it is the peer that refuses")
+            #expect(ppcp_peer_session_open(handle, &hosted) != PPCP_OK)
+        }
+    }
+
     // MARK: The writer's other refusals
 
     /// `ENC` 7c — "no `payload_*` frame before `session_manifest`, so an

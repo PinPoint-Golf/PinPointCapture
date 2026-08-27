@@ -206,6 +206,7 @@ final class CStringArray {
 /// `session_open` with no arbitration, and that absence *is* the statement that
 /// no arbitration occurred (7.3b).
 public struct PpcpSessionRecord: Sendable, Hashable {
+
     public var id: String
     /// ⛔ I16 — immutable once set. There is no `ppcp_session_set_timebase_ref`.
     public var timebaseRef: String
@@ -224,6 +225,38 @@ public struct PpcpSessionRecord: Sendable, Hashable {
         self.epochWallUtcNs = epochWallUtcNs
         self.epochAtNs = epochAtNs
         self.epochTimebaseId = epochTimebaseId
+    }
+
+    /// The Session **a host opened**, as this device records it in its own bundle.
+    ///
+    /// ⛔ **The two arbitration parameters are deliberately dropped, and cannot be
+    /// carried.** `ppcp_peer_session_open` refuses `has_arbitration` from any peer
+    /// that is not `role: host` (`libppcp/src/ppcp_peer.c:1015`) — 5.10e and 7.3a
+    /// made structural — and `ENC` 7a/7b make a bundle the *owner's outbound*
+    /// frames, so the only `session_open` this device could ever have sent is a
+    /// hostless one. What crosses into the bundle is the host's `Session.id` and
+    /// its `timebase_ref`, which is what every Stream, Capture and Shot in the
+    /// file has to agree with.
+    ///
+    /// ⚠ **Known consequence, raised rather than hidden:**
+    /// `SessionBundleWriter.isHostless` then reads `true` for a Session a host
+    /// arbitrated. Arbitration is still recoverable from the file — the Shots
+    /// inside it carry `authority: host` — but the flag's name is wider than its
+    /// meaning. Either it means "this peer did not arbitrate", or `ENC` §7 needs
+    /// a way to record a Session a peer participated in without opening.
+    ///
+    /// ⚠ The epoch is **not** taken from `session_open` either. The host's epoch
+    /// instant is on the host's clock, and this device's own `WallClockAnchor` is
+    /// the only label it can honestly put beside a local instant.
+    public init(_ parameters: PpcpSessionParameters,
+                epochWallUtcNs: Int64? = nil,
+                epochAtNs: Int64? = nil,
+                epochTimebaseId: String? = nil) {
+        self.init(id: parameters.sessionId,
+                  timebaseRef: parameters.timebaseRefId,
+                  epochWallUtcNs: epochWallUtcNs,
+                  epochAtNs: epochAtNs,
+                  epochTimebaseId: epochTimebaseId)
     }
 }
 
@@ -588,6 +621,14 @@ public final class DevicePeer: @unchecked Sendable {
 
     /// `CORE` 4.1b — the hostless `session_open` a capture peer records in its
     /// own bundle.
+    ///
+    /// ⛔ **Hostless is the only shape available here, and not by choice.**
+    /// `ppcp_session_make_hosted` exists (`model.h:465`) but
+    /// `ppcp_peer_session_open` refuses `has_arbitration` from a peer that is not
+    /// `role: host` (`src/ppcp_peer.c:1015`). A capture device therefore never
+    /// originates a hosted `session_open`, on the wire or into a file, and
+    /// `PpcpSessionRecord.init(_ parameters:)` documents what that costs when a
+    /// host is holding the Session.
     public func openSession(_ record: PpcpSessionRecord) throws {
         var session = ppcp_session()
         try check(ppcp_session_make_hostless(&session, record.id, record.timebaseRef))

@@ -103,6 +103,16 @@ public final class PayloadTransferQueue: @unchecked Sendable {
         /// 8.3c — the receiver answered `already_present`. Nothing more is sent
         /// and the Capture becomes evictable (5.14g exit 3).
         var alreadyPresent = false
+        /// The payload, held only while this entry is actually in flight.
+        ///
+        /// ⛔ **Because `payload()` reads a file.** `advance` used to call it on
+        /// every pass, and a pass clears at most one 32 KiB chunk into the
+        /// engine's 64 KiB queue — so a 25 MB clip was read off disk about eight
+        /// hundred times, on the same actor that runs `feed`, `flush`, liveness
+        /// and sync. ⚠ **One clip resident, not a session's worth**: released the
+        /// moment the entry finishes, which is what the file's own "do not hold a
+        /// session's clips" rule is actually about.
+        var payload: Data?
     }
 
     private let peer: DevicePeer
@@ -161,7 +171,13 @@ public final class PayloadTransferQueue: @unchecked Sendable {
     }
 
     private func advance(_ entry: inout Entry, budget: Int) throws -> Int {
-        let data = try entry.job.payload()
+        let data: Data
+        if let held = entry.payload {
+            data = held
+        } else {
+            data = try entry.job.payload()
+            entry.payload = data
+        }
         if entry.begun == false {
             try peer.payloadBegin(captureId: entry.job.captureId,
                                   bytes: entry.job.bytes,
@@ -197,6 +213,7 @@ public final class PayloadTransferQueue: @unchecked Sendable {
             try peer.payloadEnd(captureId: entry.job.captureId,
                                 digest: entry.job.digest, channel: channel)
             entry.finished = true
+            entry.payload = nil
         }
         return spent
     }
@@ -220,10 +237,12 @@ public final class PayloadTransferQueue: @unchecked Sendable {
 
     /// 8.3c / 5.14g exit 3 — the receiver already holds this payload. Nothing more
     /// is sent, and the Capture is now evictable.
+    /// ⚠ Releases the held payload with it — nothing more will be sent.
     public func markAlreadyPresent(captureId: String) {
         guard let index = queue.firstIndex(where: { $0.job.captureId == captureId })
         else { return }
         queue[index].alreadyPresent = true
+        queue[index].payload = nil
     }
 
     public var pendingCaptureIds: [String] {
