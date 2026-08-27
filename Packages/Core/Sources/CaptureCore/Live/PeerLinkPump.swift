@@ -69,7 +69,15 @@ public enum PeerLinkEvent: Sendable, Hashable {
     case armRequested
     case disarmRequested
     /// `CORE` 8.4 — answer it, and never with an `error` (I10).
-    case captureRequested(shotId: String, streamIds: [String],
+    /// `MSG` 7.3 — a host asks this peer for an interval around a `t0`.
+    ///
+    /// ⛔ **`t0` travels with its timebase and both are needed.** 7.3a makes the
+    /// answer a conversion into this peer's own clock through the declared
+    /// relations, and `PPCP` has no encoding for a bare timestamp anywhere
+    /// (`CORE` 5.1, `ENC` 4.1a) — so an event that dropped `tb` would leave a
+    /// receiver converting from a clock it had assumed.
+    case captureRequested(shotId: String, t0Ns: Int64, t0TimebaseId: String,
+                          streamIds: [String],
                           preNs: Int64, postNs: Int64, replyTo: UInt64)
     case candidateReceived(id: String)
     /// `MSG` §8.2 — a Shot the counterpart issued.
@@ -423,7 +431,8 @@ public actor PeerLinkPump {
         case PPCP_EVENT_DISARM: return .disarmRequested
         case PPCP_EVENT_CAPTURE_REQUEST:
             guard let msg else {
-                return .captureRequested(shotId: "", streamIds: [], preNs: 0,
+                return .captureRequested(shotId: "", t0Ns: 0, t0TimebaseId: "",
+                                         streamIds: [], preNs: 0,
                                          postNs: 0, replyTo: 0)
             }
             let replyTo = msg.pointee.env.msg_id
@@ -434,6 +443,8 @@ public actor PeerLinkPump {
                     return (0..<request.pointee.stream_id_count).map { ppcpString(base[$0]) }
                 }
                 return .captureRequested(shotId: ppcpString(request.pointee.shot_id),
+                                         t0Ns: request.pointee.t0.ns,
+                                         t0TimebaseId: ppcpString(request.pointee.t0.tb),
                                          streamIds: ids,
                                          preNs: request.pointee.pre_ns,
                                          postNs: request.pointee.post_ns,

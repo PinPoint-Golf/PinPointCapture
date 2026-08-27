@@ -97,6 +97,17 @@ public final class RecordingSession {
 
     private let handle: FileHandle
     private let recorder: CaptureSessionRecorder
+    /// Where a Capture goes: the bundle alone, or the bundle and the wire.
+    ///
+    /// ⚠ Stored because a host's `capture_request` announces through it too, and
+    /// a Capture a host asked for must reach the file on exactly the terms one
+    /// this device minted does.
+    private var detectionSink: (any DetectionSink)?
+    /// ⚠ Held only so a host's `capture_request` can reach the ring. Everything
+    /// else in this file reaches the device through a closure captured at
+    /// construction, which is the shape that keeps the extraction the capture
+    /// stack's answer rather than this file's.
+    private let device: any CaptureDevice
     private var isClosed = false
 
     /// D5's pipeline, composed here rather than in a test for the first time.
@@ -172,6 +183,7 @@ public final class RecordingSession {
         let epochWall = Date()
         let epochAtNs = MachClock.hostTimeNs
 
+        self.device = device
         let peer = try DevicePeer(peerId: peerId)
         // ⚠ `emit` is called with each run of bytes in order and never with a
         // whole bundle: `ENC` §7 is a stream, and buffering it would make an
@@ -244,6 +256,7 @@ public final class RecordingSession {
             } else {
                 recorder
             }
+            detectionSink = sink
             detect = DetectAndMint(
                 peer: peer, sink: sink, mint: mint, factory: factory,
                 configuration: DetectAndMint.Configuration(
@@ -519,6 +532,79 @@ public final class RecordingSession {
     /// given two different derivations of the same Streams.
     public func openHostedStreams() async throws {
         try await control.hosted?.openStreams(streams)
+    }
+
+    // MARK: Serving a host's capture_request (MSG §7.3)
+
+    /// `MSG` 7.3a/7.3b — a host asks for an interval around a `t0` this device
+    /// may never have nominated, and gets a Capture back either way.
+    ///
+    /// ⛔ **Three isolation domains in one answer, in this order and no other:**
+    /// the conversion needs the link peer (inside `perform`), the extraction
+    /// needs the capture stack (the MainActor, and `retainedClip` is a
+    /// `sampleQueue.sync` underneath), and the announce needs the peer again.
+    ///
+    /// ⛔ **An absent Capture is a RESULT, not a failure** (I10, 7.3b). A ring
+    /// that no longer holds the interval answers `outside_buffer`; it does not
+    /// answer `error`, and 7.3b says so explicitly because the two are easy to
+    /// conflate when the code path feels like a failure.
+    ///
+    /// ⚠ **8.2i1 — where the clocks have no relation, nothing is substituted.**
+    /// A `t0` that cannot be converted is answered `outside_buffer` as well: this
+    /// device genuinely cannot say what it held at an instant it cannot place,
+    /// and inventing an identity would extract the wrong seconds of video and
+    /// present them as the right ones.
+    public func serveCaptureRequest(shotId: String, t0Ns: Int64, t0TimebaseId: String,
+                                    preNs: Int64, postNs: Int64,
+                                    replyTo: UInt64) async {
+        guard let hosted = control.hosted, let video = videoStream else { return }
+        let captureId = "cap:\(UUID().uuidString.lowercased())"
+
+        let localT0: Int64? = try? await hosted.pump.perform { peer in
+            try peer.instant(t0Ns, on: t0TimebaseId,
+                             expressedIn: PpcpTimebases.captureId)
+        }
+
+        guard let localT0 else {
+            try? await hosted.pump.perform { peer in
+                try peer.captureAbsent(captureId: captureId, shotId: shotId,
+                                       streamId: video.id,
+                                       reason: PpcpAbsentReason.outsideBuffer,
+                                       inReplyTo: replyTo)
+            }
+            return
+        }
+
+        var clip = device.retainedClip(aroundNs: localT0, preNs: preNs, postNs: postNs)
+        Self.persist(&clip, forT0Ns: localT0, in: bundle)
+        let assembly = CaptureBuilder.shotCapture(
+            id: captureId, shotId: shotId, stream: video,
+            extraction: clip.extraction, exposure: clip.exposure,
+            intrinsics: clip.intrinsics, thermal: clip.thermal)
+
+        if assembly.record.completeness == PpcpCaptureRecord.Completeness.absent {
+            try? await hosted.pump.perform { peer in
+                try peer.captureAbsent(captureId: captureId, shotId: shotId,
+                                       streamId: video.id,
+                                       reason: assembly.record.absentReason
+                                           ?? PpcpAbsentReason.outsideBuffer,
+                                       inReplyTo: replyTo)
+            }
+            return
+        }
+
+        // ⚠ Through the same sink the detector uses, so a Capture a host asked
+        // for reaches the bundle on exactly the terms one this device minted
+        // does — "live bytes are bundle bytes" is not conditional on who asked.
+        // ⚠ Read out on the MainActor, then handed in. `perform`'s closure is
+        // `@Sendable` and runs on the pump's executor, so it cannot reach an
+        // isolated property — and `DetectionSink` is `AnyObject`-bound and
+        // `@unchecked Sendable` by construction, which is what makes passing the
+        // reference legitimate rather than a hole.
+        guard let sink = detectionSink else { return }
+        try? await hosted.pump.perform { [payload = clip.payload] _ in
+            try sink.announce(assembly, clip: payload)
+        }
     }
 
     /// What the library says has happened to each announced payload.

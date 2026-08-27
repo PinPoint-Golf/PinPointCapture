@@ -31,7 +31,15 @@ import Foundation
 ///
 /// ⚠ It is the same three calls either way, which is what makes "live bytes are
 /// bundle bytes" true of the *detector* as well as of the transport.
-public protocol DetectionSink: AnyObject {
+/// ⚠ **`Sendable`, and every conformer already claimed it.**
+/// `CaptureSessionRecorder`, `LiveDetectionSink` and `CompositeDetectionSink` are
+/// each `@unchecked Sendable` over state they serialise themselves, and
+/// `DetectAndMint` — which holds one and is itself `@unchecked Sendable` — has
+/// been carried across isolation domains on that basis since it was written.
+/// Saying so on the protocol makes the existing arrangement checkable instead of
+/// implicit, and is what lets a `capture_request` be answered from inside
+/// `PeerLinkPump.perform`.
+public protocol DetectionSink: AnyObject, Sendable {
     func record(candidate: PpcpCandidate) throws
     func record(shot: PpcpShot) throws
     func announce(_ assembly: CaptureAssembly, clip: CaptureSessionRecorder.ClipProvider?) throws

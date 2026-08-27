@@ -597,6 +597,12 @@ public final class AppModel {
             // ⛔ Commands come back this way. State is still polled — see
             // `startHostLinkPolling` — and the two are deliberately separate.
             session.delegate = self
+            // ⛔ `MSG` 9.1 — what this device already holds, offered to the host
+            // it just reached. ⚠ The read closure is here because `CaptureCore`
+            // opens no file (ground rule 8); the store is the app's.
+            await session.attachOfferStore(store) { bundle in
+                try Data(contentsOf: bundle.bundleFile)
+            }
             hostLink = session.hostLink
             await session.open()
             hostLink = session.hostLink
@@ -1114,12 +1120,17 @@ extension AppModel: HostLinkSessionDelegate {
     }
 
     public func hostLink(_ link: HostLinkSession, didRequestCapture shotId: String,
+                         t0Ns: Int64, t0TimebaseId: String,
                          streamIds: [String], preNs: Int64, postNs: Int64,
-                         replyTo: UInt64) {
-        // ⛔ E3.4. 8.4a converts the host's window into this device's timebase
-        // and answers from the ring; 8.4b makes `outside_buffer` a result rather
-        // than a failure. Not built — a host asking today gets silence, which is
-        // the MUST violation we told PinPointStudio not to commit.
+                         replyTo: UInt64) async {
+        // ⚠ Nothing armed is not silence: 7.3b makes an absent Capture the
+        // answer, and `RecordingSession` is where the ring and the peer both
+        // are. With no session there is no Stream to anchor one to, so this is
+        // the one case that genuinely has nothing to say.
+        await recording?.serveCaptureRequest(shotId: shotId, t0Ns: t0Ns,
+                                             t0TimebaseId: t0TimebaseId,
+                                             preNs: preNs, postNs: postNs,
+                                             replyTo: replyTo)
     }
 
     public func hostLinkTransfersChanged(_ link: HostLinkSession) {

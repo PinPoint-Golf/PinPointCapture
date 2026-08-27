@@ -300,7 +300,7 @@ public actor ConformanceHarness {
                     }
                     report.armsAnswered += 1
 
-                case .captureRequested(let shotId, let streamIds, _, _, let replyTo):
+                case .captureRequested(let shotId, _, _, let streamIds, _, _, let replyTo):
                     // ⛔ 8.4b — `outside_buffer`, and it is a **result**. A
                     // simulator has no camera, so the ring holds nothing;
                     // answering with an `error` is what I10 forbids.

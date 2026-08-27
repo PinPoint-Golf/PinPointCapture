@@ -94,7 +94,9 @@ public protocol HostLinkSessionDelegate: AnyObject {
 
     /// `MSG` 7.3 — the host wants an interval from this device's ring.
     func hostLink(_ link: HostLinkSession, didRequestCapture shotId: String,
-                  streamIds: [String], preNs: Int64, postNs: Int64, replyTo: UInt64)
+                  t0Ns: Int64, t0TimebaseId: String,
+                  streamIds: [String], preNs: Int64, postNs: Int64,
+                  replyTo: UInt64) async
 
     /// A `payload_ack` or a `capture_committed` moved something in the transfer
     /// table. ⚠ Deliberately carries nothing: `PeerLinkEvent.capture` has no
@@ -153,6 +155,15 @@ public final class HostLinkSession {
     /// ⚠ `weak`, and `AppModel` owns both ends: the model holds the session and
     /// the session calls back into the model.
     public weak var delegate: (any HostLinkSessionDelegate)?
+
+    /// `MSG` §9.1 — stored Sessions offered to this host, and replayed onto the
+    /// link when it accepts.
+    ///
+    /// ⚠ Held here rather than in `AppModel` because it is built on the **link**
+    /// peer and every use of it goes through `perform`. ⛔ `nil` until a store is
+    /// attached: `CaptureCore` opens no file (ground rule 8), so the bytes come
+    /// from a closure the app layer supplies.
+    private var offers: SessionOfferService?
 
     /// The host's `session_open`, held from the moment it arrives.
     ///
@@ -261,9 +272,15 @@ public final class HostLinkSession {
             while Task.isCancelled == false {
                 guard let self else { return }
                 let now = MachClock.hostTimeNs
-                if let (state, clock) = try? await self.pump.perform({ peer
+                if let (state, clock) = try? await self.pump.perform({ [offers = self.offers,
+                                                                        host = self.counterpartPeerId] peer
                     -> (HostLinkState, ClockAgreement?) in
                     let state = try self.driver.pump(nowNs: now)
+                    // ⚠ **Drained between calls, which is what makes progress.**
+                    // `pumpReplay` stops when the peer's outbound queue is full
+                    // and `perform` flushes on the way out, so the next tick
+                    // resumes from where this one stopped.
+                    if let offers, let host { try? offers.pumpReplay(hostPeerId: host) }
                     return (state, self.driver.clockAgreement)
                 }) {
                     self.linkState = state
@@ -321,6 +338,11 @@ public final class HostLinkSession {
             // ⚠ A no-op where nothing is stored — a `mu > 1` pairing (7.4f) has
             // no row to bind, and `bind` returns without writing one.
             try? PairingSecretStore.bind(sessionId: sessionId, toCounterpart: peerId)
+            // ⚠ **Offered on `declare`, which is the first moment the counterpart
+            // has an identity to owe them to** (7.6b). 9.1's dispositions are
+            // held per (host, session), so a second connection to the same host
+            // does not re-offer what it already took.
+            await offerStoredSessions(toHost: peerId)
 
         case .protocolError(let code):
             // Surfaced. A counterpart refusing this device is the thing a user
@@ -379,16 +401,34 @@ public final class HostLinkSession {
             delegate?.hostLink(self, didIssueShot: id, t0Ns: t0Ns,
                                t0TimebaseId: t0TimebaseId)
 
-        case .captureRequested(let shotId, let streamIds, let preNs, let postNs, let replyTo):
-            delegate?.hostLink(self, didRequestCapture: shotId, streamIds: streamIds,
-                               preNs: preNs, postNs: postNs, replyTo: replyTo)
+        case .captureRequested(let shotId, let t0Ns, let t0TimebaseId,
+                               let streamIds, let preNs, let postNs, let replyTo):
+            await delegate?.hostLink(self, didRequestCapture: shotId,
+                                     t0Ns: t0Ns, t0TimebaseId: t0TimebaseId,
+                                     streamIds: streamIds,
+                                     preNs: preNs, postNs: postNs, replyTo: replyTo)
 
         case .payload, .capture:
             // ⚠ Carries no id (`PeerLinkPump` maps both to a bare case), so the
             // model re-reads the library's transfer table rather than inferring.
             delegate?.hostLinkTransfersChanged(self)
 
+        case .sessionAccepted(let accept):
+            // ⛔ Only `accept` starts a replay; the other two verdicts are
+            // recorded and nothing moves.
+            // ⛔ Keyed on the HOST's peer id, not the Session's. 9.1's
+            // dispositions are per (host, session) — I34 scopes Capture identity
+            // by the minting peer, and who holds it is a fact about the host.
+            guard let hostPeerId = counterpartPeerId else { break }
+            try? await pump.perform { [offers] _ in
+                try offers?.received(accept, fromHost: hostPeerId)
+            }
+
         case .linkLost:
+            // ⛔ A replay does not survive the link it was accepted on:
+            // `BundleReplay` holds the `have_digests` from a `session_accept`
+            // that belonged to it. Dropped here, re-offered on the next link.
+            offers?.linkLost()
             delegate?.hostLinkDidLoseLink(self)
 
         case .linkRestored:
@@ -399,6 +439,27 @@ public final class HostLinkSession {
             // `sync` and `relation_update` are E3.2's and are read by
             // `startSyncTicking`'s poll of the driver, not by an event case.
             break
+        }
+    }
+
+    // MARK: Offering stored Sessions (MSG §9.1)
+
+    /// The store this link offers from, and how its bytes are read.
+    ///
+    /// ⛔ The read closure comes from the app layer because `CaptureCore` opens
+    /// no file, and it is a **provider** rather than `Data` because a session is
+    /// about a gigabyte.
+    public func attachOfferStore(_ store: SessionStore,
+                                 read: @escaping @Sendable (SessionBundle) throws -> Data) async {
+        offers = try? await pump.perform { peer in
+            SessionOfferService(peer: peer, store: store, read: read)
+        }
+    }
+
+    private func offerStoredSessions(toHost hostPeerId: String) async {
+        guard let offers else { return }
+        try? await pump.perform { _ in
+            try offers.offerAll(toHost: hostPeerId)
         }
     }
 
