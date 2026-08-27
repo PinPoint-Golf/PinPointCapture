@@ -999,6 +999,13 @@ public final class AppModel {
                     Task { await link.recordMintedDuringOutage(shot.id) }
                 }
             }
+            // ⛔ **Refreshed on minting, not only on the host's answer.** The
+            // announce has already put a row in the library's transfer table
+            // marked `pending`, and until now nothing read it until a
+            // `payload_ack` or a `capture_committed` arrived — so with a host
+            // that never acks, and neither `ppcp-sim` nor PinPointStudio does
+            // today, a queued shot stayed invisible on C3 for the whole session.
+            refreshTransferState()
         } catch {
             recordingError = String(describing: error)
         }
