@@ -557,6 +557,12 @@ public final class AppModel {
                 // REQ-SESS-5/6 — payload follows the announce on its own channel,
                 // at whatever rate the socket allows.
                 session.startTransferring()
+                // ⚠ `ENC` 2.1d's third channel, then the Stream, then the tap —
+                // and each step gives up quietly if the one before it could not
+                // happen. A host with no preview channel is not an error (5.11i).
+                if let link, await link.openPreviewChannel() {
+                    await session.openPreview()
+                }
             }
 
             // ⚠ **`readiness` is NOT reported here** — see `reportReadiness()`.

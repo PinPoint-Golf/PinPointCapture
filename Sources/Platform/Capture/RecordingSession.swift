@@ -654,12 +654,52 @@ public final class RecordingSession {
     /// lose, so its absence is never an error.
     private var previewProducer: PreviewProducer?
 
-    /// Opens the `preview` Stream on the link, if there is one to open.
+    /// Opens the `preview` Stream on the link and starts taking frames for it.
+    ///
+    /// ⛔ **Nothing is installed on the capture path until the far end can
+    /// actually receive a frame.** A tap running with no producer would cost the
+    /// frame callback for nothing, which is the wrong side of 5.11i's ordering.
     @discardableResult
     public func openPreview() async -> Bool {
         guard let hosted = control.hosted, let stream = previewStream else { return false }
-        previewProducer = try? await hosted.openPreview(stream)
-        return previewProducer != nil
+        guard let producer = try? await hosted.openPreview(stream) else { return false }
+        previewProducer = producer
+
+        let tap = PreviewFrameTap { [weak self] jpeg, atNs in
+            // ⚠ On the tap's own queue. The hop to the peer is here and nowhere
+            // near the frame callback.
+            Task { @MainActor [weak self] in
+                await self?.deliverPreview(jpeg, endingAtNs: atNs)
+            }
+        }
+        device.attachPreviewTap(tap)
+        return true
+    }
+
+    /// One preview segment, onto the link.
+    ///
+    /// ⛔ **`shed` is not an error path — it is the accounting** (5.11c3).
+    /// Deliberate non-retention is an `absent` segment with `absent_reason:
+    /// not_retained`, never a gap: `gaps` mean loss (I11), and a peer that sheds
+    /// a frame on purpose and records a gap is reporting a dropout it did not
+    /// have. So whatever the tap dropped between this frame and the last is
+    /// announced as absent before this one is announced as present, and the
+    /// Stream's interval stays fully accounted for.
+    private func deliverPreview(_ jpeg: Data, endingAtNs atNs: Int64) async {
+        guard let hosted = control.hosted, let producer = previewProducer else { return }
+        try? await hosted.pump.perform { _ in
+            if producer.unaccountedNs(asOf: atNs) != nil {
+                _ = try producer.shed(throughNs: atNs - PreviewFrameTap.intervalNs)
+            }
+            _ = try producer.deliver(endingAtNs: atNs, payload: jpeg)
+        }
+    }
+
+    /// ⛔ Taken off the capture path when the session ends, so the callback stops
+    /// paying for a producer that is going away.
+    public func stopPreview() {
+        device.attachPreviewTap(nil)
+        previewProducer = nil
     }
 
     /// One 32 KiB chunk per `perform`, and that is not a tuning choice.
@@ -792,6 +832,7 @@ public final class RecordingSession {
         // to decide, and an unsent payload is not lost — it is in the bundle,
         // which is the whole of "live bytes are bundle bytes".
         stopTransferring()
+        stopPreview()
         try recorder.close(completeness: completeness, closedAtNs: closedAtNs)
         try handle.close()
     }

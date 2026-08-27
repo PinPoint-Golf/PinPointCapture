@@ -754,6 +754,57 @@ interop: gen
 		exit 1; \
 	fi
 
+# ⛔ **The composed app against a real PinPointStudio, WITHOUT a phone.**
+#
+# The iOS Simulator runs as a process on this Mac and shares its network stack,
+# so 127.0.0.1 inside it is PinPointStudio's own loopback. Everything that is not
+# a camera is reachable in about a minute, as often as you like -- which is the
+# difference between checking a protocol change and scheduling one.
+#
+#   make interop-app HOST=127.0.0.1:<port> PSK=<64 hex> IDENTITY=<identity>
+#
+# ⚠ What still needs a phone: a simulator enumerates no camera, so it declares no
+# camera Source. No clip, no preview pixels, and CT-S3 is unreachable because
+# there is no local declaration for a foreign one to differ from. Arm, readiness,
+# session_open, sync, offers, capture_request and session_resume are all here.
+#
+# ⚠ Unlike `interop`, this runs ONE suite and asserts almost nothing about what
+# the operator did: whether Studio armed during the window is a person's choice,
+# and a row that failed because nobody pressed a button is a row nobody trusts.
+# It prints what crossed. Read the APP-VS-STUDIO lines.
+interop-app: gen
+	@if [ -z "$(HOST)" ] || [ -z "$(PSK)" ]; then \
+		echo "make interop-app: HOST=<host:port> and PSK=<64 hex chars> are required."; \
+		echo "  e.g. make interop-app HOST=127.0.0.1:9443 PSK=$$(python3 -c 'print(\"ab\"*32)') IDENTITY=deadbeef"; \
+		exit 1; \
+	fi
+	@if [ -z "$(SIM_NAME)" ]; then \
+		echo "make interop-app: no available iPhone simulator found."; exit 1; \
+	fi
+	set -o pipefail && xcodebuild build-for-testing \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-jobs $(JOBS) \
+		| $(XCB)
+	@set -e; \
+	echo "dialling $(HOST) over TLS from the simulator — PinPointStudio must be listening"; \
+	set -o pipefail; \
+	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
+	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building \
+		-project $(PROJECT) \
+		-scheme $(SCHEME) \
+		-configuration $(CONFIG) \
+		-destination '$(TEST_DEST)' \
+		-derivedDataPath $(DERIVED) \
+		-only-testing:PinPointCaptureTests/AppAgainstStudioTests \
+		-default-test-execution-time-allowance 300 \
+		-maximum-test-execution-time-allowance 600 \
+		| grep -E '^(◇|✔|✘|↳)|APP-VS-STUDIO|error:|Test run|\*\* TEST'
+
 device:
 	@xcrun devicectl list devices
 
