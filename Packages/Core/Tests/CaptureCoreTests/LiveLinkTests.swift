@@ -41,6 +41,92 @@ struct LiveLinkTests {
             bytes: completeness == .absent ? nil : UInt64(clip.count))
     }
 
+    // MARK: 5.11.2 — a preview segment that is actually PRODUCED
+
+    /// ⛔ **THE TEST THAT DID NOT EXIST, AND IT IS WHY NOTHING WORKED.**
+    ///
+    /// Every preview test in this repository asserted a REFUSAL — that a preview
+    /// Capture announced `pending` is rejected, that a shed is `absent` and never
+    /// a gap. Not one asserted that a segment can be produced at all. So when
+    /// `PreviewProducer.deliver` built its record with `segment()`'s default
+    /// `.pending` and assigned `.present` on the *next line* — unreachable,
+    /// because `StreamCoverage` enforces 8.1i inside `segment()` and threw first
+    /// — the suite stayed green while **no preview frame had ever left this
+    /// application**. A green suite was testing the guard that was firing.
+    /// Found on device 28 Aug 2026, after two days of a black tile.
+    @Test("A preview segment is produced, not merely refused when malformed")
+    func previewDeliversASegment() throws {
+        let peer = try Self.peer()
+        let stream = PpcpStreamRecord(
+            id: "str:preview:live", sessionId: Self.sessionId,
+            sourceId: "src:camera:wide", kind: PpcpStreamKind.preview,
+            profileId: "640x360@10", timebaseId: Self.timebase,
+            continuity: .continuous, openedAtNs: 1_000_000_000)
+        try peer.openStream(stream)
+        let producer = try PreviewProducer(peer: peer, stream: stream,
+                                           mintId: { "cap:prev:1" })
+
+        // ⚠ The first frame lands a couple of milliseconds after the Stream
+        // opens, which is what the device actually does: the tap goes on
+        // immediately and AVFoundation delivers ~2 ms later.
+        let outcome = try producer.deliver(endingAtNs: 1_002_000_000,
+                                           payload: Data(repeating: 0x5a, count: 4_000))
+        #expect(outcome == .sent(captureId: "cap:prev:1"))
+        #expect(producer.accountedThroughNs == 1_002_000_000)
+        #expect(producer.unaccountedNs(asOf: 1_002_000_000) == nil)
+    }
+
+    /// ⛔ **A REAL PREVIEW FRAME IS BIGGER THAN ONE CHUNK.**
+    ///
+    /// 640×360 at JPEG q0.6 is ~35 kB and `PayloadTransferQueue.chunkBytes` is
+    /// 32 kB. `ppcp_peer_payload_chunk` refuses `len > chunk_bytes`, so a
+    /// producer that sent the whole frame as index 0 — which this one did —
+    /// failed on nearly every frame. ⚠ And only on *nearly* every frame: a
+    /// simple enough scene compresses under 32 kB and goes through, so the
+    /// symptom was intermittent and scene-dependent, which is worse than broken.
+    @Test("A frame larger than one chunk is delivered whole")
+    func previewChunksAFrameBiggerThanOneChunk() throws {
+        let peer = try Self.peer()
+        let stream = PpcpStreamRecord(
+            id: "str:preview:big", sessionId: Self.sessionId,
+            sourceId: "src:camera:wide", kind: PpcpStreamKind.preview,
+            profileId: "640x360@10", timebaseId: Self.timebase,
+            continuity: .continuous, openedAtNs: 0)
+        try peer.openStream(stream)
+        let producer = try PreviewProducer(peer: peer, stream: stream,
+                                           mintId: { "cap:prev:big" })
+
+        let oversize = Int(PayloadTransferQueue.chunkBytes) + 3_610   // a real ~35 kB frame
+        let frame = Data((0 ..< oversize).map { UInt8($0 % 251) })
+        #expect(try producer.deliver(endingAtNs: 100_000_000, payload: frame)
+                == .sent(captureId: "cap:prev:big"))
+    }
+
+    /// A preview Stream is a *stream*: it keeps producing. ⚠ Sustained delivery
+    /// is also what proves libppcp reclaims transfer entries — before
+    /// `a9785bb` the 128-entry table filled and the announce after it failed
+    /// with `PPCP_ERR_LIMIT`, taking capture down with it (5.11i inverted).
+    @Test("Preview keeps producing well past the transfer table's size")
+    func previewSustainsDelivery() throws {
+        let peer = try Self.peer()
+        let stream = PpcpStreamRecord(
+            id: "str:preview:many", sessionId: Self.sessionId,
+            sourceId: "src:camera:wide", kind: PpcpStreamKind.preview,
+            profileId: "640x360@10", timebaseId: Self.timebase,
+            continuity: .continuous, openedAtNs: 0)
+        try peer.openStream(stream)
+        let producer = try PreviewProducer(peer: peer, stream: stream)
+
+        let frame = Data(repeating: 0x7f, count: 20_000)
+        // Four table-fulls at ~10 fps — a minute of somebody framing a shot.
+        for i in 1 ... 512 {
+            _ = try producer.deliver(endingAtNs: Int64(i) * 100_000_000, payload: frame)
+            _ = try peer.drain(.preview)          // the embedding takes the bytes away
+            _ = try peer.drain(.control)
+        }
+        #expect(producer.accountedThroughNs == 512 * 100_000_000)
+    }
+
     // MARK: CT-I38 / 5.14g — the four exits, and no fifth
 
     /// ⛔ **The predicate is `ppcp_transfer_is_evictable` and nothing else.** A
