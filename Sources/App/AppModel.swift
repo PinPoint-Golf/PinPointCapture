@@ -1455,12 +1455,73 @@ extension AppModel: HostLinkSessionDelegate {
     private func openPreview(streamId: String, source: PpcpDeclaration.SourceView,
                              profile: PpcpDeclaration.ProfileView,
                              on link: HostLinkSession) async -> StreamVerdict {
+        // ⛔ **EVERY REFUSAL NAMES ITSELF, ON THE DEVICE.**  The host is told the
+        // reason and shows it, but the host is not always who is looking — and
+        // eight different guards below returned eight different words into the
+        // same silence.  On 28 Aug 2026 `src:camera:wide` was refused by one of
+        // them and neither end could say which.
+        let verdict = await openPreviewInner(streamId: streamId, source: source,
+                                             profile: profile, on: link)
+        switch verdict {
+        case .opened:
+            print("[preview] OPENED source=\(source.id) profile=\(profile.id)")
+        case .refused(let reason):
+            print("[preview] REFUSED source=\(source.id) reason=\(reason)")
+        }
+        return verdict
+    }
+
+    private func openPreviewInner(streamId: String, source: PpcpDeclaration.SourceView,
+                                  profile: PpcpDeclaration.ProfileView,
+                                  on link: HostLinkSession) async -> StreamVerdict {
         // ⛔ 5.11m — `intrinsics: none` is the positive declaration that
         // identifies a preview profile, and `PreviewFrameTap` produces exactly
         // the one this device declares. A `preview` Stream naming a capture
         // profile would be a Stream we could not produce what it promises on.
         guard profile.intrinsics == PpcpDeclaration.Intrinsics.none else {
             return .refused(reason: "not_a_preview_profile")
+        }
+
+        // ⛔ **ONE CAMERA, ONE PREVIEW — AND A SECOND SOURCE IS REFUSED, NOT
+        // SERVED BY STOPPING THE FIRST.** This device holds a single
+        // `CaptureDevice` and a single `AVCaptureSession`. 5.6d makes each
+        // physical lens its own Source, but only one of them is *running* at a
+        // time, so "a preview per Source" is not something this hardware can
+        // honour however the slot below is written.
+        //
+        // ⛔ Until 27 August that slot was replaced unconditionally, and the
+        // comment on it said "one Source" while the code enforced "one device".
+        // PinPointStudio asks about **both** cameras at `declare` — one
+        // `stream_open` per camera Source, milliseconds apart — so the second
+        // request destroyed the first preview immediately after creating it,
+        // and both were acked `opened`. `src:camera:wide` is asked for first and
+        // was therefore the one Source that could never produce a picture, which
+        // is exactly the symptom that was reported: Set crop on the wide camera,
+        // black, for eight minutes, with no error at either end.
+        //
+        // ⚠ **Refusing is the conformant answer and the only honest one.**
+        // 5.11.2: "a peer that does not offer a suitable profile simply refuses,
+        // and nothing else changes." Answering `opened` and then producing
+        // nothing is the silence `MSG` E18 1c exists to prevent — a consumer
+        // cannot tell it apart from a Stream that is working.
+        //
+        // ⛔ **And the lens is NOT switched to satisfy a request.**
+        // `Lens.captureRank` states the rule: "lens choice is
+        // calibration-affecting and forbidden to change within a session". A
+        // preview that reconfigured the camera would move the calibration of the
+        // very capture it exists to frame.
+        guard let active = activeMode else {
+            return .refused(reason: "no_usable_capture_format")
+        }
+        guard source.id == active.sourceId else {
+            return .refused(reason: "not_the_active_camera "
+                                    + "(running camera is \(active.sourceId))")
+        }
+        // ⚠ Checked separately from the lens so that a `preferredMode` change
+        // mid-session cannot silently orphan a preview that is already running:
+        // the Stream that exists keeps the camera, and the newcomer is told so.
+        if let running = livePreview, running.stream.sourceId != source.id {
+            return .refused(reason: "another_source_previewing")
         }
         guard permissions.canCapture else {
             return .refused(reason: "camera_permission_denied")
@@ -1495,8 +1556,11 @@ extension AppModel: HostLinkSessionDelegate {
             }
         }
 
-        // A host re-asking replaces what it asked for last time; two preview
-        // Streams on one Source would pay the frame path twice for one picture.
+        // A host re-asking about the SAME Source replaces what it asked for last
+        // time; two preview Streams on one Source would pay the frame path twice
+        // for one picture. ⚠ The guards above are what make this line mean that:
+        // anything reaching here names the Source that is already previewing, or
+        // there is no preview at all.
         livePreview?.stop(reason: "not_needed")
 
         let record = PpcpStreamRecord(
@@ -1515,7 +1579,7 @@ extension AppModel: HostLinkSessionDelegate {
             // ⚠ Named rather than swallowed: `libppcp: invalid argument
             // (openStream)` on a device tells nobody which Stream it was.
             recordingError = "Preview could not be opened: \(error)"
-            return .refused(reason: "stream_open_failed")
+            return .refused(reason: "stream_open_failed (\(String(describing: error)))")
         }
     }
 

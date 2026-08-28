@@ -641,6 +641,24 @@ public final class DevicePeer: @unchecked Sendable {
         try check(ppcp_peer_session_open(try handle(), &session))
     }
 
+    /// Whether the engine already holds a Stream record under this id.
+    ///
+    /// ⛔ **Needed because a consumer-originated `stream_open` registers the
+    /// Stream here before this application ever sees it.** `peer_on_stream_open`
+    /// calls `peer_stream_add` and answers `opened` on the engine's own
+    /// authority; an owner that then calls `openStream` for the same id is
+    /// adding a duplicate, and 5.1a makes the engine refuse it
+    /// (`PPCP_ERR_INVALID`, `ppcp_peer.c:1177`).
+    ///
+    /// ⚠ That refusal is invisible from the far end, which is why it survived
+    /// two days: the host had already been told `opened` — by the library —
+    /// so it saw a Stream it believed was live and no error of any kind, while
+    /// this side had refused to produce on it.
+    public func hasStream(id: String) -> Bool {
+        guard let handle = try? handle() else { return false }
+        return ppcp_peer_stream_find(handle, id) != nil
+    }
+
     public func openStream(_ record: PpcpStreamRecord) throws {
         var stream = ppcp_stream()
         var openedAt = ppcp_instant()

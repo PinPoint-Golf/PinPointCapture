@@ -32,23 +32,26 @@ import CaptureCore
 @MainActor
 public final class LivePreview {
 
-    /// How many segments one link may announce.
-    ///
-    /// ⛔ **A budget, because the library has no way to release a transfer
-    /// entry.** `PPCP_TRANSFER_MAX` is 128 and the table only ever grows — every
-    /// announced Capture takes a slot for the peer's lifetime, whatever its
-    /// transfer state. Preview announces one per segment at ~10 fps, so it fills
-    /// the table in about thirteen seconds and the next **shot** announce fails
-    /// with `PPCP_ERR_LIMIT`, surfacing as "nothing is being recorded".
-    ///
-    /// ⛔ That is 5.11i inverted — preview degrades before transfer and transfer
-    /// before capture, and here preview was stopping capture outright. Observed
-    /// on hardware, 27 Aug ([#107]).
-    ///
-    /// ⚠ **Half the table, and the number is arbitrary because the fix is not
-    /// ours.** libppcp needs to reclaim resolved entries, exactly as
-    /// `ppcp_mint_pump` was taught to reclaim resolved mint slots for #103.
-    public static let segmentBudget = 64
+    // ⛔ **THE 64-SEGMENT BUDGET IS GONE, AND THE LIBRARY IS WHY IT CAN BE.**
+    //
+    // Until 27 Aug this type stopped itself after 64 segments — 6.4 seconds of
+    // picture — because `ppcp_transfer_observe_announce` never released a
+    // transfer slot: every announced Capture held one for the peer's lifetime,
+    // so preview at ~10 fps spent all 128 in about thirteen seconds and the
+    // next **shot** announce failed with `PPCP_ERR_LIMIT`. That is 5.11i
+    // exactly inverted — preview degrades before transfer and transfer before
+    // capture, and here preview was stopping capture outright (#107).
+    //
+    // libppcp now reclaims the entries 5.14g has released, and a preview
+    // segment is `shed_permitted` on arrival (exit 4, 5.11j — it was never
+    // going to be transferred), so a preview Stream no longer consumes the
+    // table at all. The cap was containment for a library defect; the defect is
+    // fixed, so the containment goes rather than being tuned.
+    //
+    // ⚠ A preview that stops on its own is indistinguishable at the host from
+    // one that never worked — this cap cost an operator an evening of looking
+    // at a black rectangle, which is the second reason not to keep a quieter
+    // version of it.
 
     private let pump: PeerLinkPump
     private let device: any CaptureDevice
@@ -57,6 +60,17 @@ public final class LivePreview {
     public let stream: PpcpStreamRecord
     private var segments = 0
     private var stopped = false
+
+    // ⛔ **WHY THERE IS NO PICTURE, ANSWERED ON THE DEVICE.**  Delivery used to
+    // be `try?` from end to end: a frame that never arrived, one that failed to
+    // encode and one the producer refused were all the same silence, and a host
+    // seeing `capt=0` could not tell which of the three it had.  That cost two
+    // evenings on 27-28 Aug 2026.  Counted per stage, so the FIRST zero names
+    // the break.
+    public private(set) var framesTapped = 0
+    public private(set) var segmentsSent = 0
+    public private(set) var lastError: String?
+    private var reported: Set<String> = []
 
     /// Registers the host's Stream on the link peer and starts taking frames.
     ///
@@ -75,7 +89,20 @@ public final class LivePreview {
         self.device = device
         self.stream = stream
         producer = try await pump.perform { [stream] peer in
-            try peer.openStream(stream)
+            // ⛔ **ADOPTED WHERE THE HOST ALREADY NAMED IT.**  A consumer's
+            // `stream_open` is registered by the engine itself
+            // (`peer_on_stream_open` → `peer_stream_add`) and acked `opened`
+            // before this application sees the request at all — so opening it
+            // again here is a duplicate, and 5.1a makes the engine refuse it.
+            //
+            // ⚠ That is exactly what happened, on every connect, for two days:
+            // this `try` threw `PPCP_ERR_INVALID`, `openPreview` returned
+            // `stream_open_failed`, and no preview was ever produced — while
+            // PinPointStudio, having been told `opened` BY THE LIBRARY, showed a
+            // Stream it believed was live, zero refusals and zero errors.
+            if peer.hasStream(id: stream.id) == false {
+                try peer.openStream(stream)
+            }
             return try PreviewProducer(peer: peer, stream: stream)
         }
     }
@@ -95,6 +122,7 @@ public final class LivePreview {
             }
         }
         device.attachPreviewTap(tap)
+        print("[preview] tap attached source=\(stream.sourceId) openedAtNs=\(stream.openedAtNs)")
     }
 
     /// One segment, onto the link.
@@ -113,24 +141,46 @@ public final class LivePreview {
     /// told it went black rather than left to infer it (their spec, §4.5).
     private func deliver(_ jpeg: Data, endingAtNs atNs: Int64) async {
         guard stopped == false else { return }
-        guard segments < Self.segmentBudget else {
-            // ⚠ Announced as shed once, then silent — and the tap comes off, so
-            // the capture path stops paying for a picture nobody can receive.
-            if segments == Self.segmentBudget {
-                segments += 1
-                try? await pump.perform { [producer] _ in
-                    _ = try producer.shed(throughNs: atNs)
-                }
-                stop()
-            }
-            return
+        framesTapped += 1
+        if framesTapped == 1 {
+            // ⚠ THE ONE NUMBER THAT SETTLES "no frames" vs "frames refused".
+            // `opened_at` is `MachClock.hostTimeNs`; a frame's instant is its
+            // PRESENTATION timestamp.  If those are not the same clock every
+            // segment ends before the Stream began, StreamCoverage refuses the
+            // lot, and until now it did so silently.
+            print("[preview] first frame ptsNs=\(atNs) openedAtNs=\(stream.openedAtNs) "
+                  + "deltaMs=\((atNs - stream.openedAtNs) / 1_000_000) bytes=\(jpeg.count)")
         }
         segments += 1
-        try? await pump.perform { [producer] _ in
-            if producer.unaccountedNs(asOf: atNs) != nil {
-                _ = try producer.shed(throughNs: atNs - PreviewFrameTap.intervalNs)
+        do {
+            try await pump.perform { [producer] _ in
+                // ⚠ **Only where a WHOLE interval is genuinely unaccounted
+                // for.** `atNs - intervalNs` reaches back before `opened_at`
+                // when the first frame lands less than one interval after the
+                // Stream opened — which is the ordinary case, because the tap
+                // goes on immediately and frames arrive ~19 ms later — and
+                // `StreamCoverage` rightly refuses a segment that ends before
+                // it starts.  The shed is for a real gap, not for the moment
+                // the Stream was born.
+                let shedThrough = atNs - PreviewFrameTap.intervalNs
+                if producer.unaccountedNs(asOf: atNs) != nil,
+                   shedThrough > producer.accountedThroughNs {
+                    _ = try producer.shed(throughNs: shedThrough)
+                }
+                _ = try producer.deliver(endingAtNs: atNs, payload: jpeg)
             }
-            _ = try producer.deliver(endingAtNs: atNs, payload: jpeg)
+            segmentsSent += 1
+            if segmentsSent == 1 || segmentsSent % 100 == 0 {
+                print("[preview] sent=\(segmentsSent) tapped=\(framesTapped)")
+            }
+        } catch {
+            // ⛔ Recorded, and named ONCE per distinct failure.  A per-frame log
+            // at 10 fps is its own kind of silence.
+            let text = String(describing: error)
+            lastError = text
+            if reported.insert(text).inserted {
+                print("[preview] REFUSED after \(framesTapped) frame(s): \(text)")
+            }
         }
     }
 

@@ -55,6 +55,11 @@ public final class PreviewFrameTap: @unchecked Sendable {
     /// and written only inside `offer`, which is what makes them free.
     private var nextDueNs: Int64 = 0
     private var inFlight = false
+    /// ⚠ Counted BEFORE the due/in-flight guard, because the question this
+    /// answers is "is the camera delivering anything at all" — which is a
+    /// different question from "did we take it".
+    private var offered = 0
+    private var encodeFailures = 0
 
     /// - Parameter deliver: the JPEG and the instant it ends at, on this tap's
     ///   own queue. ⚠ The embedding hops from there to the peer; nothing on the
@@ -73,6 +78,8 @@ public final class PreviewFrameTap: @unchecked Sendable {
     /// 5.11j, and it is also what stops a slow encode turning into unbounded
     /// memory on the capture path.
     public func offer(_ sampleBuffer: CMSampleBuffer, atNs: Int64) {
+        offered &+= 1
+        if offered == 1 { print("[preview] tap: first sample off the capture path") }
         guard atNs >= nextDueNs, inFlight == false else { return }
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         nextDueNs = atNs + Self.intervalNs
@@ -80,7 +87,14 @@ public final class PreviewFrameTap: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             let jpeg = encode(pixels)
-            if let jpeg { deliver(jpeg, atNs) }
+            if let jpeg {
+                deliver(jpeg, atNs)
+            } else {
+                self.encodeFailures += 1
+                if self.encodeFailures == 1 {
+                    print("[preview] tap: JPEG encode returned nil — no picture leaves here")
+                }
+            }
             // ⚠ Cleared on the capture queue, because that is the only place it
             // is read. A bool written from two queues is a race that shows up as
             // a preview that stops after one frame.

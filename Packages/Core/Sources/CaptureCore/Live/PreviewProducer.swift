@@ -71,9 +71,23 @@ public final class PreviewProducer: @unchecked Sendable {
     @discardableResult
     public func deliver(endingAtNs endNs: Int64, payload: Data) throws -> Outcome {
         let id = mintId()
-        var record = try coverage.segment(id: id, endingAtNs: endNs,
-                                          completeness: .complete)
-        record.transfer = .present
+        // ⛔ **`transfer: .present` GOES IN, IT IS NOT SET AFTERWARDS.**  This
+        // built the record with `segment()`'s default — `.pending` — and
+        // assigned `.present` on the next line, but `StreamCoverage.segment()`
+        // enforces 8.1i/5.11j itself and threw `previewMayNotBePending` before
+        // returning, so the assignment was unreachable and NOT ONE PREVIEW
+        // SEGMENT WAS EVER PRODUCED.  Every frame, every session, since this
+        // file was written; `LivePreview` swallowed the throw with `try?`, so
+        // the symptom was a black tile and complete silence at both ends.
+        // Found on device 28 Aug 2026.
+        //
+        // ⚠ The unit tests asserted the REFUSAL (`CapturePathTests` — a preview
+        // Capture announced `pending` is refused) and never the happy path, so
+        // a suite that was green throughout was testing the guard that was
+        // firing.
+        let record = try coverage.segment(id: id, endingAtNs: endNs,
+                                          completeness: .complete,
+                                          transfer: .present)
         try peer.announce(record, isPreview: true)
 
         // ⚠ The bytes go out on the preview channel and nothing remembers them.
@@ -89,9 +103,25 @@ public final class PreviewProducer: @unchecked Sendable {
                               // MP4**: `PreviewFrameTap` encodes single frames,
                               // and this said `video/mp4` until 27 Aug.
                               container: PpcpMediaType.previewFrame)
-        try peer.payloadChunk(captureId: id, index: 0,
-                              chunkBytes: PayloadTransferQueue.chunkBytes,
-                              data: payload, channel: channel)
+        // ⛔ **CHUNKED, BECAUSE ONE FRAME IS BIGGER THAN ONE CHUNK.**  This sent
+        // the whole JPEG as index 0, and `ppcp_peer_payload_chunk` refuses
+        // `len > chunk_bytes` (`ppcp_peer.c:1529`).  A 640×360 preview frame at
+        // q0.6 is ~35 kB against a 32 kB chunk, so nearly every frame was
+        // refused — and the ones that squeezed under would have made it look
+        // intermittent rather than broken.  `LivePreview` swallowed the throw,
+        // so the result was a black tile and no error anywhere.  Found on
+        // device 28 Aug 2026.
+        let size = Int(PayloadTransferQueue.chunkBytes)
+        var index: UInt32 = 0
+        var offset = 0
+        while offset < payload.count {
+            let end = min(offset + size, payload.count)
+            try peer.payloadChunk(captureId: id, index: index,
+                                  chunkBytes: PayloadTransferQueue.chunkBytes,
+                                  data: Data(payload[offset ..< end]), channel: channel)
+            index += 1
+            offset = end
+        }
         try peer.payloadEnd(captureId: id,
                             digest: SessionBundleWriter.digest(of: payload),
                             channel: channel)

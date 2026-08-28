@@ -624,15 +624,71 @@ public final class HostLinkSession {
         // PinPointStudio's `no link_bind inside the bind timeout` on 27 Aug, and
         // reads at both ends as preview simply not working.
         if hasPreviewChannel { return true }
-        guard let dialling = transport as? any DiallingPeerLink else { return false }
-        guard let channel = try? await dialling.openChannel(.preview) else { return false }
-        await pump.attachPreview(channel)
-        let told = try? await pump.perform { peer in
-            try peer.openChannel(.preview)
+        // ⛔ **AND `hasPreviewChannel` DOES NOT GUARD THAT, BECAUSE IT IS ONLY
+        // TRUE ONCE THE DIAL HAS FINISHED.** The comment above described the
+        // defect exactly and the code did not prevent it: a caller arriving
+        // while the first dial was still in flight saw `false` and dialled
+        // again.  Which is not hypothetical — it is the ordinary case.  This
+        // application starts the dial in a detached `Task` at session open, and
+        // PinPointStudio sends `stream_open` for preview immediately after
+        // `session_open` (5.11.2 — setup and framing is preview's main use), so
+        // the request lands DURING the dial essentially every time.  One of the
+        // two racing callers then got `false`, `src:camera:wide` was refused
+        // `no_preview_channel`, and nothing ever asked again: no picture, no
+        // error, on a link whose third channel was up a second later.
+        // Diagnosed on device 28 Aug 2026 after two evenings of a black tile.
+        //
+        // ⚠ A second caller now AWAITS the first dial and takes its answer.
+        if let inFlight = previewChannelDial { return await inFlight.value }
+        let dial = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            return await self.dialPreviewChannel()
         }
-        hasPreviewChannel = told != nil
-        return hasPreviewChannel
+        previewChannelDial = dial
+        let opened = await dial.value
+        previewChannelDial = nil
+        return opened
     }
+
+    /// The dial itself. ⚠ Only ever entered through `openPreviewChannel()`,
+    /// which is what makes it happen once.
+    private func dialPreviewChannel() async -> Bool {
+        guard let dialling = transport as? any DiallingPeerLink else {
+            print("[preview] channel: transport cannot dial (\(type(of: transport)))")
+            return false
+        }
+        let channel: any ByteChannel
+        do {
+            channel = try await dialling.openChannel(.preview)
+        } catch {
+            print("[preview] channel: dial failed — \(String(describing: error))")
+            return false
+        }
+        await pump.attachPreview(channel)
+        // ⛔ **THE ENGINE IS NOT TOLD, BECAUSE IN THIS APPLICATION THE TRANSPORT
+        // OWNS `link_bind`.**  `PpcpTransport.openChannel(_:)` mints the link id
+        // (`PpcpLinkIdSource.mint()`) and writes the 2.1d bind frame itself, and
+        // `DevicePeer.setLinkId` is called nowhere — so the engine has no link
+        // id, and `ppcp_peer_open_channel()` refuses on exactly that
+        // (`ppcp_peer.c:899`).  The call was therefore redundant AND could only
+        // ever fail: it asked the engine to emit a second `link_bind` it could
+        // not build for a channel the transport had already bound.
+        //
+        // ⚠ That refusal was read as "there is no preview channel", so
+        // `src:camera:wide` was refused `no_preview_channel` on every connect
+        // while its third channel sat up and working — no picture, no error,
+        // for two days.  Diagnosed on device 28 Aug 2026.
+        //
+        // ⚠ Nothing else in the engine wants the bit: `opened_channels` gates
+        // only `link_bind` emission and `hello`'s auto-bind, never `peer_queue`,
+        // so sending preview payload on channel 2 needs no registration at all.
+        hasPreviewChannel = true
+        print("[preview] channel: open")
+        return true
+    }
+
+    /// The dial in flight, if there is one — see `openPreviewChannel()`.
+    private var previewChannelDial: Task<Bool, Never>?
 
     /// Whether `ENC` 2.1d's third channel is open on this link.
     public private(set) var hasPreviewChannel = false
