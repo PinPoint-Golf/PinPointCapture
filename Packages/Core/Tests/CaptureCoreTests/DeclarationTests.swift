@@ -180,7 +180,16 @@ struct DeclarationTests {
 
             // ⚠ A rate that is a *request* (5.11k), and low enough that the tap
             // is nowhere near the 6.7 ms frame path.
-            #expect(preview.rateMillihertz == 10_000)
+            //
+            // ⛔ **Asserted against the constant, not a literal.** This pinned
+            // 10_000 and had to be edited by hand when the rate moved to 30 fps
+            // on 28 Aug 2026 — which tests nothing except that someone
+            // remembered. What actually matters is that the DECLARED rate and
+            // the rate `PreviewFrameTap` produces at are the same number (I5:
+            // producing faster than declared is an overclaim), and that is
+            // asserted below.
+            #expect(preview.rateMillihertz == PpcpDeclaration.previewRateMillihertz)
+            #expect((preview.rateMillihertz ?? 0) > 0)
         }
     }
 

@@ -851,9 +851,16 @@ public final class PpcpDeclaration: @unchecked Sendable {
 
     /// ⚠ Stable, because a Stream names it and 5.11a/I5 make a Stream's profile
     /// id something the declaration must actually carry.
-    public static let previewProfileId = "640x360@10"
-    /// ~10 fps. ⛔ Not on the 6.7 ms frame path — see the preview tap.
-    static let previewRateMillihertz: Int64 = 10_000
+    public static let previewProfileId = "640x360@30"
+    /// 30 fps. ⛔ Not on the 6.7 ms frame path — see the preview tap.
+    ///
+    /// ⚠ **This and `PreviewFrameTap.intervalNs` are ONE number and must move
+    /// together.** A profile declaring 10 fps while the tap produced 30 would be
+    /// the overclaim I5 exists to prevent, and a consumer has nothing but the
+    /// declaration to size a buffer or judge a gap by. Raised from 10 fps on
+    /// 28 Aug 2026: 10 was chosen when preview was a proof of life, and it is
+    /// too coarse to frame a golf swing against.
+    static let previewRateMillihertz: Int64 = 30_000
 
     /// A profile for a Source that is not a camera: `timing` only.
     ///

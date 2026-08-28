@@ -60,7 +60,7 @@ struct LiveLinkTests {
         let stream = PpcpStreamRecord(
             id: "str:preview:live", sessionId: Self.sessionId,
             sourceId: "src:camera:wide", kind: PpcpStreamKind.preview,
-            profileId: "640x360@10", timebaseId: Self.timebase,
+            profileId: PpcpDeclaration.previewProfileId, timebaseId: Self.timebase,
             continuity: .continuous, openedAtNs: 1_000_000_000)
         try peer.openStream(stream)
         let producer = try PreviewProducer(peer: peer, stream: stream,
@@ -90,7 +90,7 @@ struct LiveLinkTests {
         let stream = PpcpStreamRecord(
             id: "str:preview:big", sessionId: Self.sessionId,
             sourceId: "src:camera:wide", kind: PpcpStreamKind.preview,
-            profileId: "640x360@10", timebaseId: Self.timebase,
+            profileId: PpcpDeclaration.previewProfileId, timebaseId: Self.timebase,
             continuity: .continuous, openedAtNs: 0)
         try peer.openStream(stream)
         let producer = try PreviewProducer(peer: peer, stream: stream,
@@ -112,7 +112,7 @@ struct LiveLinkTests {
         let stream = PpcpStreamRecord(
             id: "str:preview:many", sessionId: Self.sessionId,
             sourceId: "src:camera:wide", kind: PpcpStreamKind.preview,
-            profileId: "640x360@10", timebaseId: Self.timebase,
+            profileId: PpcpDeclaration.previewProfileId, timebaseId: Self.timebase,
             continuity: .continuous, openedAtNs: 0)
         try peer.openStream(stream)
         let producer = try PreviewProducer(peer: peer, stream: stream)

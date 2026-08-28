@@ -175,7 +175,7 @@ public final class LivePreview {
             }
         } catch {
             // ⛔ Recorded, and named ONCE per distinct failure.  A per-frame log
-            // at 10 fps is its own kind of silence.
+            // at 30 fps is its own kind of silence.
             let text = String(describing: error)
             lastError = text
             if reported.insert(text).inserted {

@@ -12,7 +12,7 @@
 //  ⛔ **`offer` runs on the capture queue and must cost almost nothing.** At
 //  150 fps the budget for the whole callback is 6.7 ms and the ring has first
 //  claim on it. So `offer` does two integer comparisons and, at most once every
-//  hundred milliseconds, one `CVPixelBuffer` retain and a `DispatchQueue.async`.
+//  thirty-three milliseconds, one `CVPixelBuffer` retain and a `DispatchQueue.async`.
 //  Everything expensive — downscale, JPEG, the wire — happens on this file's own
 //  queue at `.utility`.
 //
@@ -32,10 +32,15 @@ import CaptureCore
 /// Turns a fraction of the capture stream into small JPEGs, off the frame path.
 public final class PreviewFrameTap: @unchecked Sendable {
 
-    /// ~10 fps. ⚠ A *request* (5.11k): where a capture Stream is open on the same
+    /// 30 fps. ⚠ A *request* (5.11k): where a capture Stream is open on the same
     /// Source, what is actually produced is derived from the active capture
     /// profile, and `AchievedSummary` reports what was really made.
-    public static let intervalNs: Int64 = 100_000_000
+    ///
+    /// ⛔ **The same number as `PpcpDeclaration.previewRateMillihertz`, and it
+    /// must stay that way.** Producing faster than the declared profile is the
+    /// overclaim I5 exists to prevent. Raised from 10 fps on 28 Aug 2026 —
+    /// 10 was enough to prove a picture arrives and too coarse to frame a swing.
+    public static let intervalNs: Int64 = 33_333_333
 
     /// 5.11m's declared frame — small, and the same numbers the preview profile
     /// declares, because a Stream that named one size and produced another would
