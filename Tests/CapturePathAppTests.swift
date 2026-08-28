@@ -303,6 +303,48 @@ struct CapturePathAppTests {
         #expect(recorder.stats.framesAppended == 0, "nothing reached an encoder")
     }
 
+    // MARK: What the encoder actually produced — #17's last unreported number
+
+    /// ⛔ **E1.1 has been open on this one number since 24 August.** Its exit
+    /// criterion names the encoded profile/level; `AVVideoProfileLevelKey` is not
+    /// set, so VideoToolbox chooses; and no run had ever printed what it chose.
+    ///
+    /// ⚠ **The tier is the half that decides whether the bitrate ask is legal.**
+    /// At level 5.1 Main tier caps at 40 Mbit/s and this application asks for a
+    /// provisional 50, so Main-tier-5.1 would mean declaring a level the stream
+    /// exceeds. Two synthetic `hvcC` boxes, one of each tier, because the parse
+    /// is the thing that could be wrong.
+    @Test("The hvcC box yields profile, tier and level — #17")
+    func hevcProfileLevelIsReadFromTheMoov() throws {
+        /// `[size][hvcC][configurationVersion, profile byte, 4 compat, 6 constraint, level]`
+        func moov(tierFlag: UInt8, profileIdc: UInt8, levelIdc: UInt8) -> Data {
+            var box = Data([0, 0, 0, 21])
+            box.append(contentsOf: Array("hvcC".utf8))
+            box.append(1)                                   // configurationVersion
+            box.append((tierFlag << 5) | profileIdc)        // space(2) | tier(1) | idc(5)
+            box.append(contentsOf: [UInt8](repeating: 0, count: 4 + 6))
+            box.append(levelIdc)
+            // Sitting inside a larger container, as it does in a real moov.
+            return Data([0xde, 0xad]) + box + Data([0xbe, 0xef])
+        }
+
+        // 153 / 30 = 5.1. High tier, so a 50 Mbit/s ask is within the level.
+        #expect(RingBufferRecorder.hevcProfileLevel(inMoov: moov(tierFlag: 1, profileIdc: 1,
+                                                                levelIdc: 153))
+                == "HEVC Main, High tier, level 5.1 (profile_idc 1, tier_flag 1, level_idc 153)")
+        // ⛔ The case that would be a finding: Main tier at the same level.
+        #expect(RingBufferRecorder.hevcProfileLevel(inMoov: moov(tierFlag: 0, profileIdc: 2,
+                                                                levelIdc: 153))
+                == "HEVC Main 10, Main tier, level 5.1 (profile_idc 2, tier_flag 0, level_idc 153)")
+
+        // ⛔ **No box, and a truncated one, yield nothing rather than a guess.**
+        // The whole value of this field is that nobody has measured it, so a
+        // fabricated number is worse than an absent one.
+        #expect(RingBufferRecorder.hevcProfileLevel(inMoov: Data([0x00, 0x01, 0x02])) == nil)
+        #expect(RingBufferRecorder.hevcProfileLevel(
+            inMoov: Data(Array("hvcC".utf8) + [1, 0x21, 0, 0])) == nil)
+    }
+
     /// ⚠ **Suspect the instrument first.** `maxInterArrivalNs` is the number the
     /// E1.1 exit criterion rests on — it is what separates a steady 150 fps from
     /// an average one — so the arithmetic is tested before any device run is

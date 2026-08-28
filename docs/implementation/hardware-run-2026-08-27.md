@@ -4,7 +4,8 @@
 |---|---|
 | Date | 27 August 2026 |
 | Purpose | The list of things that genuinely need a device, and nothing else on it |
-| Status | Not run. Everything below is built and green on the simulator |
+| Status | ⚠ **Partly run, 28 Aug.** Test 2's first half **passes** — preview reaches Studio at connect ([#108](https://github.com/PinPoint-Golf/PinPointCapture/issues/108), [#107](https://github.com/PinPoint-Golf/PinPointCapture/issues/107) closed). ⛔ **Tests 1, 2's arm transition, and 3–8 are still unrun**, and seven open issues turn on them — `mvp-online.md` §7.2 |
+| ⛔ Before you start | **`libppcp@a9785bb` or later**, or preview kills capture after thirteen seconds |
 
 **Why this list is short.** Almost everything now runs on this Mac: `make conform` drives the
 shipping composition against `ppcp-sim`, and `make interop-app` drives it against a live
@@ -53,10 +54,17 @@ this is meaningful.
 
 ---
 
-## 2. Preview reaches Studio — MVP (b), and the one thing PPS is waiting on
+## 2. Preview reaches Studio — MVP (b)
 
-**Nobody has ever opened a `preview` channel to PinPointStudio.** Their side was broken until this
-afternoon and is now fixed; we are its first real test, and our side has never sent a frame.
+✅ **Steps 1–2 passed on 28 August** — a picture in Settings → Cameras with nothing pressed, 600+
+segments, `tapped == sent`, zero decode failures. ⛔ **Step 3, the arm transition, is still unrun**
+and is now [#112](https://github.com/PinPoint-Golf/PinPointCapture/issues/112). Run it anyway as a
+regression check: preview had **five** stacked defects and the last one was scene-dependent.
+
+⚠ **Also still wanted from this test, and never captured:** the `RingStats` figures with preview
+running and again with Studio's Cameras panel closed. A difference is a 5.11i violation — preview
+costing a captured frame — and [#113](https://github.com/PinPoint-Golf/PinPointCapture/issues/113)
+is separately asking why the host assembled 828 frames against ~1500 announced.
 
 ⛔ **Rewritten this evening against PinPointStudio's specification** ([#108](https://github.com/PinPoint-Golf/PinPointCapture/issues/108)).
 Preview is no longer anything to do with arming: the host asks for it immediately after
@@ -184,6 +192,27 @@ suggest the clocks are being compared in the wrong timebase.
 
 ⚠ Some balls may show `not yet` — Studio's corroboration may have excluded our Candidate, in which
 case no Shot was arbitrated over it and there is nothing to subtract. That is correct behaviour.
+
+---
+
+## 6a. A real club strike mints a Shot — [#21](https://github.com/PinPoint-Golf/PinPointCapture/issues/21), E2.1
+
+⚠ **Added 28 August.** `mvp-online.md` §7.1 found this uncovered: requirement (c) is *"after every
+shot **and every candidate**"*, and E2.1 — *a real club strike at a real mat mints a Shot with an
+honest instant* — has never been run, never been sequenced in the MVP's order, and is what tests 3
+and 6 are silently assuming works.
+
+⚠ It is not a separate session: **tests 3, 5 and 6 already hit balls.** What is missing is
+*recording the answer to E2.1's own question* while you are there.
+
+**Pass:** every ball hit produces a Candidate, and its instant is plausible — the shot row appears
+against the swing you just made, not one from a minute ago or one that was a door closing.
+
+⛔ **Worth counting false positives explicitly.** `AVAudioSession` is `.measurement` with AGC/EQ/NS
+off and the onset refinement is sample-indexed, and **none of that has ever run against a real
+range**. A count of Candidates against a count of actual swings is the number
+[#22](https://github.com/PinPoint-Golf/PinPointCapture/issues/22) (E2.2) will need, and nobody has
+one.
 
 ---
 

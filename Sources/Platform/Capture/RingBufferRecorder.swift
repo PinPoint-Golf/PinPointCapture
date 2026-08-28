@@ -82,6 +82,20 @@ public struct RingStats: Sendable, Hashable {
     /// assume.
     public var monotonicityViolations: Int = 0
 
+    /// ⛔ **What VideoToolbox actually chose**, read out of the encoded stream
+    /// rather than asked for. E1.1's exit criterion names the encoded
+    /// profile/level and **no run has ever printed it** — `AVVideoProfileLevelKey`
+    /// is not set, so the encoder decides and nothing here contradicted it.
+    ///
+    /// ⚠ **The tier is the decisive half.** HEVC's bitrate ceiling is a property
+    /// of profile *and tier*: at level 5.1 Main tier caps at 40 Mbit/s, and this
+    /// application asks for a provisional **50** ([#20](https://github.com/PinPoint-Golf/PinPointCapture/issues/20)).
+    /// So either VideoToolbox picked High tier and the request is honoured, or
+    /// it picked Main and the ask exceeds the level it declared — and a decoder
+    /// is entitled to believe the declaration. **`nil` means the run did not
+    /// find out**, which is where this stood until 28 Aug 2026.
+    public var encodedProfileLevel: String?
+
     // MARK: Where the gaps are, not just how big the worst one was (#101)
 
     /// ⛔ **A maximum answers "how bad" and refuses to answer "when", and "when"
@@ -525,6 +539,11 @@ extension RingBufferRecorder: AVAssetWriterDelegate {
                          report: AVAssetSegmentReport?) {
         guard type != .initialization else {
             initialisationSegment = data
+            // ⛔ E1.1's last unreported number. The initialisation segment is the
+            // `moov`, and the `hvcC` inside it is the encoder's own declaration
+            // of what it produced — the only statement of profile/tier/level that
+            // is not a guess about what we asked for.
+            stats.encodedProfileLevel = Self.hevcProfileLevel(inMoov: data)
             return
         }
 
@@ -578,6 +597,52 @@ extension RingBufferRecorder: AVAssetWriterDelegate {
             stats.fragmentsEvicted += 1
             removeFile(of: evicted)
         }
+    }
+}
+
+// MARK: - What the encoder actually produced (#17)
+
+extension RingBufferRecorder {
+
+    /// The HEVC profile, tier and level the encoder declared, read out of the
+    /// `hvcC` box in an initialisation segment.
+    ///
+    /// ⚠ **A scan for the box type, not a walk of the box tree**, and that is a
+    /// deliberate trade: this is a diagnostic readout on a path that already
+    /// holds the whole `moov` in memory, `hvcC` appears exactly once in it, and a
+    /// full ISO-BMFF walk would be a great deal of code to reach the same twelve
+    /// bytes. ⛔ It returns `nil` rather than guessing if the box is absent or
+    /// short — a wrong number here is worse than no number, because the whole
+    /// point of the field is that nobody has measured it.
+    ///
+    /// Layout, ISO/IEC 14496-15 §8.3.3.1, from the first payload byte:
+    /// `[0]` configurationVersion · `[1]` profile_space(2) | tier_flag(1) |
+    /// profile_idc(5) · `[2…5]` compatibility flags · `[6…11]` constraint flags ·
+    /// `[12]` level_idc, which is the level times thirty.
+    static func hevcProfileLevel(inMoov data: Data) -> String? {
+        let marker = Array("hvcC".utf8)
+        let bytes = [UInt8](data)
+        guard let box = bytes.firstRange(of: marker) else { return nil }
+        let payload = box.upperBound
+        guard bytes.count >= payload + 13 else { return nil }
+
+        let profileIdc = bytes[payload + 1] & 0b0001_1111
+        let tierFlag = (bytes[payload + 1] >> 5) & 0b1
+        let levelIdc = bytes[payload + 12]
+
+        let profile: String
+        switch profileIdc {
+        case 1: profile = "Main"
+        case 2: profile = "Main 10"
+        case 3: profile = "Main Still Picture"
+        case 4: profile = "Range Extensions"
+        default: profile = "profile_idc \(profileIdc)"
+        }
+        let tier = tierFlag == 0 ? "Main tier" : "High tier"
+        // level_idc is thirty times the level, so 153 is 5.1.
+        let level = String(format: "%.1f", Double(levelIdc) / 30.0)
+        return "HEVC \(profile), \(tier), level \(level) "
+             + "(profile_idc \(profileIdc), tier_flag \(tierFlag), level_idc \(levelIdc))"
     }
 }
 

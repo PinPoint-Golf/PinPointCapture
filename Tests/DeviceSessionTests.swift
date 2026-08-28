@@ -109,6 +109,7 @@ struct DeviceSessionTests {
         frag: write failed        \(stats.fragmentsDroppedWriteFailed)
         frag: empty               \(stats.fragmentsDroppedEmpty)
         non-monotonic             \(stats.monotonicityViolations)
+        ⛔ encoded profile/level   \(stats.encodedProfileLevel ?? "NOT REPORTED")
         held in ring              \(stats.fragmentsInRing(capacity: 20))/20
         extraction                \(extraction.isAbsent ? "ABSENT" : "present, \(extraction.frameTimestampsNs.count) frames")
 
@@ -125,6 +126,14 @@ struct DeviceSessionTests {
         #expect(stats.fragmentsEvicted == stats.fragmentsWritten - 20)
         #expect(stats.framesDroppedNotRetaining == 0)
         #expect(stats.monotonicityViolations == 0)
+        // ⛔ **E1.1's last unreported number**, and the reason it stayed open
+        // through two hardware sessions. `AVVideoProfileLevelKey` is unset, so
+        // VideoToolbox chooses; this asserts the run FOUND OUT what it chose,
+        // not that the answer is any particular one. ⚠ The answer itself is a
+        // reading for a person: Main tier at level 5.1 caps at 40 Mbit/s against
+        // a provisional 50 Mbit/s ask (#20).
+        #expect(stats.encodedProfileLevel != nil,
+                "the encoder's own hvcC declaration — E1.1's exit criterion")
         // ⚠ Two frame periods. One whole missed frame is the smallest gap that
         // costs an image, and this is the assertion the mean cannot make.
         #expect(maxGapMs < periodMs * 2,
