@@ -830,27 +830,70 @@ actor PpcpListener: PeerTransportListener {
     private var waiters: [AcceptWaiter] = []
     private var stopped = false
 
+    /// ⛔ **Loopback only, for the wired path** — see `WiredPresenceListener`.
+    /// The default is the all-interfaces bind every other caller wants; on a
+    /// cable the only reader is the usbmux daemon on this device, and a
+    /// LAN-reachable PPCP listener there would pull in the local-network
+    /// permission for nothing and advertise a pairing this device is not
+    /// advertising (`RV` 3.5d).
+    private let loopbackOnly: Bool
+
+    /// The identity `start()` registered with the platform.
+    ///
+    /// ⛔ **The wired path cannot work without reading this back.** The listener
+    /// accepts exactly the one identity it registered (the finding above), so on
+    /// a direct path the device has to *publish* it and the host has to offer it
+    /// back verbatim (`RV` 5.3b, run client-side — design §5.2). ⚠ 17 raw octets,
+    /// generally not valid UTF-8: 5.3f forbids transcoding, text validation and
+    /// truncation anywhere on the way out.
+    private var registered: Data?
+
     init(credentials: any PpcpCredentials,
          channels: [PpcpChannel] = PpcpChannel.required,
          port: UInt16 = 0,
-         bindTimeout: Duration = .seconds(5)) {
+         bindTimeout: Duration = .seconds(5),
+         loopbackOnly: Bool = false) {
         self.credentials = credentials
         self.required = channels
         self.requestedPort = port
         self.bindTimeout = bindTimeout
+        self.loopbackOnly = loopbackOnly
     }
+
+    /// `nil` before `start()`. See `registered`.
+    func registeredIdentity() -> Data? { registered }
 
     func start() async throws -> UInt16 {
         // ⚠ One listener, one port, N connections. The channels of a link differ
         // by which stream they are, not by where they land — a second port would
         // be a second thing for a pairing code to carry and a second thing for a
         // firewall to block.
+        //
+        // ⛔ **And exactly one identity, drawn here, for the life of this
+        // listener session.** `RV` 5.3a says fresh per *connection*; the platform
+        // gives a server no way to honour that (it registers one (key, identity)
+        // pair up front), so on the direct path of design §5.5 this is a
+        // per-listener-session draw with an erratum proposed. Do not "fix" it by
+        // re-drawing per connection — there is no interface to draw into.
         let identity = try credentials.nextPskIdentity()
+        registered = identity
         let parameters = PpcpTlsProfile.parameters(tlsKey: credentials.tlsKey,
                                                    identity: identity,
                                                    isListener: true)
+        if loopbackOnly {
+            // ⛔ `requiredLocalEndpoint`, which is what pins the *local* address
+            // of the bind — not `NWListener(using:on:)`, which fixes only the
+            // port and leaves the address `0.0.0.0`.
+            parameters.requiredLocalEndpoint =
+                .hostPort(host: .ipv4(.loopback),
+                          port: requestedPort == 0
+                              ? .any
+                              : (NWEndpoint.Port(rawValue: requestedPort) ?? .any))
+        }
         let listener: NWListener
-        if requestedPort == 0 {
+        if requestedPort == 0 || loopbackOnly {
+            // ⚠ With `requiredLocalEndpoint` set, the port comes from it; passing
+            // `on:` as well would be two sources for one number.
             listener = try NWListener(using: parameters)
         } else {
             guard let port = NWEndpoint.Port(rawValue: requestedPort) else {

@@ -158,6 +158,23 @@ public final class HostLinkSession {
     /// arrives after the session is established, which 2.1d calls the expected
     /// case, so the link cannot be a value the constructor consumed and dropped.
     private let transport: any PeerTransport
+    /// ⛔ **The wired path inverts `RV` 2d, and this flag is the whole of it.**
+    ///
+    /// usbmux is host→device only (design §3), so on a cable this device listens
+    /// and PinPointStudio dials. The dialler is the initiator, so **the host sends
+    /// `hello` and this peer must not**: `libppcp` auto-replies `hello_accept`
+    /// from `peer_on_hello`, which is what raises `.connected` here. A `hello`
+    /// from this side as well would be two initiators on one link.
+    ///
+    /// ⚠ It follows that `declare`, the sync timebase and the connect burst all
+    /// move from `open()` to the `.connected` event — see `completeOpening()`.
+    /// On the WiFi path none of this changes: `ReconnectCoordinator` still dials,
+    /// always, and this flag is `false` there.
+    ///
+    /// ⛔ **`setLinkId()` and `openChannel()` are also never called on this
+    /// path.** `ENC` 2.1a puts the `link_id` in the dialler's hands and the host
+    /// already wrote `link_bind` on every stream before this type existed.
+    private let wired: Bool
     private let peer: DevicePeer
     private let pump: PeerLinkPump
     /// ⚠ `weak`, and `AppModel` owns both ends: the model holds the session and
@@ -221,15 +238,21 @@ public final class HostLinkSession {
     ///   harness. ⚠ A simulator enumerates no camera, so `ppcpDeclarationInput`
     ///   throws there and a handshake could otherwise only ever be exercised on
     ///   hardware — which would leave this seam's first run on a phone.
+    /// - Parameter listener: ⛔ **`true` only on the WIRED path, where this
+    ///   device is the responder** — see `wired` below and
+    ///   `WiredPresenceListener`. Everywhere else this device dialled, and `RV`
+    ///   2d makes the dialler the initiator.
     public init(transport: any PeerTransport,
                 sessionId: String,
                 hostDisplayName: String?,
                 device: any CaptureDevice,
-                declaration: PpcpDeclaration? = nil) throws {
+                declaration: PpcpDeclaration? = nil,
+                listener: Bool = false) throws {
         self.sessionId = sessionId
         self.hostDisplayName = hostDisplayName
         self.security = transport.security
         self.transport = transport
+        self.wired = listener
 
         let peerId = PeerIdentity.current
         // ⛔ The three arguments the live path needs and the bundle path does not:
@@ -240,6 +263,9 @@ public final class HostLinkSession {
         self.peer = try DevicePeer(
             peerId: peerId,
             role: .capture,
+            // ⛔ `RV` 2d, inverted. On the cable the HOST dials, so this peer is
+            // the listener and must not behave as an initiator.
+            listener: listener,
             clock: PpcpDeviceClock { PpcpTimebases.now(timebaseId: $0) },
             health: { DeviceHealthService.current() },
             syncTimebase: PpcpTimebases.captureId)
@@ -265,6 +291,17 @@ public final class HostLinkSession {
     public func open() async {
         await pump.start()
         do {
+            // ⛔ **On the wired path this device sends nothing here.** The host
+            // is the initiator (`RV` 2d inverted — see `wired`), so everything
+            // below waits for its `hello`, which arrives as `.connected` once
+            // `libppcp` has auto-replied `hello_accept`. Sending `declare` or a
+            // `sync_probe` first would be this peer talking before the version
+            // it must speak has been agreed.
+            guard wired == false else {
+                lastSeen = Date()
+                startDrainingEvents()
+                return
+            }
             let declaration = self.declaration
             try await pump.perform { peer in
                 try peer.hello()
@@ -286,6 +323,34 @@ public final class HostLinkSession {
             phase = .failed(String(describing: error))
             await pump.stop(.failed("handshake did not complete"))
         }
+    }
+
+    /// The wired path's other half of `open()`, run when the host's `hello` has
+    /// arrived and `libppcp` has answered it.
+    ///
+    /// ⚠ **Deliberately not merged with `open()`.** On the dialling path the same
+    /// three calls are made *before* `hello_accept` comes back, because a dialler
+    /// may pipeline them; on this path there is nothing to pipeline behind — the
+    /// version is not agreed until the counterpart's `hello` lands, and a
+    /// `declare` sent before it would be a snapshot in a version nobody chose.
+    private func completeOpening() async {
+        guard wired, phase == .connecting else { return }
+        let declaration = self.declaration
+        do {
+            try await pump.perform { peer in try peer.declare(declaration) }
+            phase = .established
+        } catch {
+            phase = .failed(String(describing: error))
+            await pump.stop(.failed("declaration did not go out"))
+            return
+        }
+        // As on the dialling path: best-effort, and a link without it is still a
+        // link.
+        try? await pump.perform { peer in
+            try peer.addSyncTimebase(PpcpTimebases.captureId)
+            try peer.syncTrigger(.connect)
+        }
+        startSyncTicking()
     }
 
     // MARK: Sync (E3.2)
@@ -363,6 +428,9 @@ public final class HostLinkSession {
         case .connected:
             // ⛔ Through `perform`, and off the peer rather than the payload.
             negotiatedVersion = try? await pump.perform { $0.negotiatedVersion }
+            // ⚠ On the wired path this is the first moment there is an agreed
+            // version to declare under. A no-op on the dialling path.
+            await completeOpening()
 
         case .declared(let peerId):
             counterpartPeerId = peerId

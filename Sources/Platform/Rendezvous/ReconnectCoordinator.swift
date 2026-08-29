@@ -10,6 +10,19 @@
 //  `PSK_IDENTITY_NOT_FOUND`, alert 115. 3.5e therefore puts the advertising on
 //  the host. **There is no listener in this file and there must never be one.**
 //
+//  ⚠ **One exception exists, it is in another file, and it does not weaken the
+//  rule above.** On a USB cable the direction is not a preference: usbmux is
+//  host→device only, so the host dials and this device listens, which inverts
+//  `RV` 2d. That path is `Sources/Platform/Network/WiredPresenceListener.swift`,
+//  and it is reachable only because identity resolution moves to the client —
+//  the device publishes the identity it registered, and the host verifies it
+//  under 5.3b before dialling. That is the one thing 3.5d's measured limitation
+//  does not forbid. **Everything above stays true on the WiFi/discovery path,
+//  which is the only path this file is about**: there the host advertises, this
+//  device browses and dials, always, and a listener here would still be
+//  unreachable for the reason recorded above. See
+//  `PinPointStudio/docs/design/wired_transport_design.md` §3 and §5.
+//
 //  ⛔ **3.4c is enforced in `PpcpBrowser.browse` and NOT re-checked here, on
 //  purpose.** A browsing peer must not connect to an instance it cannot resolve;
 //  the filter lives inside the browse so that no call site — including this one —

@@ -17,6 +17,9 @@
 
 import Foundation
 import Observation
+#if canImport(UIKit)
+import UIKit
+#endif
 import CaptureCore
 
 @MainActor
@@ -589,6 +592,7 @@ public final class AppModel {
                 retention: audioRetention.policy)
             recording = session
             recordingError = nil
+            updateIdleTimer()
 
             // ⛔ The link's Streams are the recording session's own records, so
             // the wire and the bundle name one `profile_id` and one `opened_at`.
@@ -627,18 +631,24 @@ public final class AppModel {
     /// dialling (`RV` §4's order is normative and lives there); this owns what
     /// happens *after* a socket exists. It is also the seam a test uses to hand
     /// in a pipe instead of a network.
+    /// - Parameter listener: ⛔ **`true` only for a link the HOST dialled**, which
+    ///   today means the cable and nothing else (`RV` 2d inverts — design §3).
+    ///   The device then sends no `hello`; `libppcp` answers the host's.
     public func connect(transport: any PeerTransport,
                         sessionId: String,
                         hostDisplayName: String?,
-                        declaration: PpcpDeclaration? = nil) async {
+                        declaration: PpcpDeclaration? = nil,
+                        listener: Bool = false) async {
         await disconnect()
         do {
             let session = try HostLinkSession(transport: transport,
                                               sessionId: sessionId,
                                               hostDisplayName: hostDisplayName,
                                               device: device,
-                                              declaration: declaration)
+                                              declaration: declaration,
+                                              listener: listener)
             link = session
+            updateIdleTimer()
             // ⛔ Commands come back this way. State is still polled — see
             // `startHostLinkPolling` — and the two are deliberately separate.
             session.delegate = self
@@ -689,6 +699,7 @@ public final class AppModel {
         stopPreview()
         await link.close(reason)
         self.link = nil
+        updateIdleTimer()
         hostLink = HostLink(state: .none)
         hostLinkError = nil
     }
@@ -701,6 +712,11 @@ public final class AppModel {
         // radio on `RV` §3's convenience path and could only produce a link the
         // next suspension drops again.
         stopSearchingForHost()
+        // ⛔ **And the wired listeners with it.** A suspended app cannot complete
+        // a handshake, so a presence record it is still serving would send the
+        // host to a port that accepts a connection and then says nothing —
+        // which is `PpcpListener`'s bind timeout, five seconds of it, per dial.
+        await stopWiredListening()
         guard link != nil else { return }
 
         // ⛔ **An open recording keeps its link.** 7.4d — losing the host must
@@ -753,6 +769,12 @@ public final class AppModel {
     /// ⛔ Idempotent. Two searches would be two browses and, worse, two dials to
     /// the same host.
     public func beginSearchingForHost() {
+        // ⛔ **The cable is not the radio, and this is not part of the browse.**
+        // It is here because this is the moment §3 already decided on — the app
+        // became active with no link up — and because a second entry point for
+        // the same moment is a second thing to forget. `beginWiredListening()`
+        // guards itself; a device holding no pairing publishes nothing.
+        beginWiredListening()
         guard reconnectTask == nil, link == nil else { return }
         isSearchingForHost = true
         reconnectDiagnosis = nil
@@ -826,6 +848,128 @@ public final class AppModel {
     private func searchEnded() {
         reconnectTask = nil
         isSearchingForHost = false
+    }
+
+    // MARK: The wired path (design §5, §6)
+
+    /// The presence listener and the per-pairing `PpcpListener`s behind it.
+    /// ⛔ Owned here for the same reason `link` is: a listener that dies with a
+    /// view hierarchy is a listener that dies on a screen rotation.
+    private var wiredListener: WiredPresenceListener?
+    private var wiredTask: Task<Void, Never>?
+
+    /// Why wired is unavailable, when someone goes looking.
+    ///
+    /// ⛔ **A diagnosis, never a banner** (`RV` 3.6a, design §6.2). An unplugged
+    /// phone, a charge-only cable and a taken presence port are ordinary states of
+    /// the world, and the shape of this is `reconnectDiagnosis` — deliberately,
+    /// because it is the same kind of statement about the same kind of silence.
+    public private(set) var wiredDiagnosis: String?
+
+    /// Publishes this device on the cable: one `PpcpListener` per held pairing,
+    /// then the presence record naming them (C3/C5).
+    ///
+    /// ⛔ **Idempotent, and it holds no opinion about whether a cable exists.**
+    /// iOS gives an app no way to tell a data-capable host from a dumb charger —
+    /// `UIDevice.batteryState == .charging` is true for a wall socket and there is
+    /// no public API behind it (design §6.1). So this device simply listens on
+    /// loopback and lets the host, which *can* see a usbmux `Attached`, decide.
+    /// Nothing here is spent on a radio and nothing is advertised.
+    public func beginWiredListening() {
+        guard wiredListener == nil, link == nil else { return }
+        // `RV` 4.4d — untrusted display text, and it is ours. ⚠ On iOS 16+ this
+        // is the model name for an app without the entitlement, which is exactly
+        // the amount of information this record should carry.
+        #if canImport(UIKit)
+        let label = UIDevice.current.name
+        #else
+        let label: String? = nil
+        #endif
+        let listener = WiredPresenceListener(displayLabel: label)
+        wiredListener = listener
+        wiredTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let held: [WiredPresenceListener.HeldPairing]
+            do {
+                // ⛔ 5.1c — re-derived from `PRK` on each start, never stored.
+                held = try PairingSecretStore.pairings().compactMap { row in
+                    guard let keys = try PairingSecretStore.keys(forSession: row.sessionId) else {
+                        return nil
+                    }
+                    return WiredPresenceListener.HeldPairing(sessionId: row.sessionId,
+                                                             hostDisplayName: row.displayName,
+                                                             keys: keys)
+                }
+            } catch {
+                // ⛔ *Erratum E56* again — a store that could not be read is not a
+                // store that is empty, and the two must not be conflated here
+                // either.
+                self.wiredDiagnosis = String(describing: error)
+                self.wiredListener = nil
+                return
+            }
+            guard Task.isCancelled == false else { return }
+            do {
+                _ = try await listener.start(pairings: held) { [weak self] wired in
+                    await self?.adoptWiredLink(wired)
+                }
+                self.wiredDiagnosis = nil
+            } catch {
+                // ⚠ Including a taken presence port, which is survivable by
+                // design: the host reads a record it cannot parse and treats this
+                // device as not wired.
+                self.wiredDiagnosis = String(describing: error)
+                await listener.stop()
+                self.wiredListener = nil
+            }
+        }
+    }
+
+    /// ⚠ Idempotent, and safe to call when nothing is up.
+    public func stopWiredListening() async {
+        wiredTask?.cancel()
+        wiredTask = nil
+        guard let wiredListener else { return }
+        self.wiredListener = nil
+        await wiredListener.stop()
+    }
+
+    /// A link PinPointStudio dialled over the cable.
+    ///
+    /// ⛔ **`listener: true`** — the host is the initiator here, so this device
+    /// sends no `hello` (`RV` 2d inverted; see `HostLinkSession.wired`).
+    private func adoptWiredLink(_ wired: WiredPresenceListener.WiredLink) async {
+        // ⛔ **Design §6.1 rule 1: never a second link, on either transport.** The
+        // incumbent has the sync history, and a rule with no comparison in it
+        // cannot oscillate.
+        guard link == nil else {
+            await wired.transport.close(.cancelled)
+            return
+        }
+        stopSearchingForHost()
+        await connect(transport: wired.transport,
+                      sessionId: wired.sessionId,
+                      hostDisplayName: wired.hostDisplayName,
+                      listener: true)
+        // ⛔ The record names ports that are now serving a link, and §6.1 rule 1
+        // says there will not be a second one. Stop publishing until the link
+        // ends; `beginSearchingForHost()` starts it again on the next activation.
+        await stopWiredListening()
+    }
+
+    /// ⛔ **iOS blocks USB data on a device that has been locked for over an
+    /// hour** (USB Restricted Mode, design §9.5), and this app never touched the
+    /// idle timer — so at a range a wired session died for no visible reason, and
+    /// the first symptom was a dropped link rather than anything naming the cause.
+    ///
+    /// ⚠ It is owed to the capture path independently of the cable: capture needs
+    /// the foreground and the screen, and a phone that auto-locks mid-session
+    /// stops recording. The link is included as well as the recording because
+    /// backgrounding drops the link, and a dropped wired link is expensive.
+    private func updateIdleTimer() {
+        #if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = (recording != nil || link != nil)
+        #endif
     }
 
     /// Refreshes the observable link state from the session. ⚠ Called on the
@@ -1098,6 +1242,7 @@ public final class AppModel {
     private func stopRecording() {
         guard let session = recording else { return }
         recording = nil
+        updateIdleTimer()
         candidateCount = 0
         shotCount = 0
         do {
