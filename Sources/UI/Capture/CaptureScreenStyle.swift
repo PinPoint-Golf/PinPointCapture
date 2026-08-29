@@ -65,10 +65,20 @@ enum CaptureScreenStyle {
     }
 
     /// SF Symbol for the host chip. From the handoff's symbol list only.
-    static func symbol(for hostState: HostLinkState) -> String {
+    /// ⛔ **THE GLYPH MUST NOT CLAIM Wi-Fi WHEN THE LINK IS ON A CABLE.** Until
+    /// 29 Aug 2026 this returned `wifi` for every live state, so a phone
+    /// connected over usbmux showed a Wi-Fi symbol — not merely uninformative
+    /// but *wrong*, and wrong in the one place a golfer looks to see how the
+    /// phone is talking to the Studio.
+    ///
+    /// ⚠ `transport` is nil when there is no link, and the not-connected states
+    /// below never read it — a dead link has no transport to draw.
+    static func symbol(for hostState: HostLinkState,
+                       transport: HostLinkTransport? = nil) -> String {
         switch hostState {
         case .none, .lost: "wifi.slash"
-        case .pairing, .connected, .weak, .resyncing: "wifi"
+        case .pairing, .connected, .weak, .resyncing:
+            transport == .cable ? "cable.connector" : "wifi"
         }
     }
 

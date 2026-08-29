@@ -272,7 +272,8 @@ struct ArmedScreen: View {
         case .looking, .notFound: "antenna.radiowaves.left.and.right"
         case .nothingHeld: "iphone"
         case .diagnosis: "exclamationmark.triangle.fill"
-        case nil: CaptureScreenStyle.symbol(for: hostLink.state)
+        case nil: CaptureScreenStyle.symbol(for: hostLink.state,
+                                            transport: hostLink.transport)
         }
     }
 
