@@ -819,7 +819,12 @@ public final class HostLinkSession {
                      clock: clockAgreement, lastSeen: lastSeen,
                      // REQ-STATE-5 — B3's *Gap reported to host* and *Shots in
                      // the gap* have rendered "none" since they were written.
-                     gap: gap)
+                     gap: gap,
+                     // ⚠ `wired` is the LISTENER flag, and that is the honest
+                     // source: this device cannot see a cable, but it can see
+                     // that the host dialled IT — which only happens over
+                     // usbmux (`RV` 2d inverted). Not a guess about hardware.
+                     transport: wired ? .cable : .wifi)
         case .closed, .failed:
             HostLink(state: .lost, hostName: hostDisplayName,
                      hostVersion: negotiatedVersion, lastSeen: lastSeen)

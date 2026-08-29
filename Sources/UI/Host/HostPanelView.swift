@@ -331,6 +331,14 @@ public struct HostPanelView: View {
 
     private var connectedTelemetry: [HostTelemetryLine] {
         [
+            // Design §6.1 — which path this link is actually on, shown on the
+            // device for the same reason the host shows it: a cable that
+            // silently changed nothing is otherwise invisible from either end.
+            // ⚠ The cable is toned `.accent` because it is the better path, not
+            // because Wi-Fi is a fault — Wi-Fi is the ordinary case and reads
+            // neutral.
+            HostTelemetryLine("Connection", link.transport?.displayName ?? "—",
+                              tone: link.transport == .cable ? .accent : nil),
             HostTelemetryLine.clockAgreement(link.clock),
             HostTelemetryLine("Drift", link.clock?.driftText ?? "—"),
             HostTelemetryLine("Checked on last impact",

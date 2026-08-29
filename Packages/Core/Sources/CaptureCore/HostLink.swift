@@ -209,6 +209,26 @@ public struct ClockAgreement: Sendable, Hashable {
     public var driftText: String { "\(Int(driftPPM.rounded())) ppm, filtered" }
 }
 
+/// Which way the link to the host actually runs.
+///
+/// ⚠ **The device cannot infer this from the hardware.** iOS gives an app no way
+/// to tell a data-capable host from a dumb charger — `UIDevice.batteryState`
+/// reads `.charging` for a wall plug — so this is not a guess about the cable.
+/// It is a fact about the *link*: only a host-dialled link arrives over usbmux,
+/// and today that means the cable and nothing else (`RV` 2d inverted).
+public enum HostLinkTransport: Sendable, Hashable {
+    case wifi
+    case cable
+
+    /// Two words at most; a golfer glancing from the mat has to read a state.
+    public var displayName: String {
+        switch self {
+        case .wifi:  "Wi-Fi"
+        case .cable: "Cable"
+        }
+    }
+}
+
 public struct HostLink: Sendable {
     public var state: HostLinkState
     public var hostName: String?
@@ -217,10 +237,15 @@ public struct HostLink: Sendable {
     public var throughputMbitPerSecond: Double?
     public var lastSeen: Date?
     public var gap: GapWindow?
+    /// ⛔ `nil` means "no link, so no transport" — NOT Wi-Fi. A device that is
+    /// not connected has not observed a path, and rendering that as the radio
+    /// would assert something never measured.
+    public var transport: HostLinkTransport?
 
     public init(state: HostLinkState, hostName: String? = nil, hostVersion: String? = nil,
                 clock: ClockAgreement? = nil, throughputMbitPerSecond: Double? = nil,
-                lastSeen: Date? = nil, gap: GapWindow? = nil) {
+                lastSeen: Date? = nil, gap: GapWindow? = nil,
+                transport: HostLinkTransport? = nil) {
         self.state = state
         self.hostName = hostName
         self.hostVersion = hostVersion
@@ -228,5 +253,6 @@ public struct HostLink: Sendable {
         self.throughputMbitPerSecond = throughputMbitPerSecond
         self.lastSeen = lastSeen
         self.gap = gap
+        self.transport = transport
     }
 }
