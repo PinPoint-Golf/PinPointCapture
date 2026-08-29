@@ -1373,8 +1373,29 @@ extension AppModel: HostLinkSessionDelegate {
     }
 
     public func hostLinkDidRestoreLink(_ link: HostLinkSession) {
-        // ⛔ E3.5. `session_resume` with a fresh sync burst before bulk resumes,
-        // and the gap reported explicitly. Not built.
+        // ⛔ **NOTHING HERE, AND THAT IS THE DESIGN — read this before adding
+        // anything.** This body said "Not built" until 29 Aug 2026, beside a
+        // reconnect sequence that `0485bd3` had already built somewhere else.
+        // The comment outlived the work it described and cost a planning round.
+        //
+        // `MSG` 4.3's sequence lives in `HostLinkSession.startSyncTicking`,
+        // which calls `HostLinkDriver.resume` while `isAwaitingResyncBurst`:
+        // `session_resume` first (4.3a, never `session_open`), then a fresh sync
+        // burst, then `publishRelations` (6.1f), and only then
+        // `queue.resumeAfterLinkLoss()`. 4.3b requires exactly that order,
+        // because payload sent against the relation that drifted through the
+        // outage is read at the wrong instant.
+        //
+        // ⚠ **It cannot live here**, and that is the substantive reason rather
+        // than a tidiness one: `resume` returns `false` while the burst is still
+        // converging and must be called again — the tick does that every 100 ms,
+        // and a one-shot delegate callback fires once. The gap a person reads is
+        // `HostLinkSession.gapOnRestore`, already computed before this is called.
+        //
+        // ⚠ So the delegate exists for `AppModel` to react to the link coming
+        // back, and today it has nothing to react with: capture never stopped
+        // (7.4d), and a device that went cold on the lapse stays cold until
+        // someone arms it.
     }
 
     /// What this device can honestly say about itself right now.

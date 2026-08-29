@@ -355,6 +355,122 @@ struct LiveLinkTests {
         #expect(decoded.firstAckedIndex == 3)
     }
 
+    /// ⛔ **`MSG` 4.3b's ORDER, which nothing asserted until 29 Aug 2026.**
+    ///
+    /// `sendSessionResume` — the *message* — has been tested since D6. The
+    /// **sequence** had no test at all: `grep isAwaitingResyncBurst` and
+    /// `grep resumeAfterLinkLoss` over both test targets returned nothing. So a
+    /// refactor that resumed the queue before the burst converged would have been
+    /// green, and the symptom would be shots landing on the relation that drifted
+    /// through the outage — wrong timestamps in Studio, which is the last place
+    /// anyone would trace back to a reconnect ordering.
+    ///
+    /// The clause: *"a synchronisation burst runs before any queued payload
+    /// resumes"*. At 20 ppm the relation drifts about 1.2 ms per minute, so a
+    /// device that spent the reconnect's bandwidth on payload first would be
+    /// putting bytes on a timeline it had not re-measured.
+    ///
+    /// ⚠ **Driven by the clock alone** — three missed heartbeat intervals, per
+    /// 7.4c, with a host peer's own `livenessPump` queueing the beats. No socket,
+    /// no sleeping, no waiting.
+    @Test("MSG 4.3b — session_resume goes first and no payload moves until the burst converges")
+    func reconnectSendsResumeBeforeAnyPayload() throws {
+        let peer = try Self.peer()
+        try peer.addSyncTimebase(Self.timebase)
+        try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
+                                               timebaseRef: Self.timebase))
+        _ = try peer.drain(.control)
+
+        // A host, only so that something legitimately originates `heartbeat` —
+        // 7.4a makes it the host's message and a capture peer never sends one.
+        let host = try DevicePeer(peerId: "peer:host", role: .host)
+        try host.openSession(PpcpSessionRecord(id: Self.sessionId,
+                                               timebaseRef: Self.timebase))
+        _ = try host.drain(.control)
+
+        func beat(at nowNs: Int64) throws {
+            try host.livenessPump(nowNs: nowNs)
+            _ = try peer.feed(try host.drain(.control), on: .control)
+            try peer.livenessPump(nowNs: nowNs)
+        }
+
+        // ⛔ **A payload genuinely IN FLIGHT when the link goes, which is the only
+        // case 4.3b is about.** The first version of this test enqueued the 1.2 kB
+        // `Self.clip`, which fits in one 32 kB chunk and therefore *finished* on the
+        // first pump — so `resumeAfterLinkLoss` had nothing to resume, and the test
+        // passed against a deliberately reordered `resume`. Three chunks, pumped
+        // with a one-chunk budget, leaves it begun and unfinished.
+        try peer.openStream(Self.videoStream)
+        let big = Data((0 ..< (Int(PayloadTransferQueue.chunkBytes) * 3))
+            .map { UInt8($0 % 251) })
+        try peer.announce(PpcpCaptureRecord(
+            id: "cap:resume", anchor: .shot("sht:1"), streamId: Self.videoStream.id,
+            timebaseId: Self.timebase, completeness: .complete,
+            intervalNs: 1_000_000_000..<2_000_000_000, absentReason: nil,
+            digest: SessionBundleWriter.digest(of: big), bytes: UInt64(big.count)),
+                         isPreview: false)
+
+        let queue = PayloadTransferQueue(peer: peer)
+        try queue.enqueue(TransferJob(captureId: "cap:resume",
+                                      bytes: UInt64(big.count),
+                                      digest: SessionBundleWriter.digest(of: big),
+                                      payload: { big }))
+        _ = try queue.pump(budgetBytes: Int(PayloadTransferQueue.chunkBytes))
+        // ⚠ Begun and unfinished, or `resumeAfterLinkLoss` has nothing to resume
+        // and this test proves nothing — which is how it first passed.
+        #expect(queue.pendingCaptureIds.contains("cap:resume"))
+        _ = try peer.drain(.bulk)
+
+        let interval = Int64(try #require(peer.sessionParameters).heartbeatIntervalMs) * 1_000_000
+        #expect(interval > 0, "7.4c counts in heartbeat intervals; zero would count nothing")
+        let driver = HostLinkDriver(peer: peer, timebaseId: Self.timebase)
+        let t0: Int64 = 10_000_000_000
+
+        try beat(at: t0)
+        #expect(peer.isLinkLost == false)
+
+        // 7.4c — three consecutive missed intervals, and this is the fourth.
+        try peer.livenessPump(nowNs: t0 + interval * 4)
+        #expect(peer.isLinkLost, "three missed intervals is a lost link")
+        #expect(try driver.pump(nowNs: t0 + interval * 4) == .lost)
+        #expect(driver.isAwaitingResyncBurst, "8.3f — the regime is entered for the duration")
+
+        // The link comes back.
+        let back = t0 + interval * 5
+        try beat(at: back)
+        #expect(peer.isLinkLost == false)
+        // ⚠ **Still `.lost`, and that is `derive`'s first guard rather than a
+        // defect.** 8.3g — a Session with no arbitration parameters is the
+        // zero-host case, so the state machine short-circuits before reaching
+        // `.resyncing`. B3's *Back* therefore needs a Session a **host** opened,
+        // which this peer cannot open for itself: `ppcp_peer_session_open`
+        // refuses `has_arbitration` from any peer that is not `role: host`.
+        // ⛔ The reconnect MECHANISM below does not care — `isAwaitingResyncBurst`
+        // is set on the transition, not on the label — and the mechanism is what
+        // 4.3b is about.
+        #expect(try driver.pump(nowNs: back) == .lost)
+        #expect(driver.isAwaitingResyncBurst)
+
+        _ = try peer.drain(.control)
+        _ = try peer.drain(.bulk)
+        let converged = try driver.resume(sessionId: Self.sessionId, peerId: Self.peerId,
+                                          queue: queue, nowNs: back)
+
+        // ⛔ Nothing is answering probes, so the burst CANNOT have converged —
+        // and that is exactly the window in which payload must not move.
+        #expect(converged == false)
+        let control = try peer.drain(.control)
+        #expect(control.isEmpty == false)
+        #expect(try Self.decodeFirst(control).type == PPCP_MT_SESSION_RESUME, """
+                4.3a — the FIRST thing on the wire after a reconnect is \
+                session_resume, so the host learns what exists before anything large moves
+                """)
+        #expect(try peer.drain(.bulk).isEmpty, """
+                4.3b — no payload until the burst has converged. A `payload_resume` \
+                here means bytes are being put on a relation that drifted through the outage
+                """)
+    }
+
     /// 4.3a — a Session this peer never joined cannot be resumed. ⛔ The refusal
     /// is the point: the alternative is a `session_resume` carrying a
     /// `timebase_ref` nobody set, which is the silent zero I16 and 5.1 exist to
