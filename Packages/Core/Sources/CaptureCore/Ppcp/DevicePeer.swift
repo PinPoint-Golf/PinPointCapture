@@ -585,6 +585,31 @@ public final class DevicePeer: @unchecked Sendable {
         return String(cString: text)
     }
 
+    /// What the counterpart calls itself — `product.model` from its declaration,
+    /// or `nil` before it has declared.
+    ///
+    /// ⛔ **This is how a RENAMED host reaches a phone that paired with it long
+    /// ago.** The other channel is the pairing code, which is read once and never
+    /// again, and a persisted pairing has no expiry (`RV` 7.4a) — so without this
+    /// a Studio renamed after pairing would keep its old name on that phone for
+    /// ever. Raised by Mark testing one phone against three machines all called
+    /// "PinPointStudio".
+    ///
+    /// ⚠ **Untrusted display text** (4.4d) and informational only: 5.2c and I19
+    /// forbid inferring any behaviour from `product`. It names a row; the
+    /// identity is the pairing, and never this.
+    public var counterpartName: String? {
+        guard let peer, let desc = ppcp_peer_counterpart(peer) else { return nil }
+        var product = desc.pointee.product
+        guard product.present else { return nil }
+        let model = withUnsafeBytes(of: &product.model.v) { raw -> String? in
+            guard let base = raw.baseAddress else { return nil }
+            return String(cString: base.assumingMemoryBound(to: CChar.self))
+        }
+        guard let model, model.isEmpty == false else { return nil }
+        return model
+    }
+
     public func declares(_ profile: String) -> Bool {
         guard let peer else { return false }
         return ppcp_peer_declares(peer, profile)

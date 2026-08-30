@@ -150,8 +150,13 @@ public final class HostLinkSession {
 
     /// What the transport actually negotiated, for B2's first row.
     public let security: NegotiatedSecurity
-    /// From the scanned code. ⚠ Not from the wire — see `EstablishedLink`.
-    public let hostDisplayName: String?
+    /// What this Studio is called.
+    ///
+    /// ⚠ **Seeded from the scanned code, then REFRESHED FROM THE WIRE on
+    /// `declare`** — see the `.declared` case. The code names the host once and
+    /// is never read again, so a rename would otherwise never arrive. `var`
+    /// rather than `let` for exactly that, and for nothing else.
+    public private(set) var hostDisplayName: String?
     public let sessionId: String
 
     /// ⚠ Held so `ENC` 2.1d's third channel can be dialled later — a `preview`
@@ -448,6 +453,22 @@ public final class HostLinkSession {
             // ⚠ A no-op where nothing is stored — a `mu > 1` pairing (7.4f) has
             // no row to bind, and `bind` returns without writing one.
             try? PairingSecretStore.bind(sessionId: sessionId, toCounterpart: peerId)
+
+            // ⛔ **AND THE HOST'S NAME, WHICH IS THE ONLY MOMENT IT CAN BE
+            // REFRESHED.** The pairing code carried a name once, at pairing time,
+            // and a persisted pairing never expires (7.4a) — so a Studio renamed
+            // afterwards would be shown under its old name on this phone for
+            // ever, and Remembered Studios would list several machines under one
+            // indistinguishable label. Raised by Mark testing one phone against
+            // macOS, Linux and Windows, all three called "PinPointStudio".
+            //
+            // ⚠ `rename` is a no-op when the name has not changed, which matters:
+            // this runs on every connect, and a write would bump the pairing
+            // generation and restart the wired presence listener each time.
+            if let name = (try? await pump.perform { $0.counterpartName }) ?? nil {
+                try? PairingSecretStore.rename(sessionId: sessionId, to: name)
+                hostDisplayName = name
+            }
             // ⚠ **Offered on `declare`, which is the first moment the counterpart
             // has an identity to owe them to** (7.6b). 9.1's dispositions are
             // held per (host, session), so a second connection to the same host

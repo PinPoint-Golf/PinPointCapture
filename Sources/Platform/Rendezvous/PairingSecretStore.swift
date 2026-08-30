@@ -173,6 +173,30 @@ public enum PairingSecretStore {
     /// 7.4c — records the counterpart identity once `hello` has disclosed it
     /// inside the authenticated channel. ⛔ A pairing scoped to nobody is a
     /// pairing scoped to anybody.
+    /// Updates the human name a stored pairing is shown under, when the host it
+    /// belongs to says it is now called something else.
+    ///
+    /// ⛔ **A pairing has no expiry (7.4a), so without this a Studio renamed after
+    /// pairing keeps its old name on this phone for ever.** The pairing code is
+    /// read once and never again; `declare` arrives on every connect.
+    ///
+    /// ⚠ **The name is the only thing that moves.** `PRK`, the counterpart
+    /// binding (7.4c) and the network hint are all preserved — this is a rename,
+    /// not a re-pairing, and rewriting key material on a display string would be
+    /// a way to lose a pairing to a cosmetic change.
+    ///
+    /// A no-op when nothing is stored, or when the name has not changed — which
+    /// matters, because this is called on every connect and each write bumps the
+    /// generation that restarts the wired listener.
+    public static func rename(sessionId: String, to displayName: String) throws {
+        guard let existing = try load(sessionId: sessionId) else { return }
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false, trimmed != existing.displayName else { return }
+        let counterpart = try rows().first { $0.sessionId == sessionId }?.counterpartPeerId
+        try write(sessionId: sessionId, prk: existing.prk, displayName: trimmed,
+                  counterpartPeerId: counterpart, networkName: existing.networkName)
+    }
+
     public static func bind(sessionId: String, toCounterpart peerId: String) throws {
         guard let existing = try load(sessionId: sessionId) else { return }
         try write(sessionId: sessionId, prk: existing.prk,
