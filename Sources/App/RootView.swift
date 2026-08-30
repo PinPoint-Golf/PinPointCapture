@@ -162,7 +162,11 @@ struct RootView: View {
                 // this device holds, browses for a host that resolves against one
                 // of them (3.4b/3.4c), and dials it. No code, no pairing step.
                 // ⚠ It does nothing at all on a device that has never paired.
-                model.beginSearchingForHost()
+                // ⚠ Was `beginSearchingForHost()`. It now also raises the
+                // foreground flag and starts the wired reconcile loop, both of
+                // which are LEVELS the rest of the app reads — see
+                // `AppModel.sceneDidBecomeActive()`.
+                model.sceneDidBecomeActive()
             default:
                 break
             }

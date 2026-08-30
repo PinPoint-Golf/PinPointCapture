@@ -669,11 +669,24 @@ struct PpcpConnector: PeerTransportConnector {
                 for channel in channels {
                     group.addTask {
                         let (stream, security) = try await dial(channel)
+                        // ⚠ Logged either side of the bind, because "authenticated
+                        // and then never bound" was a real field fault nobody could
+                        // see from the host — it looks identical to a phone that
+                        // walked away. Two lines make the two cases distinct.
+                        PpcpLog.channel("dialled", channel: "\(channel)",
+                                        detail: security.version.displayName)
                         // 2.1a — **the first frame on every stream**, before
                         // `hello` on channel 0 (2.1d) and before any payload
                         // frame on a bulk one.
-                        try await stream.send(PpcpLinkBind.frame(linkId: linkId,
-                                                                 channel: channel))
+                        do {
+                            try await stream.send(PpcpLinkBind.frame(linkId: linkId,
+                                                                     channel: channel))
+                        } catch {
+                            PpcpLog.channel("link_bind FAILED", channel: "\(channel)",
+                                            detail: String(describing: error))
+                            throw error
+                        }
+                        PpcpLog.channel("link_bind sent", channel: "\(channel)")
                         return (channel, stream, security)
                     }
                 }

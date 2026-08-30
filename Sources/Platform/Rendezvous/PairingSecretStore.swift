@@ -310,6 +310,29 @@ public enum PairingSecretStore {
         }
     }
 
+    /// Bumped by every successful mutation, so a reader can tell that the set has
+    /// changed **without re-reading the file**.
+    ///
+    /// ⛔ **It lives here, inside `mutate()`, rather than being posted by each
+    /// call site, and that is the whole point.** The alternative — every place
+    /// that pairs or revokes remembering to announce it — is the same
+    /// "somebody will forget" defect this counter exists to fix: a wired presence
+    /// record went stale after a re-pair because nothing told the listener, and
+    /// the cable was then unreachable until the app was restarted. A new mutator
+    /// cannot forget, because there is only one way to write the store.
+    ///
+    /// ⚠ Guarded by the same `lock` as the rows, so a reader cannot see a bumped
+    /// generation before the bytes that justify it.
+    /// ⚠ `nonisolated(unsafe)` for the same reason `directoryOverride` above is:
+    /// every access is inside `lock`, which the compiler cannot see.
+    nonisolated(unsafe) public private(set) static var generation: UInt64 = 0
+
+    /// The current generation, for a caller holding no lock of its own.
+    public static func currentGeneration() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        return generation
+    }
+
     private static func mutate(_ change: (inout [Row]) -> Void) throws {
         lock.lock(); defer { lock.unlock() }
         var rows = try rowsLocked()
@@ -342,6 +365,10 @@ public enum PairingSecretStore {
                                                    ofItemAtPath: url.path)
             exclude(url)
         } catch { throw StoreError.storage("\(error)") }
+
+        // ⚠ Bumped only after the bytes are on disk, so a reader that reacts to
+        // the change reads the set that justified it and never the one before.
+        generation &+= 1
     }
 
     private static func load(sessionId: String) throws -> Held? {

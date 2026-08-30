@@ -49,6 +49,54 @@ struct PairingSecretStoreTests {
         try body()
     }
 
+    // MARK: The generation counter — how a reader knows the set moved
+
+    /// ⛔ **This is what stops a wired presence record going stale after a
+    /// re-pair.** Found on the Linux port, 30 Aug 2026: the phone published the
+    /// pairings it held when the listener was built, the operator paired again,
+    /// and the host answered *"none of which resolves to a pairing this host
+    /// holds"* — so the cable was unreachable until the app was restarted, with
+    /// nothing on screen to say why.
+    ///
+    /// ⚠ The counter lives inside `mutate()` rather than being posted by each
+    /// call site, so a NEW mutator cannot forget to announce itself. That is the
+    /// property under test here, and it is why the test writes through three
+    /// different public entry points rather than one.
+    @Test func everyMutationMovesTheGeneration() throws {
+        try withTemporaryStore {
+            let start = PairingSecretStore.currentGeneration()
+
+            let code = try PpcpPairingCode(uri: Self.singleUse)
+            try PairingSecretStore.save(code: code, keys: try code.keys(),
+                                        displayName: "Studio")
+            let afterSave = PairingSecretStore.currentGeneration()
+            #expect(afterSave != start, "a new pairing did not move the generation")
+
+            try PairingSecretStore.bind(sessionId: Self.sessionId, toCounterpart: "peer:x")
+            let afterBind = PairingSecretStore.currentGeneration()
+            #expect(afterBind != afterSave, "binding a counterpart did not move it")
+
+            try PairingSecretStore.revoke(sessionId: Self.sessionId)
+            #expect(PairingSecretStore.currentGeneration() != afterBind,
+                    "revoking did not move it")
+        }
+    }
+
+    /// ⚠ And a READ must not move it — otherwise every reconcile tick would look
+    /// like a change and restart the listener for ever.
+    @Test func readingDoesNotMoveTheGeneration() throws {
+        try withTemporaryStore {
+            let code = try PpcpPairingCode(uri: Self.singleUse)
+            try PairingSecretStore.save(code: code, keys: try code.keys(),
+                                        displayName: "Studio")
+            let settled = PairingSecretStore.currentGeneration()
+            _ = try PairingSecretStore.pairings()
+            _ = try PairingSecretStore.identityKeys()
+            #expect(PairingSecretStore.currentGeneration() == settled,
+                    "a read moved the generation, so the listener would restart on every tick")
+        }
+    }
+
     // MARK: 7.4b — visible and individually revocable, and no longer opt-in
 
     /// ⛔ **Two halves of 7.4b, not three.** *Opt-in* is declined as of 25 August

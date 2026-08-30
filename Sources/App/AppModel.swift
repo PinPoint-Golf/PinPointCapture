@@ -684,6 +684,26 @@ public final class AppModel {
             while Task.isCancelled == false {
                 guard let self, let link = self.link else { return }
                 self.hostLink = link.hostLink
+
+                // ⛔ **THE LINK DYING IS A LEVEL, AND THIS IS THE ONLY PLACE THAT
+                // ALREADY WATCHES IT.** A transport that dies while this app stays
+                // foregrounded — PinPointStudio restarted, cable pulled, WiFi blip
+                // — only changes what `HostLinkSession` REPORTS: `phase` moves to
+                // closed/failed and the state reads `.lost`. Nothing cleared
+                // `AppModel.link` on that path, so the app sat holding a dead
+                // session, `beginSearchingForHost()`'s `link == nil` guard refused
+                // to start a search, the wired listener stayed down, and the phone
+                // was stranded until somebody backgrounded and reopened it.
+                //
+                // ⚠ Tearing the dead session down here is what makes BOTH paths
+                // recover: `disconnect()` clears `link`, and `linkDidEnd()` then
+                // re-arms the browse and the cable.
+                if link.hostLink.state == .lost {
+                    PpcpLog.linkPhase("lost", detail: self.hostLinkError ?? "no error reported")
+                    await self.disconnect(.cancelled)
+                    self.linkDidEnd()
+                    return
+                }
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
@@ -707,7 +727,22 @@ public final class AppModel {
     /// ⛔ **Backgrounding drops the socket, so say so.** iOS suspends the
     /// connection and a link that claimed to be up on return would be exactly the
     /// dishonesty these screens were just cleared of. Reconnection is E3.5.
+    /// Whether the app is foregrounded. ⚠ Tracked explicitly because BOTH
+    /// reconnection paths are now level-driven and a level needs a value to read;
+    /// a scene-phase callback alone is an edge, which is the shape of defect this
+    /// file has now been bitten by twice.
+    public private(set) var isActive = false
+
+    /// The app became active. Starts both level loops and does the one-shot work
+    /// that genuinely belongs on this transition.
+    public func sceneDidBecomeActive() {
+        isActive = true
+        startWiredReconcile()
+        beginSearchingForHost()
+    }
+
     public func linkDidEnterBackground() async {
+        isActive = false
         // ⛔ And the search stops with it. A browse behind a suspended app spends
         // radio on `RV` §3's convenience path and could only produce a link the
         // next suspension drops again.
@@ -794,6 +829,28 @@ public final class AppModel {
         isSearchingForHost = false
     }
 
+    /// ⛔ **A LINK THAT ENDS WHILE THE APP IS ON SCREEN USED TO LEAVE IT DORMANT
+    /// FOR EVER**, on either transport, until somebody backgrounded the app and
+    /// reopened it. Found on the Linux port, 30 Aug 2026, and it accounted for
+    /// most of two days' friction: every host restart needed a manual app
+    /// restart, which twice sent the investigation after host faults that did
+    /// not exist.
+    ///
+    /// ⚠ **The machinery was always there and merely unarmed.** The reconnect
+    /// sweep widens (3 s, then 2/5/10 s, then every 30 s) and explicitly *"does
+    /// not stop, because the host may be switched on at any moment while the user
+    /// waits"* — it just never started, because the coordinator fires on exactly
+    /// two edges and *a link ending while already active is neither of them*.
+    ///
+    /// Called wherever a link is torn down. Idempotent, and a no-op in the
+    /// background, where a browse would only spend radio on a link the next
+    /// suspension drops.
+    public func linkDidEnd() {
+        guard isActive, link == nil else { return }
+        PpcpLog.reconnect("re-arming after a link ended while foregrounded")
+        beginSearchingForHost()   // guards itself; also re-arms the cable
+    }
+
     /// - Returns: whether the search is over.
     private func adopt(_ outcome: ReconnectOutcome) async -> Bool {
         switch outcome {
@@ -857,6 +914,14 @@ public final class AppModel {
     /// view hierarchy is a listener that dies on a screen rotation.
     private var wiredListener: WiredPresenceListener?
     private var wiredTask: Task<Void, Never>?
+    /// The pairing-set generation the running listener published. A change means
+    /// the record on the wire is stale — see ``reconcileWiredListening()``.
+    private var wiredPairingGeneration: UInt64 = 0
+    private var wiredReconcileTask: Task<Void, Never>?
+    /// ⚠ Two seconds, matching the host's own wired retry: the phone should be
+    /// listening within about one of the host's probes of becoming eligible.
+    /// The tick itself is free — it reads no file unless something must change.
+    private static let wiredReconcileSeconds = 2
 
     /// Why wired is unavailable, when someone goes looking.
     ///
@@ -875,8 +940,59 @@ public final class AppModel {
     /// no public API behind it (design §6.1). So this device simply listens on
     /// loopback and lets the host, which *can* see a usbmux `Attached`, decide.
     /// Nothing here is spent on a radio and nothing is advertised.
+    /// ⛔ **THE CABLE IS UNREACHABLE UNLESS THIS IS RUNNING, so it is driven by a
+    /// LEVEL and not by an edge.** Found on the Linux port, 30 Aug 2026: the
+    /// listener came up only when the app entered its connect flow — becoming
+    /// active, or the find-host button — so PinPointStudio spent whole sessions
+    /// knocking every two seconds on a closed port and getting
+    /// `no presence record … (Number=3)`. "Restart the capture app" was the
+    /// universal remedy all day, and that is what masked it.
+    ///
+    /// ⚠ This is the SAME defect the host had one repo over, where the wired path
+    /// fired only on a usbmux `Attached` event and so never fired in the ordinary
+    /// sequence. It was fixed there by checking the level on a timer rather than
+    /// trusting an edge, and this is the device's half of the same lesson.
+    ///
+    /// The rule this reconciles to, evaluated every ``wiredReconcileSeconds``:
+    /// **a pairing is held, no link is up, and the app is active ⇒ the listener
+    /// is up and publishing the CURRENT pairing set.** Anything else ⇒ it is down.
+    private func reconcileWiredListening() {
+        guard isActive, link == nil else {
+            if wiredListener != nil { Task { await stopWiredListening() } }
+            return
+        }
+        // ⛔ The pairing set changes without the cable moving — a re-pair is the
+        // everyday case — and a record naming the OLD set makes the host answer
+        // "none of which resolves to a pairing this host holds" and give up.
+        // Restart on a change rather than re-reading the file every tick.
+        let gen = PairingSecretStore.currentGeneration()
+        if wiredListener != nil, gen != wiredPairingGeneration {
+            Task { @MainActor in
+                await stopWiredListening()
+                beginWiredListening()
+            }
+            return
+        }
+        if wiredListener == nil { beginWiredListening() }
+    }
+
+    /// Starts the reconcile loop. Idempotent; runs for the life of the app.
+    private func startWiredReconcile() {
+        guard wiredReconcileTask == nil else { return }
+        wiredReconcileTask = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                self?.reconcileWiredListening()
+                try? await Task.sleep(for: .seconds(Self.wiredReconcileSeconds))
+                if self == nil { return }
+            }
+        }
+    }
+
     public func beginWiredListening() {
         guard wiredListener == nil, link == nil else { return }
+        // Remembered so the reconcile can tell a stale record from a fresh one
+        // without reading the store on every tick.
+        wiredPairingGeneration = PairingSecretStore.currentGeneration()
         // `RV` 4.4d — untrusted display text, and it is ours. ⚠ On iOS 16+ this
         // is the model name for an app without the entitlement, which is exactly
         // the amount of information this record should carry.
@@ -911,13 +1027,17 @@ public final class AppModel {
             guard Task.isCancelled == false else { return }
             do {
                 _ = try await listener.start(pairings: held) { [weak self] wired in
+                    PpcpLog.wiredPresence("host dialled in",
+                                          detail: "session=\(wired.sessionId)")
                     await self?.adoptWiredLink(wired)
                 }
+                PpcpLog.wiredPresence("up", detail: "\(held.count) pairing(s) published")
                 self.wiredDiagnosis = nil
             } catch {
                 // ⚠ Including a taken presence port, which is survivable by
                 // design: the host reads a record it cannot parse and treats this
                 // device as not wired.
+                PpcpLog.wiredPresence("FAILED to start", detail: String(describing: error))
                 self.wiredDiagnosis = String(describing: error)
                 await listener.stop()
                 self.wiredListener = nil
@@ -930,6 +1050,7 @@ public final class AppModel {
         wiredTask?.cancel()
         wiredTask = nil
         guard let wiredListener else { return }
+        PpcpLog.wiredPresence("down")
         self.wiredListener = nil
         await wiredListener.stop()
     }
