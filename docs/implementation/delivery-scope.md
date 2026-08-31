@@ -83,7 +83,7 @@ Verified by absence across `Sources/` and `Packages/Core/Sources/`:
 - **No storage floor.** `StorageHeadroom` is computed and shown on A7; nothing refuses to arm below a floor (REQ-OFF-2).
 - **No iPad layout.** No size-class or idiom handling anywhere. D1 is undesigned in code (UC-3).
 - **No review mode.** `DebugScreenGallery` and `ConformanceHarness` are `#if DEBUG` and are not this (REQ-STANDALONE-6).
-- **No USB transport.** B1's "Use a cable instead" row is drawn; its closure is empty (REQ-DISC-5).
+- **No *pairing* over USB.** ⚠ Corrected 31 August 2026 — this read *"no USB transport"* and that is no longer true. The cable carries a real PPCP session (E15.1, #64): the device listens, the host dials over usbmux, and a link comes up in 3 s from a cold host and survives a host restart unattended. What is still empty is B1's *Use a cable instead* closure — `onUseCable: {}` at `RootView.swift:427` — so a **first** pairing over the cable has no route (REQ-DISC-5, E15.2).
 - **No empty or error states.** The design handoff names five as undesigned; none exists. `capabilityError` and `recordingError` are set and never rendered.
 
 ### 1.6 Where the code is ahead of the PRD
@@ -388,14 +388,21 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 ### E15 — USB transport *(SHOULD)*
 
-Lower and far more stable latency floor for UC-2, so minimum-RTT filtering converges faster. B1's row is drawn and inert.
+Lower and far more stable latency floor for UC-2, so minimum-RTT filtering converges faster. B1's *Use a cable instead* row is drawn and its closure is still `{}`.
 
-| Level | Capability | Release |
-|---|---|---|
-| **E15.1** | The device end of the tunnel, behind the existing `PeerTransport` abstraction | v1 (SHOULD) |
-| **E15.2** | End-to-end with the host side | v1 (SHOULD) — **external: the `usbmuxd`/libimobiledevice half is LGPL and belongs on the PinPoint side** (REQ-TRANS-3, REQ-LIC-5) |
+⚠ **The value turned out to be larger than the latency floor this epic was opened for**, and it is worth stating because it changes how readily the `SHOULD` should be deferred:
 
-Downgrade or defer without embarrassment; it is a `SHOULD` and the transport abstraction already accommodates it.
+- ⛔ **It resolves the reconnection half of `RV` 3.5d on the wired path.** An iOS peer must not advertise for reconnection because `Network.framework`'s listener registers one `(key, identity)` pair up front and cannot resolve a rotating PSK identity. On a cable the device publishes the identity it **registered** and the host verifies it under 5.3b before dialling — so identity resolution moves to the client, and reconnection needs no scan and no radio. The MVP's requirement (a), *connected without a per-session scan*, holds over a cable today. See #94.
+- **Both listeners bind `127.0.0.1`, so the wired path is exempt from the iOS local-network permission** — it works before the user has answered that prompt and after they have declined it.
+
+| Level | Capability | Components | Release | Exit criterion |
+|---|---|---|---|---|
+| **E15.1** ✅ | **The device end of the tunnel** | `WiredPresence` — the CBOR record, `ENC` 4e order `dl, pv, role, peers` ✅ · `WiredPresenceListener` — one plaintext presence listener on the fixed port, one `PpcpListener` per held pairing behind it, all bound `127.0.0.1` ✅ · `AppModel`'s 2 s reconcile holding one level rule ✅ · `PairingSecretStore` generation, bumped inside `mutate()` ✅ · `PpcpLog` to both the unified log and stdout, so a cabled phone can be read ✅ | v1 (SHOULD) | **Done** (#64, `adbb70c`, `8201ec8`, `ac151c8`). ⛔ **Criterion reworded on closing, deliberately.** It read *"a USB `PeerTransport` implementation exists alongside the TLS one"* — no such type was written and writing one would have been wrong: usbmux presents a plain TCP socket on loopback, so TLS runs over it unchanged and the transport on the cable **is** `PpcpListener`. What the level needed was the presence record, the identity publication and the listener lifecycle. Verified on hardware: cable link up in 3 s from a cold host, phone reconnecting unattended after a host restart. ⚠ IPv4 loopback only (`requiredLocalEndpoint` pins the family); the `::1` fallback is `requiredInterfaceType = .loopback`, unexercised |
+| **E15.2** | **End-to-end with the host side** | Host-side tunnel — **LGPL, belongs on the PinPoint side** ✅ delivered and hardware-verified · B1's `onUseCable` closure ○ *(`RootView.swift:427`)* · a first pairing carried on the presence record ○ | v1 (SHOULD) — **external: the `usbmuxd`/libimobiledevice half is LGPL and belongs on the PinPoint side** (REQ-TRANS-3, REQ-LIC-5) | B1's *Use a cable instead* completes a pairing. ⚠ **Unchanged, and not met**: everything verified so far runs against a pairing already held, scanned over WiFi. The machinery exists — `WiredPresence` deliberately carries no `rid` **so that** a scanned-but-not-yet-connected code can ride the record (design §6.5) — and nothing calls it |
+
+⚠ **`ReconnectCoordinator`'s "PinPointStudio advertises and this device dials. Always." is not deleted by E15.1**, and the two must be read together rather than one of them struck out. That statement is still exactly true of the WiFi/browse path, for the same measured reason. The cable is the explicit exception, and `WiredPresenceListener`'s header says so at the site.
+
+⛔ **"The transport abstraction already accommodates it" was wrong**, and this document said it until 31 August 2026. The abstraction accommodated the *socket* and nothing else; the work was `RV` §3 advertisement semantics delivered over a cable, plus a listener lifecycle, and neither had been sized. E15.2 is still a `SHOULD` and can be deferred without embarrassment — but the expensive half is spent, and what remains is a closure and one run.
 
 ---
 

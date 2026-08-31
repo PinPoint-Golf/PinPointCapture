@@ -495,21 +495,42 @@ EPICS = [
 
  dict(id="E15", title="USB transport (SHOULD)", layer="platform",
   summary="B1's \"Use a cable instead\" row is drawn and its closure is empty.",
-  why="Lower and far more stable latency floor for UC-2, so minimum-RTT filtering converges faster.",
+  why="Lower and far more stable latency floor for UC-2, so minimum-RTT filtering converges faster. ⚠ And larger than that: it resolves the reconnection half of `RV` 3.5d on the wired path, because identity resolution moves to the client — so the MVP's requirement (a), connected without a per-session scan, holds over a cable today (#94). Both listeners bind `127.0.0.1`, so the wired path is also exempt from the iOS local-network permission.",
   deps="E3. The `usbmuxd`/libimobiledevice half is LGPL and belongs on the PinPoint side (REQ-TRANS-3, REQ-LIC-5).",
   levels=[
+   # ⛔ Criterion reworded on closing (#64, 31 Aug 2026). It read "a USB
+   # `PeerTransport` implementation exists alongside the TLS one" — no such type
+   # was written and writing one would have been wrong: usbmux presents a plain
+   # TCP socket on loopback, so TLS runs over it unchanged and the transport on
+   # the cable IS `PpcpListener`, bound to 127.0.0.1 instead of all interfaces.
+   # What the level actually needed was `RV` §3 advertisement semantics delivered
+   # over a cable, and neither that nor the listener lifecycle had been sized.
    level("E15.1","The device end of the tunnel",
-     "Behind the existing `PeerTransport` abstraction.",
-     ["Device-side USB transport conforming to `PeerTransport`",
-      "The abstraction already accommodates it"],
-     "A USB `PeerTransport` implementation exists alongside the TLS one.",
+     "The device listens and the host dials, inverting `RV` 2d.",
+     ["`WiredPresence` — the CBOR record, `ENC` 4e order `dl, pv, role, peers`",
+      "`WiredPresenceListener` — one plaintext presence listener on the fixed "
+      "port, one `PpcpListener` per held pairing behind it, all bound `127.0.0.1`",
+      "A 2 s reconcile in `AppModel` holding one level rule",
+      "A `PairingSecretStore` generation, bumped inside `mutate()`",
+      "`PpcpLog` to both the unified log and stdout, so a cabled phone can be read"],
+     "A cable carries a real PPCP session: the device publishes the identity it "
+     "registered, the host verifies it under 5.3b and dials, and the link "
+     "survives a host restart unattended.",
      "REQ-DISC-5", layer="platform"),
    level("E15.2","End-to-end with the host side",
      "A cable session works from B1.",
-     ["Host-side tunnel — **LGPL, belongs on the PinPoint side**"],
+     ["Host-side tunnel — **LGPL, belongs on the PinPoint side** — delivered "
+      "and hardware-verified",
+      "B1's `onUseCable` closure — still `{}` at `RootView.swift:427`",
+      "A first pairing carried on the presence record. `WiredPresence` "
+      "deliberately carries no `rid` so that a scanned-but-not-yet-connected "
+      "code can ride it (design §6.5); nothing calls it"],
      "B1's *Use a cable instead* completes a pairing.",
      "REQ-DISC-5", layer="platform", blocked="external",
-     note="Downgrade or defer without embarrassment; it is a SHOULD."),
+     note="Downgrade or defer without embarrassment; it is a SHOULD. ⛔ But "
+          "\"the transport abstraction already accommodates it\" was wrong — "
+          "it accommodated the socket and nothing else, and the expensive half "
+          "is now spent."),
   ]),
 
  dict(id="E16", title="Rendezvous completion on hardware", layer="platform",
