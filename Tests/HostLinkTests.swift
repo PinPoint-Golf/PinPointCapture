@@ -116,6 +116,61 @@ struct PipeTransport: PeerTransport, DiallingPeerLink {
     }
 }
 
+/// The cable's transport: a link this end did **not** dial.
+///
+/// ⛔ **`ListeningPeerLink` and deliberately NOT `DiallingPeerLink`** — that is
+/// the whole point of it. usbmux runs host→device only, so over the cable
+/// PinPointStudio dials us and opens `ENC` 2.1d's third channel too; this end
+/// can only wait for it to bind. `PipeTransport` above cannot stand in, because
+/// it dials, which is the case that already worked.
+final class InboundPreviewTransport: PeerTransport, ListeningPeerLink, @unchecked Sendable {
+    let control: any ByteChannel
+    let bulk: any ByteChannel
+    let security = NegotiatedSecurity.directPathPlaintext
+
+    private let lock = NSLock()
+    private var bound: (any ByteChannel)?
+    private var waiters: [CheckedContinuation<any ByteChannel, any Error>] = []
+
+    /// `PeerTransport`'s own view of channel 2: nothing until the host binds one,
+    /// which is exactly what a cabled link looks like before its dial completes.
+    var preview: (any ByteChannel)? { lock.withLock { bound } }
+
+    init(control: any ByteChannel, bulk: any ByteChannel) {
+        self.control = control
+        self.bulk = bulk
+    }
+
+    /// The host binding the third channel into this link.
+    func bindPreview(_ channel: any ByteChannel) {
+        let waiting: [CheckedContinuation<any ByteChannel, any Error>] = lock.withLock {
+            bound = channel
+            let w = waiters
+            waiters.removeAll()
+            return w
+        }
+        for continuation in waiting { continuation.resume(returning: channel) }
+    }
+
+    func channelBound(_ channel: PpcpChannel) async throws -> any ByteChannel {
+        if channel == .control { return control }
+        if channel == .bulk { return bulk }
+        return try await withCheckedThrowingContinuation { continuation in
+            let immediate: (any ByteChannel)? = lock.withLock {
+                if let bound { return bound }
+                waiters.append(continuation)
+                return nil
+            }
+            if let immediate { continuation.resume(returning: immediate) }
+        }
+    }
+
+    func close(_ reason: ChannelCloseReason) async {
+        await control.close(reason)
+        await bulk.close(reason)
+    }
+}
+
 // MARK: - The tests
 
 @Suite("E3.1 — the live host link")
@@ -184,6 +239,42 @@ struct HostLinkTests {
             events.contains { if case .declared = $0 { return true }; return false }
         })
         #expect(seen.contains { if case .declared = $0 { return true }; return false })
+
+        await model.disconnect()
+    }
+
+    /// The report that produced this: "no preview when connected via cable, but
+    /// preview (briefly) over WiFi." `openPreviewChannel()` answered `false` for
+    /// anything that could not dial, and over the cable this end never can — so
+    /// every preview Stream was refused `no_preview_channel` with nothing said.
+    @Test("On the cable the preview channel arrives inbound and is taken")
+    func previewChannelBindsInboundOnTheCable() async throws {
+        let model = AppModel()
+        let declaration = try testDeclaration()
+
+        let (deviceSide, hostSide) = PipeTransport.pair()
+        let hostPump = try await counterpart(on: hostSide)
+        defer { Task { await hostPump.stop() } }
+
+        // The device end of the same pipes, minus the ability to dial: the cable.
+        let cable = InboundPreviewTransport(control: deviceSide.control,
+                                            bulk: deviceSide.bulk)
+        await model.connect(transport: cable, sessionId: "ses:cable",
+                            hostDisplayName: "Bay 3 — cable",
+                            declaration: declaration, listener: true)
+        let link = try #require(model.link)
+
+        // ⚠ Bound WHILE the request is in flight, which is the real ordering: the
+        // host opens the channel as part of its dial, and this end may ask before
+        // or after it lands. Asking first is the harder half.
+        let opening = Task { await link.openPreviewChannel() }
+        cable.bindPreview(try #require(deviceSide.preview))
+
+        #expect(await opening.value, "the inbound third channel was not taken")
+        #expect(link.hasPreviewChannel)
+
+        // And it is idempotent, the same way the dialled path is.
+        #expect(await link.openPreviewChannel())
 
         await model.disconnect()
     }

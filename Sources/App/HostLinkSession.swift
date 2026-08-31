@@ -694,9 +694,16 @@ public final class HostLinkSession {
     /// ⛔ **The dialler's job, and only the dialler can do it.** 2.1d carries a
     /// further stream with the **same** `link_id`; a new one would be a new link
     /// and the listener would treat it as a stranger's first connection. So this
-    /// is `DiallingPeerLink.openChannel`, and a link that cannot dial (the
-    /// listener side, and the plaintext harness path) answers `nil` rather than
-    /// pretending.
+    /// is `DiallingPeerLink.openChannel` where this end dialled.
+    ///
+    /// ⚠ **AND ON THE CABLE THIS END IS NOT THE DIALLER**, which is why "only
+    /// the dialler can do it" used to mean "no preview over USB, ever". usbmux
+    /// runs host→device only: PinPointStudio dials us, so it opens the third
+    /// channel too, and our job is to WAIT for it to bind
+    /// (`ListeningPeerLink.channelBound`) rather than to answer that we cannot
+    /// dial. Until this existed a cabled phone refused every preview Stream with
+    /// `no_preview_channel`, and the operator saw a black tile with nothing in
+    /// any log to explain it — reported 31 Aug 2026.
     ///
     /// ⚠ **Preview refuses the bulk channel** (`PreviewProducer`, 5.11h), so
     /// there is no fallback to be had: without a third channel there is no
@@ -742,15 +749,22 @@ public final class HostLinkSession {
     /// The dial itself. ⚠ Only ever entered through `openPreviewChannel()`,
     /// which is what makes it happen once.
     private func dialPreviewChannel() async -> Bool {
-        guard let dialling = transport as? any DiallingPeerLink else {
-            print("[preview] channel: transport cannot dial (\(type(of: transport)))")
-            return false
-        }
         let channel: any ByteChannel
-        do {
-            channel = try await dialling.openChannel(.preview)
-        } catch {
-            print("[preview] channel: dial failed — \(String(describing: error))")
+        if let dialling = transport as? any DiallingPeerLink {
+            do {
+                channel = try await dialling.openChannel(.preview)
+            } catch {
+                print("[preview] channel: dial failed — \(String(describing: error))")
+                return false
+            }
+        } else if let listening = transport as? any ListeningPeerLink {
+            guard let inbound = await Self.previewChannelBound(on: listening) else {
+                return false
+            }
+            channel = inbound
+        } else {
+            print("[preview] channel: transport can neither dial nor listen "
+                  + "(\(type(of: transport)))")
             return false
         }
         await pump.attachPreview(channel)
@@ -774,6 +788,46 @@ public final class HostLinkSession {
         hasPreviewChannel = true
         print("[preview] channel: open")
         return true
+    }
+
+    /// How long a listening end waits for the dialler to bind 2.1d's third
+    /// channel. ⚠ A CEILING, NOT A CADENCE: PinPointStudio opens it as part of
+    /// the wired dial, so it is normally already bound before anything here asks
+    /// and this wait returns immediately. The bound exists for the host that
+    /// never opens one — an older PinPointStudio, or a link where we are the
+    /// listener for some other reason — because 2.1d makes the third stream
+    /// OPTIONAL, and an unbounded wait would suspend every preview request for
+    /// the life of the link instead of answering honestly that there is none.
+    // `nonisolated`: the wait below is a transport concern, and running it on
+    // the main actor would pin a five-second suspension to it for nothing.
+    private nonisolated static let inboundPreviewWait = Duration.seconds(5)
+
+    /// Waits for the counterpart to bind the preview channel, or gives up.
+    /// `nil` is "no preview channel", the same answer a failed dial gives.
+    private nonisolated static func previewChannelBound(
+        on link: any ListeningPeerLink) async -> (any ByteChannel)? {
+        await withTaskGroup(of: (any ByteChannel)?.self) { group in
+            group.addTask {
+                do { return try await link.channelBound(.preview) }
+                catch {
+                    print("[preview] channel: inbound wait failed — "
+                          + "\(String(describing: error))")
+                    return nil
+                }
+            }
+            group.addTask {
+                // ⚠ Sleeping is what makes `channelBound`'s cancellation matter:
+                // the loser of this race is cancelled below, and its own
+                // cancellation handler is what removes the waiter from the link.
+                try? await Task.sleep(for: inboundPreviewWait)
+                print("[preview] channel: none bound inbound within "
+                      + "\(inboundPreviewWait) — this link has no preview")
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     /// The dial in flight, if there is one — see `openPreviewChannel()`.
