@@ -84,9 +84,27 @@ public extension DevicePeer {
         // structural, so rebuilding a *hostless* Session for a resume would
         // silently drop the two parameters the host set — and 4.3a's whole point
         // is that the Session did not end.
+        // ⛔ **5.10h — the ORIGINAL instant, never the resume moment.** `opened_at`
+        // "is set once when the Session opens and never revised", so a resume
+        // that stamped `now` here would shorten the Session's own history every
+        // time the link dropped — the locally-invented instant the clause exists
+        // to prevent. `sessionOpenedAtNs` was recorded when the Session opened
+        // and this reads it; `nil` is refused below on the same terms the missing
+        // timebase reference is, because there is nothing honest to put here.
+        //
+        // ⚠ `session_open` carries no `opened_at` (CR-02 plan §10 #3), so for a
+        // Session a *host* opened this is this device's reading of the moment it
+        // joined. Narrower than the host's value, stated rather than dressed up,
+        // and stable across every resume on the link.
+        guard let openedAtNs = sessionOpenedAtNs else {
+            throw PpcpLibraryError(PPCP_ERR_NOT_FOUND)
+        }
         var session = ppcp_session()
+        var openedAt = ppcp_instant()
         if let held = sessionParameters, held.hasArbitration {
+            try check(ppcp_instant_make_z(&openedAt, held.timebaseRefId, openedAtNs))
             try check(ppcp_session_make_hosted(&session, sessionId, held.timebaseRefId,
+                                               &openedAt,
                                                held.coincidenceWindowNs,
                                                held.issueHoldNs))
         } else {
@@ -98,7 +116,9 @@ public extension DevicePeer {
             guard let reference = sessionParameters?.timebaseRefId else {
                 throw PpcpLibraryError(PPCP_ERR_NOT_FOUND)
             }
-            try check(ppcp_session_make_hostless(&session, sessionId, reference))
+            try check(ppcp_instant_make_z(&openedAt, reference, openedAtNs))
+            try check(ppcp_session_make_hostless(&session, sessionId, reference,
+                                                 &openedAt))
         }
 
         let shotIds = try DevicePeer.ids(mintedShots)

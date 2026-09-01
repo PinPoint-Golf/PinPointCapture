@@ -461,8 +461,24 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
             if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
                 device.whiteBalanceMode = .continuousAutoWhiteBalance
             }
+            // ⛔ And the torch, for exactly the argument above. Stopping the
+            // session puts the light out on its own, but it leaves `torchMode`
+            // latched `.on` — so the next `warmUp` would light it without anyone
+            // commanding it, and the same lens handed to another app arrives
+            // pre-switched. `CORE` §5.19 has no notion of an Actuator surviving
+            // its peer going cold, and a light that comes back by itself is the
+            // silent behaviour §9.2 exists to forbid.
+            if device.hasTorch, device.isTorchModeSupported(.off) {
+                device.torchMode = .off
+            }
             device.unlockForConfiguration()
         }
+        // ⚠ The 12.2a baseline goes with it: `activeDevice` is about to be nil,
+        // and a state carried across a teardown would diff the next session
+        // against the last one.
+        torchLock.lock()
+        lastObservedTorch = nil
+        torchLock.unlock()
 
         // ⛔ Retention ends before the outputs do. A writer left open across the
         // teardown below is one nothing will ever close, and its fragment files
@@ -475,6 +491,231 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         session.outputs.forEach { session.removeOutput($0) }
         session.commitConfiguration()
         activeDevice = nil
+    }
+
+    // MARK: - The torch (CORE §5.19, PPCP-MSG §12)
+
+    /// The last torch state this class observed, and whether a command of ours
+    /// put it there.
+    ///
+    /// ⚠ **Guarded by its own lock, not by `sampleQueue`.** `sampleQueue` is the
+    /// frame path at 150 fps and a 6.7 ms budget; nothing about a switch may
+    /// take a lock that path holds. Not `@MainActor` either, because the port is
+    /// not: `setTorch` is answered from a message handler and
+    /// `torchChangeSincePoll` from the health tick, and those need not be the
+    /// same isolation forever.
+    private let torchLock = NSLock()
+    /// ⛔ `nil` means "never read", which is different from "off": the first poll
+    /// establishes the baseline and reports nothing, because a change needs a
+    /// before as well as an after.
+    private var lastObservedTorch: TorchState?
+
+    /// `CORE` 5.19a — what this device declares in `Peer.actuators`.
+    ///
+    /// ⛔ **Reads the discovery session when there is no `activeDevice`**, and
+    /// that is the point of it: the declaration is assembled at connect time,
+    /// `activeDevice` is nil until `warmUp(mode:)`, and a torch that only exists
+    /// once the camera is warm would be a torch this peer never declares — and
+    /// 5.19a forbids commanding an undeclared one. So the hardware walk answers
+    /// the declaration and the running session answers the command.
+    ///
+    /// ⛔ **`.back` only, and the flat `available: false` on a phone without one
+    /// is 5.19c, not an error.** The front camera's "flash" is a screen
+    /// brightness trick with no `AVCaptureDevice` torch behind it; declaring an
+    /// Actuator for it would give a host a switch that answers `unsupported`
+    /// every time.
+    public func torchCapability() -> TorchCapability {
+        let device = activeDevice ?? Self.torchBearingDevice()
+        guard let device, device.hasTorch else { return .absent }
+        return TorchCapability(present: true,
+                               available: device.isTorchAvailable,
+                               supportsOnOff: device.isTorchModeSupported(.on)
+                                   && device.isTorchModeSupported(.off))
+    }
+
+    /// `CORE` 5.20 / `PPCP-MSG` 5.5 — per-Source hardware availability.
+    ///
+    /// ⛔ **The discovery walk, not `activeDevice`**, so this answers before
+    /// `warmUp` (5.20b). A camera that is present, connected and not held by
+    /// anything else is usable whether or not this application has opened it,
+    /// and that is exactly the question `Readiness` cannot answer.
+    ///
+    /// ⛔ **`isConnected` polled rather than `wasDisconnectedNotification`
+    /// observed**, and it is the same trade `torchChangeSincePoll` makes: this
+    /// codebase runs no notification observers and no KVO (see
+    /// `waitForConvergence`, which polls `MachClock` for the same reason), the
+    /// caller is a 1 Hz tick that has to re-read the other reasons anyway, and
+    /// an observer would add a lifetime to get an answer a second earlier. On
+    /// this hardware the built-in cameras are never disconnected at all; the
+    /// value exists for an external one.
+    ///
+    /// ⛔ **`in_use` is NOT reported here, and the reason is a platform gap
+    /// rather than a decision.** `AVCaptureDevice.isInUseByAnotherApplication`
+    /// is **macOS-only** — unavailable in iOS — and the nearest iOS signal,
+    /// `AVCaptureSession.wasInterruptedNotification` with
+    /// `videoDeviceInUseByAnotherClient`, answers a *different* question: it says
+    /// "the session I already had was taken", which is only observable once
+    /// there is a running session and is therefore unavailable in exactly the
+    /// pre-`warmUp` window 5.20b exists for. `SourceUnavailableReason.inUse`
+    /// stays in the vocabulary because it is 5.20's, and this platform does not
+    /// produce it. ⛔ Absence is "not known" (`CORE` §5.1); a camera reported
+    /// `available` here may still be held by another application, and the host
+    /// learns that from the `interruption` this device already sends (7.3d).
+    ///
+    /// ⚠ **Cameras only.** The microphone and the IMU are declared Sources too,
+    /// and `AVAudioSession` has no per-Source "somebody else has it" reading
+    /// that maps onto 5.20's vocabulary without inventing one. They are absent
+    /// from the dictionary, which is `CORE` §5.1's "absence means not known" and
+    /// not a claim that they are fine.
+    public func sourceHardwareAvailability() -> [String: SourceAvailability] {
+        let discovery = AVCaptureDevice.DiscoverySession(deviceTypes: Self.physicalDeviceTypes,
+                                                         mediaType: .video,
+                                                         position: .back)
+        var out: [String: SourceAvailability] = [:]
+        for device in discovery.devices {
+            // ⚠ The same `src:camera:<optics>` the declaration emits, built from
+            // the same `Lens` — #102's lesson is that two spellings of one id
+            // eventually disagree.
+            let sourceId = "src:camera:\(Self.lens(for: device.deviceType).opticsName)"
+            out[sourceId] = device.isConnected ? .available : .unavailable(.disconnected)
+        }
+        return out
+    }
+
+    /// The rear physical camera that carries the light, if this hardware has one.
+    ///
+    /// ⚠ `physicalDeviceTypes` rather than a `.builtInWideAngleCamera` literal,
+    /// so REQ-OPT-5's "never a virtual multi-lens device" holds here too — and so
+    /// a future phone that hangs the torch off a different assembly is found
+    /// rather than missed.
+    private static func torchBearingDevice() -> AVCaptureDevice? {
+        AVCaptureDevice.DiscoverySession(deviceTypes: physicalDeviceTypes,
+                                         mediaType: .video,
+                                         position: .back)
+            .devices.first(where: \.hasTorch)
+    }
+
+    /// `PPCP-MSG` 12.1 — switch the torch and report what it is **actually**
+    /// doing (12.1c).
+    ///
+    /// ⛔ **No `session.beginConfiguration()`.** `torchMode` is a *device*
+    /// property, the same class as the `focusMode` and `exposureMode` that
+    /// `lockControls(on:)` sets — legal to change on a running session and
+    /// nothing to do with the session graph. Wrapping it in a session
+    /// configuration would stop and restart the capture graph to flip a light,
+    /// which at 150 fps loses frames for no reason at all.
+    ///
+    /// ⛔ **`torchMode = .on`, never `setTorchModeOn(level:)`.** CB1 declares
+    /// `control: on_off`, and CB4 records why the level API is the wrong one to
+    /// reach for even in passing: it *throws* rather than clamping, so it cannot
+    /// produce 12.1c's clamped-achieved-value case and can only produce an
+    /// error nobody asked for.
+    ///
+    /// The failure map is 12.1b's registry and nothing outside it:
+    /// - camera authorisation not granted → `permission_denied`
+    /// - no torch, or no running session to command it through → `no_actuator`
+    /// - a mode this driver will not take → `unsupported`
+    /// - the light withdrawn while the device is hot → `thermal_limit`
+    /// - withdrawn for any other reason, or the configuration lock refused
+    ///   because another client holds the device → `busy`
+    public func setTorch(_ request: TorchRequest) -> TorchOutcome {
+        // ⚠ First, because it is the only refusal whose cause is not the
+        // hardware. Without camera authorisation there is no `activeDevice`
+        // either, and answering `no_actuator` for a torch that is physically
+        // present would send an operator hunting a fault in the phone.
+        guard PermissionsService().current().camera == .allowed else {
+            return .refused(.permissionDenied)
+        }
+        // ⚠ `activeDevice`, not the discovery walk `torchCapability()` uses.
+        // AVFoundation only lights a torch belonging to a *running* session, so
+        // commanding the discovered device would report success over a light
+        // that never came on — trap 3's shape, in the platform layer.
+        //
+        // ⚠ A declared torch on a cold device therefore answers `no_actuator`
+        // rather than something warmer. It is the honest answer to "is there an
+        // Actuator to command right now" and it is `busy`'s opposite: nothing
+        // else holds the hardware, there is simply nothing holding it at all.
+        guard let device = activeDevice, device.hasTorch else {
+            return .refused(.noActuator)
+        }
+        let mode: AVCaptureDevice.TorchMode = request.wantsOn ? .on : .off
+        guard device.isTorchModeSupported(mode) else { return .refused(.unsupported) }
+
+        // ⛔ Only on the way **on**. A torch the platform has withdrawn must
+        // still be switchable *off*: refusing that would leave the mode latched
+        // on, so the light would come back by itself the moment the device
+        // cooled — having been told to go out.
+        if request.wantsOn && device.isTorchAvailable == false {
+            return .refused(thermalState >= .serious ? .thermalLimit : .busy)
+        }
+
+        // ⚠ The `lockForConfiguration` / `defer unlock` idiom of
+        // `lockControls(on:)`. A throw here means another client holds the
+        // device, which is 12.1b's `busy` exactly.
+        do {
+            try device.lockForConfiguration()
+        } catch {
+            return .refused(.busy)
+        }
+        defer { device.unlockForConfiguration() }
+        device.torchMode = mode
+
+        // ⛔ **Read back, never echoed** (12.1c). `isTorchActive` is what the
+        // hardware is doing; `torchMode` is only what it was told. They differ
+        // when the light has been cut for heat, which is the one case CB4 says
+        // actually occurs on this platform.
+        let achieved = Self.readTorchState(of: device)
+
+        // ⛔ Re-baseline, so 12.2a does not then report this as an autonomous
+        // change: "not sent to confirm a command the requester already has an
+        // acknowledgement for".
+        torchLock.lock()
+        lastObservedTorch = achieved
+        torchLock.unlock()
+
+        return .applied(achieved)
+    }
+
+    /// `PPCP-MSG` 12.2a — a change nobody commanded, since the last poll.
+    ///
+    /// ⚠ **Called from the 1 Hz health tick** (`AppModel.refreshHealth`), which
+    /// is where every other cheap platform reading in this application is taken.
+    /// Two boolean property reads, no lock on the device and no allocation —
+    /// materially cheaper than the `storageHeadroom` call already on that tick.
+    ///
+    /// ⛔ **Consuming, and it re-baselines whether or not it reports.** A caller
+    /// that polled without re-baselining would emit `actuator_state` once per
+    /// tick for as long as the state stayed changed, which is exactly the
+    /// per-tick-not-on-change mistake trap-adjacent D16 is warned about.
+    public func torchChangeSincePoll() -> TorchChange? {
+        guard let device = activeDevice, device.hasTorch else {
+            // ⚠ Nothing to observe, and the baseline is dropped rather than
+            // held: a device that went cold and comes back warm must establish a
+            // fresh before, not diff against a state from another session.
+            torchLock.lock()
+            lastObservedTorch = nil
+            torchLock.unlock()
+            return nil
+        }
+        let now = Self.readTorchState(of: device)
+        torchLock.lock()
+        let previous = lastObservedTorch
+        lastObservedTorch = now
+        torchLock.unlock()
+        // ⛔ The first read establishes a baseline and reports nothing. A change
+        // needs a before as well as an after, and inventing one would announce a
+        // torch that was off and stayed off.
+        guard let previous, previous != now else { return nil }
+        return TorchChange(state: now, observedAtNs: MachClock.hostTimeNs)
+    }
+
+    /// The two readings 12.1c distinguishes, taken together.
+    ///
+    /// ⚠ Read without `lockForConfiguration()`, deliberately and on the same
+    /// grounds `waitForConvergence` reads `isAdjustingFocus` without it: that
+    /// lock guards property *writes*.
+    private static func readTorchState(of device: AVCaptureDevice) -> TorchState {
+        TorchState(on: device.isTorchActive, modeIsOn: device.torchMode == .on)
     }
 
     // MARK: - Retention (REQ-BUF-1)
@@ -544,7 +785,15 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
     }
 
     public var ringStats: RingStats {
-        sampleQueue.sync { recorder?.stats ?? RingStats() }
+        sampleQueue.sync {
+            guard let recorder else { return RingStats() }
+            var stats = recorder.stats
+            // `CORE` 5.21 `retained_from`, read off the ring beside the counters
+            // so `buffer_status` is assembled from one consistent snapshot
+            // rather than two reads a tick apart.
+            stats.retainedFromNs = recorder.ring.retainedNs?.lowerBound
+            return stats
+        }
     }
 
     /// ⚠ Must run on `sampleQueue`, which owns `routing`.
@@ -723,6 +972,22 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
             // does yet, and a `declared` viewpoint nobody declared would be a
             // self-report with no self behind it.
             viewpoint: viewpoint,
+            // `CORE` 5.19a — enumerated here, from the hardware, at the moment
+            // the declaration is assembled. This is the seam's whole job and the
+            // Actuator half of it is no different from the Source half: what the
+            // device *has*, never what the model is supposed to have.
+            //
+            // ⚠ **Empty on a phone with no rear flash, and on the simulator**,
+            // which has no camera at all. 5.19c: a peer declaring no Actuators
+            // participates fully. `torchCapability()` answers `.absent` there
+            // and `actuatorDeclaration` is `nil`, so the list is empty rather
+            // than this method throwing — the harness's
+            // `declarationWithoutACamera` needs no special case for it.
+            //
+            // ⚠ Deliberately **not** derived from `capability` above: a torch is
+            // not a capture mode and 5.19b keeps the two registries disjoint.
+            // One walk each, and neither infers the other.
+            actuators: [torchCapability().actuatorDeclaration].compactMap { $0 },
             product: ("Apple", DeviceProfiles.profile(for: identifier).marketingName,
                       ProcessInfo.processInfo.operatingSystemVersionString))
     }

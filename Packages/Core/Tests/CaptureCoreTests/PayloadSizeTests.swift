@@ -43,6 +43,7 @@ struct PayloadSizeTests {
         try writer.record(declaration: try SessionBundleTests.declaration())
         try writer.open(session: PpcpSessionRecord(
             id: SessionBundleTests.sessionId, timebaseRef: SessionBundleTests.timebase,
+            openedAtNs: 1_000_000_000,
             epochWallUtcNs: 1_787_000_000_000_000_000,
             epochAtNs: 1_000_000_000, epochTimebaseId: SessionBundleTests.timebase))
         try writer.open(stream: SessionBundleTests.videoStream)
@@ -218,6 +219,7 @@ struct PayloadSizeTests {
         try writer.record(declaration: try SessionBundleTests.declaration())
         try writer.open(session: PpcpSessionRecord(
             id: SessionBundleTests.sessionId, timebaseRef: SessionBundleTests.timebase,
+            openedAtNs: 1_000_000_000,
             epochWallUtcNs: 1_787_000_000_000_000_000,
             epochAtNs: 1_000_000_000, epochTimebaseId: SessionBundleTests.timebase))
         try writer.open(stream: SessionBundleTests.videoStream)

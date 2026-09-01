@@ -312,6 +312,17 @@ public final class AppModel {
         do {
             try await device.warmUp(mode: mode)
             captureStatus.state = .warm
+            // ⭐ **The health tick starts HERE, not at `arm`, and CR-02 §4a is
+            // why.** `DeviceStatus` exists to answer "can this Source be used at
+            // all" — 5.20b makes it reachable *earlier* than `Readiness` and not
+            // derivable from it — and the residual gap CR-02 was granted to
+            // close was named as "nothing before `arm`". A tick that only ran
+            // while armed would rebuild that gap in the very package meant to
+            // fill it: a camera taken by another application, or a light cut for
+            // heat, would go unreported for the whole time an operator is
+            // framing the shot, which is when they can still do something about
+            // it. ⚠ `arm()` calls this too and it is idempotent.
+            startHealthPolling()
             // ⚠ Cleared on success, or a solved problem stays on screen for the
             // rest of the session.
             capabilityError = nil
@@ -542,6 +553,11 @@ public final class AppModel {
         // moment anybody wants to read it.
         ringStats = device.ringStats
         lastRunRingStats = ringStats
+        // ⛔ Trap 7 — the baseline belongs to the Stream that is closing with
+        // this arm. Carrying it into the next one would subtract a count taken
+        // against a recorder that no longer exists.
+        discardBaselineByStream.removeAll()
+        lastBufferMargin = nil
         // ⛔ Before `goCold`, which removes the session's outputs. `goCold` calls
         // this too for the paths that do not come through here, and it is
         // idempotent — but the ordering is stated at both ends rather than left
@@ -1193,11 +1209,44 @@ public final class AppModel {
         if let mode = activeMode {
             storage = device.storageHeadroom(forMode: mode)
         }
+
+        // `PPCP-MSG` 12.2a — a torch state nobody commanded.
+        //
+        // ⛔ **Above the `armed` guard below, and it matters.** A torch is warm-
+        // state hardware: an operator lights it to check framing long before
+        // anything is retaining, and a thermal cutoff does not wait for an arm.
+        // Polling it only while armed would make the one case CB4 names —
+        // asynchronous drift — invisible for most of the time it can happen.
+        //
+        // ⚠ **Observable here and nowhere else yet.** Emitting `actuator_state`
+        // on the wire is D15; this makes the change *visible*, which is D14's
+        // whole obligation. The property is what D15 will read.
+        let nowNs = MachClock.hostTimeNs
+        if let change = device.torchChangeSincePoll() {
+            lastAutonomousTorchChange = change
+            torch = change.state
+            // `PPCP-MSG` 12.2a — a change no acknowledged command caused, so it
+            // is the message's own case rather than a correction.
+            if let link, let actuator = link.declaration.actuators.first {
+                Task { [weak link, state = change.state] in
+                    await link?.sendActuatorState(actuatorId: actuator.id,
+                                                  isOn: state.on,
+                                                  sinceNs: change.observedAtNs)
+                }
+            }
+        }
+        // `PPCP-MSG` 5.5 — above the `armed` guard, and that is the point of
+        // CR-02 §4a. See the ⭐ in `warmUp`.
+        refreshDeviceStatus(nowNs: nowNs)
         // E1.1's instrument, sampled at the same 1 Hz. ⚠ Cheap by construction —
         // `ringStats` is a struct copy of plain integers read through the sample
         // queue, and it is NOT on the frame path.
         guard captureStatus.state == .armed else { return }
         ringStats = device.ringStats
+        // `PPCP-MSG` 5.6 — below the guard, because a ring margin needs a ring:
+        // 5.21c confines `buffer_status` to a `shot_windowed` Stream and there
+        // is none until this device is retaining.
+        refreshBufferStatus()
 
         // ⛔ The `metadata` Stream's segments, on the same tick. A `continuous`
         // Stream must account for its whole open interval (I36) and
@@ -1211,6 +1260,180 @@ public final class AppModel {
             // cosmetic failure, and the close will refuse rather than lie.
             recordingError = String(describing: error)
         }
+    }
+
+    // MARK: The torch (CORE §5.19, PPCP-MSG §12)
+
+    /// What the torch is **actually** doing, as last observed or last commanded.
+    ///
+    /// ⛔ `nil` is "not known", not "off" (`CORE` §5.1's last paragraph). Nothing
+    /// has read the hardware until the first command or the first tick with a
+    /// warm device, and a `false` there would be a claim nobody measured — the
+    /// same mistake `bufferSeconds` was fixed for (E1.1).
+    public private(set) var torch: TorchState?
+
+    /// The most recent change **no acknowledged command caused** (12.2a).
+    ///
+    /// ⚠ **What D15 sends `actuator_state` from.** D14 stops at making it
+    /// observable, deliberately: the emission has a message catalogue behind it
+    /// that `libppcp` does not have yet, and a half-wired sender would be worse
+    /// than none.
+    public private(set) var lastAutonomousTorchChange: TorchChange?
+
+    /// `CORE` 5.19a — what this device declares in `Peer.actuators`.
+    ///
+    /// ⚠ A method rather than a computed property, because it reads the hardware
+    /// and an `@Observable` computed property is read on every view invalidation.
+    public func torchCapability() -> TorchCapability { device.torchCapability() }
+
+    /// `PPCP-MSG` 12.1 — command the torch and take the achieved state back.
+    ///
+    /// ⛔ **The result is the ack, and it is not the request.** Trap 3: a
+    /// command that was accepted is not a command that was achieved, and the
+    /// caller — a UI switch today, D15's `actuator_command_ack` tomorrow —
+    /// reflects what came back rather than what went in.
+    @discardableResult
+    public func setTorch(_ request: TorchRequest) -> TorchOutcome {
+        let outcome = device.setTorch(request)
+        // ⚠ Only on `applied`. A refusal changed nothing, so overwriting the
+        // observed state with anything at all would be inventing a reading.
+        if let achieved = outcome.achieved { torch = achieved }
+        return outcome
+    }
+
+    // MARK: CR-02 statistics — MSG 5.5 / 5.6
+
+    /// The last status **emitted** per Source, so the next tick can tell a change
+    /// from a repeat.
+    ///
+    /// ⛔ **`since` is when `available` CHANGED, not when it was read** (5.20).
+    /// Keeping the whole status rather than only the value is what lets the
+    /// instant survive the ticks in between; re-stamping it every second would
+    /// make the field say "one second ago" forever.
+    private var lastSourceStatus: [String: SourceStatus] = [:]
+
+    /// The last margin emitted, so 5.6c's on-change discipline has something to
+    /// compare against.
+    private var lastBufferMargin: BufferMargin?
+
+    /// ⛔ **Trap 7 — `discarded_since_open` is per Stream open and
+    /// `RingStats.fragmentsEvicted` is per ARM.** The recorder is built by
+    /// `startRetaining`, so its counter resets every time a golfer arms while
+    /// the wire field must not. This is the baseline subtracted from it, taken
+    /// the first time a margin is assembled for a Stream and held until that
+    /// Stream closes.
+    private var discardBaselineByStream: [String: Int] = [:]
+
+    /// `CORE` 5.21 `retention_target` — what the ring is *trying* to hold.
+    ///
+    /// ⚠ The two constants that actually decide it, multiplied here rather than
+    /// written as a third constant that could disagree with them.
+    static let ringRetentionTargetNs =
+        Int64(Double(RingBufferRecorder.fragmentCapacity)
+              * RingBufferRecorder.fragmentSeconds * 1_000_000_000)
+
+    /// `PPCP-MSG` 5.5 — emit a `device_status` for every declared Source whose
+    /// availability moved since the last tick.
+    ///
+    /// ⛔ **On change and never per tick** (5.5a). The tick notices; the message
+    /// reports what moved.
+    ///
+    /// ⚠ **Two layers, and they are separate reads.** The hardware answers
+    /// `in_use` and `disconnected` through the port; `permission_denied`,
+    /// `thermal_limit` and `storage_full` are read where this application
+    /// already reads them, and are overlaid. ⛔ Overlaid *first*, in the order
+    /// `currentBlocker()` states and for the same reason: a thermal warning
+    /// shown for a camera the user never granted is noise.
+    ///
+    /// ⛔ **`no_source` is not in the vocabulary** (5.20d, erratum E64). The
+    /// event only ever fires for an already-declared Source, so a value naming
+    /// its own precondition's negation could never be true. A device with no
+    /// camera declares none and emits nothing for one.
+    private func refreshDeviceStatus(nowNs: Int64) {
+        // ⚠ Nothing to tell without a counterpart, and the declaration comes
+        // from the LINK — `recording?.declaration` is nil until a golfer presses
+        // Capture, which is the mistake #108 was.
+        guard let link else { return }
+        let hardware = device.sourceHardwareAvailability()
+        for source in link.declaration.sources {
+            let availability: SourceAvailability
+            if let overlay = unavailableOverlay(forSourceKind: source.kind) {
+                availability = .unavailable(overlay)
+            } else if let observed = hardware[source.id] {
+                availability = observed
+            } else {
+                // ⛔ Absence is "not known" (`CORE` §5.1), never an implied
+                // "available". The microphone and the IMU land here: nothing on
+                // this platform answers 5.20's question about them without
+                // inventing an answer.
+                continue
+            }
+            guard lastSourceStatus[source.id]?.availability != availability else { continue }
+            let status = SourceStatus(sourceId: source.id, availability: availability,
+                                      sinceNs: nowNs)
+            lastSourceStatus[source.id] = status
+            Task { [weak link] in await link?.sendDeviceStatus(status) }
+        }
+    }
+
+    /// The reasons this application already reads, mapped onto 5.20's registry.
+    ///
+    /// ⚠ **Per kind, because the permissions are.** A denied microphone says
+    /// nothing about the camera and the wire is per Source, so folding them
+    /// would report a fault against hardware that has none.
+    private func unavailableOverlay(forSourceKind kind: String) -> SourceUnavailableReason? {
+        switch kind {
+        case "camera" where permissions.camera != .allowed: return .permissionDenied
+        case "microphone" where permissions.microphone != .allowed: return .permissionDenied
+        default: break
+        }
+        // ⛔ 5.8's ordinal vocabulary, and `critical` is the level at which this
+        // device stops — matching `currentBlocker()` exactly, because two
+        // thresholds for one fact eventually disagree.
+        if captureStatus.thermal == .critical { return .thermalLimit }
+        if storage.freeBytes > 0,
+           Self.storageFloor.verdict(freeBytes: UInt64(storage.freeBytes)) == .refuseToArm {
+            return .storageFull
+        }
+        return nil
+    }
+
+    /// `PPCP-MSG` 5.6 — the ring's standing margin on the `shot_windowed` Stream.
+    ///
+    /// ⛔ **`shot_windowed` only** (5.21c). The `metadata` and `audio` Streams
+    /// are `continuous` and have no ring to have a margin in; the video Stream
+    /// is the one this reports, and the library refuses the others anyway.
+    private func refreshBufferStatus() {
+        guard let link, let stream = recording?.videoStream,
+              stream.continuity == .shotWindowed,
+              let retainedFromNs = ringStats.retainedFromNs else { return }
+        // ⛔ Trap 7 — the baseline, taken once per Stream open. `fragmentsEvicted`
+        // resets per arm and the wire field is per Stream open.
+        let baseline = discardBaselineByStream[stream.id] ?? {
+            discardBaselineByStream[stream.id] = ringStats.fragmentsEvicted
+            return ringStats.fragmentsEvicted
+        }()
+        // ⛔ **Evictions only** (5.21a, trap 7). `framesDroppedEncoderBusy` is
+        // deliberately absent: those frames are accounted for in the Capture's
+        // `achieved_summary` and counting them here would count them twice.
+        let discarded = UInt64(max(ringStats.fragmentsEvicted - baseline, 0))
+        // ⛔ Trap 8 — `gapBuckets`/`largestGaps` do NOT go on the wire. They are
+        // receiver-side aggregation over repeated readings of these four fields.
+        let margin = BufferMargin(streamId: stream.id,
+                                  retainedFromNs: retainedFromNs,
+                                  retentionTargetNs: Self.ringRetentionTargetNs,
+                                  discardedSinceOpen: discarded,
+                                  lastDiscardSinceNs: ringStats.lastDiscardStartNs,
+                                  lastDiscardDurationNs: ringStats.lastDiscardStartNs
+                                      .flatMap { start in
+                                          ringStats.lastDiscardEndNs.map { $0 - start }
+                                      })
+        // ⛔ On change (5.6c). A ring that has not moved has nothing to report,
+        // and `retained_from` moving every half second is exactly the change the
+        // field is for.
+        guard margin != lastBufferMargin else { return }
+        lastBufferMargin = margin
+        Task { [weak link] in await link?.sendBufferStatus(margin) }
     }
 
     private func startHealthPolling() {
@@ -1422,6 +1645,12 @@ extension AppModel: HostLinkSessionDelegate {
 
     public func hostLink(_ link: HostLinkSession, didOpenSession sessionId: String,
                          parameters: PpcpSessionParameters) {
+        // ⛔ **A new counterpart has been told nothing** (5.5a). The on-change
+        // rule is per receiver, not per fact: keeping the previous emissions
+        // would mean this host never learns a Source's availability until it
+        // happens to move. Cleared so the next tick states the current value
+        // once, and then goes quiet again.
+        lastSourceStatus.removeAll()
         // ⛔ Nothing *captures* here. PinPointStudio opens the Session at
         // `declare`, long before an arm, and a Session opened now would be one
         // the host's arbitration parameters could not reach. `startRecording`
@@ -1517,6 +1746,35 @@ extension AppModel: HostLinkSessionDelegate {
         // `calibration_changed` — has no value for *declined, not built yet*.
         // Fourth instance of the same shape: no way to state a terminal negative.
         return .refused(reason: "not_needed")
+    }
+
+    public func hostLink(_ link: HostLinkSession, didCommandActuator actuatorId: String,
+                         isOn: Bool) async -> ActuatorVerdict {
+        // ⛔ **12.1d is the engine's, not ours.** `peer_on_actuator_command`
+        // answers `error`/`not_declared` for an Actuator this peer never
+        // declared before any event exists, so an id reaching here is one this
+        // device declared. The guard below is therefore about *which* declared
+        // Actuator, and this phone has exactly one.
+        guard link.declaration.actuators.contains(where: { $0.id == actuatorId }) else {
+            return .refused(reason: ActuatorRefusalReason.noActuator.rawValue)
+        }
+        // ⭐ **12.1c — the achieved state comes from here and from nowhere
+        // else, and since libppcp L30 it is what goes on the wire.**
+        // `setTorch` sets `torchMode` and then reads `isTorchActive` back off
+        // the `AVCaptureDevice`, and `TorchOutcome.applied` cannot be
+        // constructed without that reading. `ActuatorVerdict.init(_:)` carries
+        // `state.on` — the light — rather than `state.modeIsOn` — the switch —
+        // so a torch the platform has cut for heat acks what it is doing and not
+        // what it was told.
+        //
+        // ⛔ **This returns for every outcome, which is how `MSG` 1c is kept.**
+        // `setTorch` neither throws nor suspends and `TorchOutcome` has two
+        // cases, so no permission, no `activeDevice`, an unsupported mode and a
+        // thrown `lockForConfiguration` all arrive here as a `refused` carrying
+        // a 12.1b reason. There is no path out of this method that answers
+        // nothing.
+        let outcome = setTorch(isOn ? .on : .off)
+        return ActuatorVerdict(outcome)
     }
 
     public func hostLink(_ link: HostLinkSession, didIssueShot shotId: String,

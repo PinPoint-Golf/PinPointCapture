@@ -209,6 +209,17 @@ public final class RecordingSession {
                 id: sessionId,
                 timebaseRef: control.hosted?.parameters.timebaseRefId
                     ?? PpcpTimebases.captureId,
+                // ⛔ 5.10h — the same adjacent reading the epoch takes, because
+                // it *is* the moment this Session opened. Read once above and
+                // used twice, so the opening instant and the epoch's instant
+                // cannot drift apart by however long the lines between them take.
+                //
+                // ⚠ **Hosted: this is not the host's `opened_at`.**
+                // `session_open` carries none (CR-02 plan §10 #3), so a device
+                // cannot learn it and must not invent it. What goes here is this
+                // device's own reading of the moment it began recording the
+                // Session — set once, never revised, and never a later instant.
+                openedAtNs: epochAtNs,
                 epochWallUtcNs: Int64(epochWall.timeIntervalSince1970 * 1_000_000_000),
                 epochAtNs: epochAtNs,
                 epochTimebaseId: PpcpTimebases.captureId))

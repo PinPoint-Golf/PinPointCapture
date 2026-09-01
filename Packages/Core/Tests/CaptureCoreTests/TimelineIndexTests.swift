@@ -320,7 +320,8 @@ struct SessionTimelineTests {
         }
         return try CaptureSessionRecorder(
             writer: writer, declaration: try declaration(),
-            session: PpcpSessionRecord(id: sessionId, timebaseRef: timebase))
+            session: PpcpSessionRecord(id: sessionId, timebaseRef: timebase,
+                                       openedAtNs: 1_000_000_000))
     }
 
     static var videoStream: PpcpStreamRecord {

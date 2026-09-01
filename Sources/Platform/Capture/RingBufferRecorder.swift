@@ -68,7 +68,40 @@ public struct RingStats: Sendable, Hashable {
     public var fragmentsWritten: Int = 0
     /// Fragments evicted by rollover. `written - evicted` should settle at the
     /// capacity once the ring is full.
+    ///
+    /// ⛔ **This is `CORE` 5.21a's counter and the frame-drop counters are
+    /// not** (trap 7). 5.21a counts what never became part of *any* Capture; a
+    /// frame the encoder was too busy to take is already accounted for in the
+    /// Capture's `achieved_summary`, and adding it here would count it twice.
+    ///
+    /// ⚠ **Its epoch is the ARM, not the Stream open.** `RingStats` is created
+    /// with the recorder and the recorder is created by `startRetaining`, so
+    /// this resets every time a golfer arms. `buffer_status.discarded_since_open`
+    /// is per *Stream open*, so its emitter subtracts a baseline rather than
+    /// sending this number.
     public var fragmentsEvicted: Int = 0
+
+    /// `CORE` 5.21 `last_discard` — the span of the most recently evicted
+    /// fragment, on the capture timebase.
+    ///
+    /// ⛔ **Recorded where the eviction happens, because that is the only place
+    /// the fragment's own instants exist.** A `FragmentRing` hands back what it
+    /// dropped and then forgets it; reconstructing the span afterwards from
+    /// `retainedNs` would be arithmetic over a ring that has already moved.
+    ///
+    /// ⚠ Both halves or neither — `last_discard` is one statement (a span), and
+    /// the library's setter takes them together for that reason.
+    public var lastDiscardStartNs: Int64?
+    public var lastDiscardEndNs: Int64?
+
+    /// `CORE` 5.21 `retained_from` — the oldest instant still in the ring.
+    ///
+    /// ⚠ **Filled by the reader, not by `append`.** It is derived from the
+    /// ring's first fragment and would otherwise be a third thing to keep in
+    /// step on the 150 fps frame path for a value nobody reads there. `nil`
+    /// means the ring holds nothing, which is not the same as holding a
+    /// zero-length window.
+    public var retainedFromNs: Int64?
     /// ⛔ Bytes that did not land, so the ring must not claim them (8.4b).
     public var fragmentsDroppedWriteFailed: Int = 0
     /// A fragment that carried no frames at all, so it could not be indexed.
@@ -595,6 +628,12 @@ extension RingBufferRecorder: AVAssetWriterDelegate {
         stats.fragmentsWritten += 1
         for evicted in ring.append(fragment) {
             stats.fragmentsEvicted += 1
+            // `CORE` 5.21 `last_discard` — the span this eviction removed from
+            // the retained window, taken here where `startNs`/`endNs` are still
+            // to hand. The loop can evict more than one, and the *last* is the
+            // one the field names.
+            stats.lastDiscardStartNs = evicted.startNs
+            stats.lastDiscardEndNs = evicted.endNs
             removeFile(of: evicted)
         }
     }

@@ -460,6 +460,15 @@ final class StubCaptureDevice: CaptureDevice, @unchecked Sendable {
 
     var thermalState: ThermalState { .nominal }
 
+    // ⛔ **A stub with no torch and no cameras is a correct peer**, not a
+    // degraded one: 5.19c makes an empty `actuators` list a full participant,
+    // and 5.20's dictionary is keyed by Sources this device can answer for —
+    // absence is "not known" (`CORE` §5.1), never an implied "fine".
+    func torchCapability() -> TorchCapability { .absent }
+    func setTorch(_ request: TorchRequest) -> TorchOutcome { .refused(.noActuator) }
+    func torchChangeSincePoll() -> TorchChange? { nil }
+    func sourceHardwareAvailability() -> [String: SourceAvailability] { [:] }
+
     func storageHeadroom(forMode mode: VideoMode) -> StorageHeadroom {
         StorageHeadroom(estimatedSessions: 40, freeBytes: 64 << 30)
     }

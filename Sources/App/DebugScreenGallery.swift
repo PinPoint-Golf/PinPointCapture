@@ -276,13 +276,99 @@ struct DebugScreenGallery: View {
                                           distance: model.micToBallDistance,
                                           port: DebugLaunch.conformPort)
 
+        // ⛔ Not a designed screen. D14's torch, on the platform seam.
+        case "D14": TorchHarnessView(model: model)
+
         default:
             ContentUnavailableView(
                 "Unknown screen \"\(screenID)\"",
                 systemImage: "questionmark.square.dashed",
-                description: Text("Try A1–A7, B1–B6 (B2A, B3A), C1–C3 or D9.")
+                description: Text("Try A1–A7, B1–B6 (B2A, B3A), C1–C3, D9 or D14.")
             )
         }
+    }
+}
+
+/// D14's torch, exercised without a host.
+///
+/// ⛔ **Not a feature and not a designed screen.** The plan's C1 gate is "the
+/// torch toggles on a real iPhone", and until D15 answers `actuator_command`
+/// there is nothing in this application that can command it — so the seam would
+/// ship written and never once run. This is the same argument `-ppcpRingStats`
+/// makes for the ring overlay: a thing that needs a phone to check, and no phone
+/// path to check it with, gets checked by arithmetic instead.
+///
+/// ⚠ **What it is for is the readback.** 12.1c says the ack carries what the
+/// torch is *actually* doing, and the only way to know whether `isTorchActive`
+/// tells the truth is to watch the light and read the row at the same time.
+///
+///     xcrun devicectl device process launch --device <udid> \
+///         org.pinpointstudio.capture -- -ppcpScreen D14
+struct TorchHarnessView: View {
+    @Bindable var model: AppModel
+    @State private var lastOutcome: TorchOutcome?
+
+    var body: some View {
+        let capability = model.torchCapability()
+        List {
+            Section("CORE 5.19a — what this device declares") {
+                LabeledContent("present", value: String(capability.present))
+                LabeledContent("available", value: String(capability.available))
+                LabeledContent("on/off", value: String(capability.supportsOnOff))
+                // ⚠ 5.19c — "none" is a correct declaration, not a fault.
+                LabeledContent("actuator",
+                               value: capability.actuatorDeclaration.map {
+                                   "\($0.id) · \($0.kind) · \($0.control.rawValue)"
+                               } ?? "none (5.19c)")
+            }
+
+            Section("MSG 12.1 — command") {
+                // ⛔ Warm first, or every command answers `no_actuator`:
+                // AVFoundation only lights a torch belonging to a running
+                // session, which is exactly what `setTorch` refuses to pretend
+                // otherwise about.
+                Button("Warm up the camera") { Task { await model.warmUp() } }
+                Button("Torch on") { lastOutcome = model.setTorch(.on) }
+                Button("Torch off") { lastOutcome = model.setTorch(.off) }
+                LabeledContent("state", value: model.captureStatus.state.rawValue)
+            }
+
+            Section("MSG 12.1b/12.1c — the ack this would carry") {
+                // ⚠ `.some`, because a `switch` over an Optional does not
+                // match a bare case pattern.
+                switch lastOutcome {
+                case .some(.applied(let state)):
+                    LabeledContent("verdict", value: "applied")
+                    // ⛔ The achieved value, not the request.
+                    LabeledContent("state.on", value: String(state.on))
+                    LabeledContent("torchMode", value: String(state.modeIsOn))
+                    if state.achievedDiffersFromMode {
+                        Text("achieved differs from the switch position — CB4")
+                            .foregroundStyle(.orange)
+                    }
+                case .some(.refused(let reason)):
+                    LabeledContent("verdict", value: "refused")
+                    LabeledContent("reason", value: reason.rawValue)
+                case nil:
+                    Text("nothing commanded yet").foregroundStyle(.secondary)
+                }
+            }
+
+            Section("MSG 12.2a — a change nobody commanded") {
+                // ⚠ Fed by the 1 Hz health tick, which since D16 starts at
+                // `warmUp` rather than at `arm` (CR-02 §4a) — so "Warm up the
+                // camera" above is enough to make this row live, and a blank
+                // row while warm now means nothing has moved rather than that
+                // nothing is looking.
+                if let change = model.lastAutonomousTorchChange {
+                    LabeledContent("state.on", value: String(change.state.on))
+                    LabeledContent("observed at ns", value: String(change.observedAtNs))
+                } else {
+                    Text("none observed").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("D14 — torch")
     }
 }
 

@@ -104,6 +104,7 @@ struct SessionBundleTests {
         try writer.record(declaration: try declaration())
         try writer.open(session: PpcpSessionRecord(
             id: sessionId, timebaseRef: timebase,
+            openedAtNs: 1_000_000_000,
             epochWallUtcNs: 1_787_000_000_000_000_000,
             epochAtNs: 1_000_000_000, epochTimebaseId: timebase))
         for stream in streams { try writer.open(stream: stream) }
@@ -193,7 +194,8 @@ struct SessionBundleTests {
         let writer = try SessionBundleWriter(peer: try Self.peer()) { sink.append($0) }
         try writer.record(declaration: try Self.declaration())
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
-                                                   timebaseRef: Self.timebase))
+                                                   timebaseRef: Self.timebase,
+                                                   openedAtNs: 1_000_000_000))
         try writer.open(stream: Self.videoStream)
 
         // Cut three bytes off the last frame.
@@ -288,7 +290,8 @@ struct SessionBundleTests {
         // Stream, a Capture, a Shot or a Candidate.
         try writer.record(declaration: try Self.declaration())
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
-                                                   timebaseRef: Self.timebase))
+                                                   timebaseRef: Self.timebase,
+                                                   openedAtNs: 1_000_000_000))
         #expect(writer.isHostless)
 
         // 7.3a / C2 — a capture peer cannot originate `arm` at all.
@@ -330,7 +333,11 @@ struct SessionBundleTests {
         body.issue_hold_ns = 200_000_000
 
         // The host's ids cross; the arbitration parameters do not.
-        let record = PpcpSessionRecord(PpcpSessionParameters(body))
+        // ⚠ 5.10h — supplied by the caller, because `session_open` carries no
+        // `opened_at` (CR-02 plan §10 #3). What crosses from the host is the two
+        // ids; the instant is this device's own and is stated as such.
+        let record = PpcpSessionRecord(PpcpSessionParameters(body),
+                                       openedAtNs: 1_000_000_000)
         #expect(record.id == "ses:from-the-host")
         #expect(record.timebaseRef == "tb:host")
 
@@ -347,7 +354,11 @@ struct SessionBundleTests {
         // the engine, not by a check of ours.
         peer.withHandle { handle in
             var hosted = ppcp_session()
+            // 5.10h — mandatory, and expressed in `timebase_ref`.
+            var openedAt = ppcp_instant()
+            #expect(ppcp_instant_make_z(&openedAt, "tb:host", 1_000_000_000) == PPCP_OK)
             #expect(ppcp_session_make_hosted(&hosted, "ses:from-the-host", "tb:host",
+                                             &openedAt,
                                              50_000_000, 200_000_000) == PPCP_OK,
                     "the constructor is fine — it is the peer that refuses")
             #expect(ppcp_peer_session_open(handle, &hosted) != PPCP_OK)
@@ -365,7 +376,8 @@ struct SessionBundleTests {
         // ⛔ `ENC` 7h (erratum E9).
         try writer.record(declaration: try Self.declaration())
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
-                                                   timebaseRef: Self.timebase))
+                                                   timebaseRef: Self.timebase,
+                                                   openedAtNs: 1_000_000_000))
         try writer.open(stream: Self.videoStream)
         let digest = SessionBundleWriter.digest(of: Self.clip)
         try writer.announce(Self.capture("cap:1", bytes: UInt64(Self.clip.count),
@@ -404,7 +416,8 @@ struct SessionBundleTests {
         let sink = Self.Sink()
         let writer = try SessionBundleWriter(peer: try Self.peer()) { sink.append($0) }
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
-                                                   timebaseRef: Self.timebase))
+                                                   timebaseRef: Self.timebase,
+                                                   openedAtNs: 1_000_000_000))
         let before = sink.bytes.count
         try writer.finish()
         #expect(sink.bytes.count == before, "ENC 7e — a footer would be bytes")

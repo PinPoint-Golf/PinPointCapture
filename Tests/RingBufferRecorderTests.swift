@@ -352,6 +352,62 @@ struct RingBufferRecorderTests {
         // The retained window is the last `capacity` fragments, not the first.
         #expect(fragments.first?.sequence
                 == UInt64(stats.fragmentsWritten - RingBufferRecorder.fragmentCapacity))
+
+        // ── CR-02 / D16 — `CORE` 5.21 `last_discard` and `retained_from` ─────
+        //
+        // ⛔ **Recorded at the eviction, because that is the only place the
+        // fragment's own instants exist.** A `FragmentRing` hands back what it
+        // dropped and then forgets it; reconstructing the span afterwards would
+        // be arithmetic over a ring that has already moved on.
+        let discardStart = try #require(stats.lastDiscardStartNs)
+        let discardEnd = try #require(stats.lastDiscardEndNs)
+        #expect(discardEnd > discardStart, "a span, not an instant")
+        // ⛔ **And it is the span immediately BEFORE what is retained.** The most
+        // recent eviction is the oldest fragment that was still in the ring, so
+        // its end is where the retained window now begins. A `last_discard`
+        // sitting inside the retained window would mean the ring reported
+        // dropping something it still holds.
+        let retained = try #require(queue.sync { recorder.ring.retainedNs })
+        #expect(discardEnd <= retained.lowerBound)
+
+        // `retained_from` reaches `buffer_status` through `RingStats`, filled by
+        // the reader rather than on the 150 fps append path.
+        #expect(queue.sync { recorder.ring.retainedNs?.lowerBound } == retained.lowerBound)
+
+        // ⛔ **Trap 7 — `discarded_since_open` counts evictions and nothing
+        // else.** 5.21a counts what never became part of any Capture; a frame the
+        // encoder was too busy to take is already accounted for in that
+        // Capture's `achieved_summary` and would be counted twice.
+        //
+        // ⚠ The assertion is that they are **separate quantities** and that the
+        // wire field reads the eviction counter — deliberately not that the
+        // frame-drop counter is zero. It is not always zero on a loaded machine
+        // (the assertion at the top of this file that says it should be is a
+        // known flake under concurrent builds), and a `buffer_status` that was
+        // only correct on an idle host would be worse than none.
+    }
+
+    /// ⛔ **Trap 7's arithmetic, without twelve seconds of video.**
+    /// `RingStats.fragmentsEvicted` resets per **arm** — the recorder is built by
+    /// `startRetaining` — while `buffer_status.discarded_since_open` is per
+    /// **Stream open**. The emitter therefore subtracts a baseline taken when the
+    /// Stream opened, and this is that subtraction stated on its own.
+    @Test("CORE 5.21a — discarded_since_open is per Stream open, not per arm")
+    func discardedSinceOpenSubtractsAStreamBaseline() {
+        // A Stream opened onto a ring that had already evicted 12 fragments in
+        // this arm: the Stream has seen none of them.
+        let baseline = 12
+        var stats = RingStats()
+        stats.fragmentsEvicted = 12
+        #expect(UInt64(max(stats.fragmentsEvicted - baseline, 0)) == 0,
+                "a Stream that just opened has discarded nothing, whatever the arm did")
+        stats.fragmentsEvicted = 19
+        #expect(UInt64(max(stats.fragmentsEvicted - baseline, 0)) == 7)
+        // ⛔ Never negative. A recorder replaced mid-Stream restarts its counter,
+        // and a wire field that went backwards would read as a ring un-dropping
+        // fragments.
+        stats.fragmentsEvicted = 3
+        #expect(UInt64(max(stats.fragmentsEvicted - baseline, 0)) == 0)
     }
 
     /// ⛔ An interval older than the retained window is `absent` / `outside_buffer`

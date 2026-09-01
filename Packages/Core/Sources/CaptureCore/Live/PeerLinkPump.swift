@@ -68,6 +68,32 @@ public enum PeerLinkEvent: Sendable, Hashable {
     /// `CORE` 5.2a / `MSG` 5.2a — answer with a Readiness **measurement**.
     case armRequested
     case disarmRequested
+    /// `PPCP-MSG` 12.1 — a host commanded one of this peer's Actuators.
+    ///
+    /// ⛔ **THE ANSWER IS OWED HERE** (`MSG` 1c). Since libppcp L30 the engine
+    /// writes nothing for a well-formed, declared, host-originated command: it
+    /// hands it over and the embedding replies `applied` or `refused`. That is
+    /// the whole point of the change — 12.1c makes `state` what the Actuator is
+    /// *actually* doing, and a sans-I/O library owns no hardware to read, so an
+    /// ack it wrote itself could only ever be the echo 12.1c forbids. `replyTo`
+    /// is therefore load-bearing rather than diagnostic: it is the command's
+    /// `msg_id`, and 1a matches a Response to its Request by nothing else.
+    ///
+    /// - Parameter engineAnswered: ⛔ **`true` means the answer is already on
+    ///   the wire and this application owes nothing** — and must not touch the
+    ///   hardware either. Three refusals need no hardware to decide and the
+    ///   engine still makes them *before* raising the event: 12.1d (an Actuator
+    ///   this peer never declared → `error`/`not_declared`), 12.1a/I39 (a shape
+    ///   the Actuator's declared `control` does not name → `error`/`malformed`)
+    ///   and 12a (a sender that is not the Session's host → a `refused` ack).
+    ///   Read off `ppcp_event.status`, which is the only thing that separates
+    ///   them from the command this peer owes an answer for.
+    ///
+    /// ⛔ **`isOn` and no `level`** — CB1 declares `control: on_off` and I39
+    /// makes the shape the Actuator's `control` names the only shape that
+    /// survives with `engineAnswered == false`.
+    case actuatorCommanded(actuatorId: String, isOn: Bool, replyTo: UInt64,
+                           engineAnswered: Bool)
     /// `CORE` 8.4 — answer it, and never with an `error` (I10).
     /// `MSG` 7.3 — a host asks this peer for an interval around a `t0`.
     ///
@@ -381,12 +407,12 @@ public actor PeerLinkPump {
         // Session's frames travel on the live link, and this flag is the only
         // thing that tells them from the Session in progress. Reading events
         // without asking is what F-S5-3 was.
-        while let event = peer.nextEventImported({ kind, _, imported, msg in
+        while let event = peer.nextEventImported({ kind, _, imported, status, msg in
             imported
                 ? PeerLinkEvent.importedFrame(kind: Int32(kind.rawValue),
                                               sessionId: self.peer.importedSessionId,
                                               timebaseRefId: self.peer.importedTimebaseRefId)
-                : Self.translate(kind, msg)
+                : Self.translate(kind, status, msg)
         }) {
             pending.append(event)
         }
@@ -394,7 +420,13 @@ public actor PeerLinkPump {
 
     /// ⚠ Everything read out of `msg` is read **here**, while the pointer is
     /// alive, and nothing is carried out of it.
+    ///
+    /// - Parameter status: `ppcp_event.status` — the engine's own verdict on the
+    ///   frame. ⚠ Read only where it changes what the embedding owes; for
+    ///   `actuator_command` (`MSG` 12.1) it is the difference between a Request
+    ///   this peer must answer and one already answered on its behalf.
     private static func translate(_ kind: ppcp_event_kind,
+                                  _ status: ppcp_result,
                                   _ msg: UnsafePointer<ppcp_msg>?) -> PeerLinkEvent {
         switch kind {
         case PPCP_EVENT_HELLO: return .hello
@@ -436,6 +468,37 @@ public actor PeerLinkPump {
             }
         case PPCP_EVENT_ARM: return .armRequested
         case PPCP_EVENT_DISARM: return .disarmRequested
+        case PPCP_EVENT_ACTUATOR_COMMAND:
+            guard let msg else {
+                // ⛔ **`engineAnswered: true` for an event with no message**, and
+                // it is the safe direction rather than the tidy one: without the
+                // `msg` there is no `msg_id` to correlate an ack to, and 1a has
+                // no way to express an uncorrelated Response. Answering with
+                // `reply_to: 0` would put a Response on the wire that answers no
+                // Request; not answering is at least visibly silent.
+                return .actuatorCommanded(actuatorId: "", isOn: false, replyTo: 0,
+                                          engineAnswered: true)
+            }
+            let actuatorReplyTo = msg.pointee.env.msg_id
+            // ⛔ **`status` decides whether an answer is owed.** `PPCP_OK` is the
+            // engine saying "handed over"; anything else is 12.1d, 12.1a or 12a
+            // already answered before this event existed.
+            let actuatorAnswered = status != PPCP_OK
+            // ⛔ Through the pointer helper, never `msg.pointee.body.x` — trap 4,
+            // and `ppcp_msg_body` is 48 KB.
+            return body(msg, ppcp_body_actuator_command.self) { command in
+                // ⚠ `has_on` rather than `on`, because I39's "never neither,
+                // never both" is what makes the two different questions. A
+                // command that survives with `engineAnswered == false` has passed
+                // the engine's 12.1a shape check against a `control: on_off`
+                // Actuator, so a false `has_on` there would be a library defect
+                // and is reported as `false` rather than guessed at.
+                .actuatorCommanded(actuatorId: ppcpString(command.pointee.actuator_id),
+                                   isOn: command.pointee.setting.has_on
+                                       && command.pointee.setting.on,
+                                   replyTo: actuatorReplyTo,
+                                   engineAnswered: actuatorAnswered)
+            }
         case PPCP_EVENT_CAPTURE_REQUEST:
             guard let msg else {
                 return .captureRequested(shotId: "", t0Ns: 0, t0TimebaseId: "",

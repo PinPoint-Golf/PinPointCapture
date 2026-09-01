@@ -453,13 +453,19 @@ struct DeclarationTests {
 
     // MARK: Profile set
 
-    /// Plan §2 and `CONF` §1d — this application declares seven profiles and
+    /// Plan §2 and `CONF` §1d — this application declares **eight** profiles and
     /// **not** `arbitrate`, which I20 makes host-only.
+    ///
+    /// ⚠ `actuate` joined the set in CR-02/D13. ⛔ It is claimed because the §12
+    /// exchange is answered, not because this phone owns a torch: 5.19c makes an
+    /// empty `actuators` list a full participant, and a simulator run declares
+    /// the profile and no Actuator.
     @Test("The declared profile set is CORE §2.2.3 and excludes arbitrate")
     func profileSetIsTheMobileCaptureOne() {
         #expect(PpcpProfileSet.device.contains("core"))
         #expect(PpcpProfileSet.device.contains("arbitrate") == false)
         #expect(Set(PpcpProfileSet.device)
-            == ["core", "capture", "detect", "mint", "live", "offline", "markup"])
+            == ["core", "capture", "detect", "mint", "live", "offline", "markup",
+                "actuate"])
     }
 }

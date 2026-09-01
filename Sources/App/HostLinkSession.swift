@@ -60,6 +60,48 @@ public enum StreamVerdict: Sendable, Hashable {
     case refused(reason: String)
 }
 
+/// The owner's answer to a commanded Actuator (`PPCP-MSG` §12.1), modelled on
+/// `StreamVerdict` above.
+///
+/// ⛔ **12.1b is held by shape, not by a check** (CB7): an `applied` with a
+/// reason and a `refused` with an achieved state are both unconstructible, so
+/// nothing downstream has a rule to forget. Same move `TorchOutcome` makes one
+/// layer down, and this maps straight from it.
+///
+/// ⭐ **`isOn` on `applied` is the ACHIEVED state, read back off the hardware**
+/// (12.1c) — never an echo of the request. `TorchOutcome.applied` can only be
+/// built from what `setTorch` read back, which is what makes that provable
+/// rather than promised. ⭐ **And it is now what goes on the wire**: since
+/// libppcp L30 this verdict *is* the `actuator_command_ack`, rather than a note
+/// on one the engine had already written from the request.
+public enum ActuatorVerdict: Sendable, Hashable {
+    /// The command was applied; `isOn` is what the light is **actually** doing.
+    case applied(isOn: Bool)
+    /// 12.1b's open registry: `no_actuator`, `busy`, `thermal_limit`,
+    /// `permission_denied`, `unsupported`.
+    ///
+    /// ⛔ **It carries no state, and that is 12.1b held by shape rather than
+    /// remembered.** D17 gave this case an `isOn`, because the engine had acked
+    /// `applied` from the request and the record needed correcting with an
+    /// `actuator_state`. The refusal now goes on the wire as a refusal, so
+    /// there is nothing to correct — and a refused command applied nothing, so
+    /// there is no achieved value to report with it either. A torch that
+    /// *moved* without the command being applied is a thermal cutoff, which is
+    /// 12.2a's own case and reaches the wire through the autonomous poll.
+    case refused(reason: String)
+
+    /// The one mapping, so the achieved state cannot be substituted on the way.
+    public init(_ outcome: TorchOutcome) {
+        switch outcome {
+        // ⭐ `state.on` and not `state.modeIsOn`: 12.1c is what the Actuator is
+        // doing, and a torch whose mode says on while the hardware has cut the
+        // light for heat is doing nothing.
+        case .applied(let state): self = .applied(isOn: state.on)
+        case .refused(let reason): self = .refused(reason: reason.rawValue)
+        }
+    }
+}
+
 @MainActor
 public protocol HostLinkSessionDelegate: AnyObject {
 
@@ -90,6 +132,27 @@ public protocol HostLinkSessionDelegate: AnyObject {
     func hostLink(_ link: HostLinkSession, didRequestStream streamId: String,
                   sourceId: String, profileId: String,
                   kind: String) async -> StreamVerdict
+
+    /// `PPCP-MSG` 12.1 — a host commanded one of this peer's Actuators.
+    ///
+    /// ⛔ **Returning is the answer**, as it is for `arm` and `stream_open`, and
+    /// answering is a MUST (E18 1c). ⭐ **And it is literally the answer now**:
+    /// since libppcp L30 the engine writes no ack for a well-formed, declared,
+    /// host-originated command, so what this returns becomes the
+    /// `actuator_command_ack` on the wire. D17 recorded that it could not — the
+    /// engine acked `state = request` before this was called, and only the
+    /// delegate had touched hardware — and that finding is what the library
+    /// change closed.
+    ///
+    /// ⛔ **A verdict is REQUIRED and there is no silent option.** A delegate
+    /// that cannot decide answers `refused` with a 12.1b reason; a `nil`
+    /// delegate is answered `no_actuator` by `HostLinkSession` itself, because
+    /// a peer that never answers is nonconformant rather than slow.
+    ///
+    /// ⚠ `async`, for `stream_open`'s reason: `lockForConfiguration` on a camera
+    /// is real work and must not be done from inside the pump's translation.
+    func hostLink(_ link: HostLinkSession, didCommandActuator actuatorId: String,
+                  isOn: Bool) async -> ActuatorVerdict
 
     /// `MSG` 7.2 — the host arbitrated and issued. The timebase travels with the
     /// number so the receiver can convert it (I22).
@@ -487,6 +550,17 @@ public final class HostLinkSession {
 
         case .sessionOpened(let id), .sessionJoined(let id):
             // ⛔ Read the parameters through `perform` — they live in the engine.
+            //
+            // ⛔ **5.10h's instant is stamped HERE and nowhere else.**
+            // `session_open` carries no `opened_at` (CR-02 plan §10 #3), so the
+            // only honest reading this device has is the moment it saw the
+            // Session open — and a reconnect must reuse it rather than take a
+            // fresh one, which is what `noteSessionOpened` being set-once
+            // enforces. Without this, `sendSessionResume` has nothing to carry
+            // and refuses.
+            try? await pump.perform { [openedAt = MachClock.hostTimeNs] peer in
+                peer.noteSessionOpened(atNs: openedAt)
+            }
             hostSession = try? await pump.perform { $0.sessionParameters }
             if let hostSession {
                 delegate?.hostLink(self, didOpenSession: id, parameters: hostSession)
@@ -527,6 +601,84 @@ public final class HostLinkSession {
                                            reason: reason, inReplyTo: replyTo)
                 }
             }
+
+        case .actuatorCommanded(let actuatorId, let isOn, let replyTo,
+                               let engineAnswered):
+            // ⛔ **The engine already answered this one — say nothing.** 12.1d,
+            // 12.1a/I39 and 12a are refusals that need no hardware to decide, and
+            // `peer_on_actuator_command` still makes them *before* raising the
+            // event. A second ack here would be a second Response to one Request
+            // (1a), contradicting the `error` or `refused` already on the wire —
+            // and, worse, a 12a command from a non-host would have lit the torch
+            // on the way to being told it could not.
+            guard engineAnswered == false else { break }
+
+            // ⛔ **ANSWERING IS A MUST** (E18 1c) — `actuator_command_ack` or
+            // `error`, never silence — and since libppcp L30 nobody else will.
+            // The engine hands a well-formed, declared, host-originated command
+            // over unanswered precisely because 12.1c's `state` is what the
+            // Actuator is ACTUALLY doing, which a sans-I/O library cannot read.
+            //
+            // ⛔ **Every path below answers.** `??` covers a `nil` delegate;
+            // `AppModel.hostLink(_:didCommandActuator:isOn:)` returns a verdict
+            // for every outcome of `setTorch` — no permission, no `activeDevice`,
+            // an unsupported mode, a thrown `lockForConfiguration` — because
+            // `TorchOutcome` has no third case. There is no `throw` and no
+            // `await` on the way, so there is no cancellation point between the
+            // obligation arriving and the ack being queued.
+            let verdict = await delegate?.hostLink(self, didCommandActuator: actuatorId,
+                                                   isOn: isOn)
+                ?? .refused(reason: ActuatorRefusalReason.noActuator.rawValue)
+            try? await pump.perform { peer in
+                do {
+                    switch verdict {
+                    // ⭐ **12.1c — the ACHIEVED value, and this is the only thing
+                    // on this wire that ever carried it.** `isOn` here came out
+                    // of `AVFoundationCaptureDevice.readTorchState`'s
+                    // `isTorchActive` after the write, not out of `torchMode`
+                    // (the switch) and not out of the command. A torch the
+                    // platform cut for heat acks `false` against a request of
+                    // `true`, which is the whole case.
+                    case .applied(let achieved):
+                        try peer.sendActuatorCommandApplied(actuatorId: actuatorId,
+                                                            isOn: achieved,
+                                                            inReplyTo: replyTo)
+                    // ⛔ 12.1b — the reason is required and carries no state. It
+                    // is the value `TorchOutcome.refused` already held, spelled
+                    // from 12.1b's registry by `ActuatorRefusalReason`.
+                    case .refused(let reason):
+                        try peer.sendActuatorCommandRefused(actuatorId: actuatorId,
+                                                            reason: reason,
+                                                            inReplyTo: replyTo)
+                    }
+                } catch {
+                    // ⛔ **The last place the obligation could be dropped, and it
+                    // is not.** The library re-checks an `applied` ack's shape
+                    // against the DECLARED `control` and refuses to queue a
+                    // mismatch — a real possibility the moment a second Actuator
+                    // is declared — and a driver that reported the wrong shape
+                    // must not turn into silence. `unsupported` is 12.1b's word
+                    // for "the hardware is there and will not do this", which is
+                    // what an unrepresentable achieved value amounts to.
+                    //
+                    // ⚠ If THIS throws too there is no peer left to answer with
+                    // — the handle is gone or the control queue is full — and no
+                    // message of any kind can be sent. That is the link failing,
+                    // not this branch conceding.
+                    try peer.sendActuatorCommandRefused(
+                        actuatorId: actuatorId,
+                        reason: ActuatorRefusalReason.unsupported.rawValue,
+                        inReplyTo: replyTo)
+                }
+            }
+            // ⛔ **And NOTHING else.** D17 followed the ack with an
+            // `actuator_state` wherever the achieved value differed from what the
+            // engine had echoed. The ack now carries the achieved value itself,
+            // so that emission would be exactly what 12.2a forbids: "not sent to
+            // confirm a command the requester already has an
+            // `actuator_command_ack` for". What 12.2a is left with is the whole
+            // of what it describes — a change with a cause OTHER than a command
+            // — which reaches the wire from `AppModel`'s 1 Hz torch poll.
 
         case .shotReceived(let id, let t0Ns, let t0TimebaseId, let candidateIds, _):
             delegate?.hostLink(self, didIssueShot: id, t0Ns: t0Ns,
@@ -615,6 +767,40 @@ public final class HostLinkSession {
     /// with.** 8.2i1 — a residual computed against no relation is not a small
     /// residual, it is a meaningless one, and publishing it would poison exactly
     /// the series E2.3 wants to estimate from.
+    /// `PPCP-MSG` 5.5 — a Source became usable, or stopped being usable.
+    ///
+    /// ⛔ **On change, unprompted, and never on a cadence** (5.5a). The caller's
+    /// 1 Hz tick is how the change is *noticed*; the emission is what changed,
+    /// not what was polled. `AppModel` holds the previous value and only calls
+    /// this when it moved.
+    public func sendDeviceStatus(_ status: SourceStatus) async {
+        try? await pump.perform { peer in
+            try peer.sendDeviceStatus(status, timebaseId: PpcpTimebases.captureId)
+        }
+    }
+
+    /// `PPCP-MSG` 12.2 — an Actuator moved without a command.
+    ///
+    /// ⛔ **Broadcast, `owner → any`** (12.2b), so an observer sees it without
+    /// the host relaying — which is why it is a message and not a field on a
+    /// heartbeat.
+    public func sendActuatorState(actuatorId: String, isOn: Bool, sinceNs: Int64) async {
+        try? await pump.perform { peer in
+            try peer.sendActuatorState(actuatorId: actuatorId, isOn: isOn,
+                                       sinceNs: sinceNs,
+                                       timebaseId: PpcpTimebases.captureId)
+        }
+    }
+
+    /// `PPCP-MSG` 5.6 — a `shot_windowed` Stream's standing ring margin.
+    ///
+    /// ⛔ **On change** (5.6c), on the same terms as `sendDeviceStatus` above.
+    public func sendBufferStatus(_ margin: BufferMargin) async {
+        try? await pump.perform { peer in
+            try peer.sendBufferStatus(margin, timebaseId: PpcpTimebases.captureId)
+        }
+    }
+
     public func reportResidual(shotId: String, heardAtNs: Int64,
                                issuedT0Ns: Int64, t0TimebaseId: String) async -> Double? {
         try? await pump.perform { [driver] peer -> Double? in

@@ -333,7 +333,8 @@ struct LiveLinkTests {
     func sessionResumeIsWellFormed() throws {
         let peer = try Self.peer()
         try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
-                                               timebaseRef: Self.timebase))
+                                               timebaseRef: Self.timebase,
+                                               openedAtNs: 1_000_000_000))
         _ = try peer.drain(.control)   // the `session_open` itself
         try peer.sendSessionResume(sessionId: Self.sessionId, peerId: Self.peerId,
                                    mintedShots: ["sht:a", "sht:b"],
@@ -378,14 +379,16 @@ struct LiveLinkTests {
         let peer = try Self.peer()
         try peer.addSyncTimebase(Self.timebase)
         try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
-                                               timebaseRef: Self.timebase))
+                                               timebaseRef: Self.timebase,
+                                               openedAtNs: 1_000_000_000))
         _ = try peer.drain(.control)
 
         // A host, only so that something legitimately originates `heartbeat` —
         // 7.4a makes it the host's message and a capture peer never sends one.
         let host = try DevicePeer(peerId: "peer:host", role: .host)
         try host.openSession(PpcpSessionRecord(id: Self.sessionId,
-                                               timebaseRef: Self.timebase))
+                                               timebaseRef: Self.timebase,
+                                               openedAtNs: 1_000_000_000))
         _ = try host.drain(.control)
 
         func beat(at nowNs: Int64) throws {
@@ -513,7 +516,8 @@ struct LiveLinkTests {
         // parameters, and 8.3g's first entry condition is true for the peer that
         // is in it.
         try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
-                                               timebaseRef: Self.timebase))
+                                               timebaseRef: Self.timebase,
+                                               openedAtNs: 1_000_000_000))
         let parameters = try #require(peer.sessionParameters)
         #expect(parameters.sessionId == Self.sessionId)
         #expect(parameters.timebaseRefId == Self.timebase)
@@ -541,7 +545,8 @@ struct LiveLinkTests {
     func hostlessMintTakesTheHostlessBranch() throws {
         let peer = try Self.peer()
         try peer.openSession(PpcpSessionRecord(id: Self.sessionId,
-                                               timebaseRef: Self.timebase))
+                                               timebaseRef: Self.timebase,
+                                               openedAtNs: 1_000_000_000))
         let mint = try DeviceMint(peer: peer, promotion: { _ in true })
         #expect(throws: Never.self) { _ = try mint.pump(nowRefNs: 10_000_000_000) }
         #expect(peer.isZeroHost)

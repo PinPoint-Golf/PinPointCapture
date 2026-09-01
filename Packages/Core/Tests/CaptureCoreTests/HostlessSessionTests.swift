@@ -116,7 +116,8 @@ struct HostlessSessionTests {
             // given the two arbitration parameters and there is no setter, so the
             // bundle's silence about arbitration is 4.1d's statement that none
             // occurred rather than an omission.
-            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase))
+            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase,
+                                       openedAtNs: 1_000_000_000))
         try recorder.open(stream: Self.videoStream)
         try recorder.open(stream: Self.audioStream)
 

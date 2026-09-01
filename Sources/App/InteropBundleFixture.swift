@@ -75,6 +75,10 @@ enum InteropBundleFixture {
             session: PpcpSessionRecord(
                 id: sessionId,
                 timebaseRef: PpcpTimebases.captureId,
+                // ⛔ 5.10h — the instant this hostless Session opened, on the
+                // capture timebase `timebaseRef` names. `openedAt` above is the
+                // one reading, taken once.
+                openedAtNs: openedAt,
                 epochWallUtcNs: Int64(Date().timeIntervalSince1970 * 1_000_000_000),
                 epochAtNs: openedAt,
                 epochTimebaseId: PpcpTimebases.captureId))

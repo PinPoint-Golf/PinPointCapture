@@ -12,6 +12,9 @@
 
 import Foundation
 import Testing
+// ⚠ For §12's originator only — the host half of the actuator round trip has no
+// Swift wrapper here, because this application never originates a command.
+import CPPCP
 @testable import CaptureCore
 
 // MARK: - An in-memory link
@@ -201,7 +204,8 @@ struct PeerLinkPumpTests {
             try peer.declare(try Self.declaration(peerId: "peer:other"))
             // `CORE` 4.1b — the hostless form, which a capture peer may originate.
             try peer.openSession(PpcpSessionRecord(id: "ses:pump",
-                                                   timebaseRef: "tb:hosttime"))
+                                                   timebaseRef: "tb:hosttime",
+                                                   openedAtNs: 1_000_000_000))
         }
 
         let seen = await Self.collect(from: devicePump, until: { events in
@@ -214,6 +218,92 @@ struct PeerLinkPumpTests {
         let parameters = try #require(try await devicePump.perform { $0.sessionParameters })
         #expect(parameters.sessionId == "ses:pump")
         #expect(parameters.timebaseRefId == "tb:hosttime")
+
+        await devicePump.stop()
+        await hostPump.stop()
+    }
+
+    /// `PPCP-MSG` 12.1 — the command becomes an event the application can act on.
+    ///
+    /// ⛔ Read through the pump's pointer helper while the `ppcp_msg` is alive
+    /// (trap 4, F-D3-1) and harvested with `nextEventImported` (trap 5, E28).
+    /// Both are properties of `PeerLinkPump`, which is why this lives here and
+    /// not beside the wire assertions in `ActuatorWireTests`.
+    @Test("MSG 12.1 — an actuator_command is translated into an event")
+    func anActuatorCommandBecomesAnEvent() async throws {
+        let (deviceSide, hostSide) = PipeTransport.pair()
+        let device = try DevicePeer(peerId: "peer:device", role: .capture)
+        // ⛔ `role: .host`. 12a is checked against the REMOTE role, so a capture
+        // peer commanding here would be refused inside the engine and this test
+        // would pass by never getting an event at all.
+        let host = try DevicePeer(peerId: "peer:host", role: .host, listener: true)
+        let devicePump = PeerLinkPump(peer: device, transport: deviceSide,
+                                      nowNs: { Self.clock() })
+        let hostPump = PeerLinkPump(peer: host, transport: hostSide,
+                                    nowNs: { Self.clock() })
+        await devicePump.start()
+        await hostPump.start()
+
+        try await hostPump.perform { try $0.hello() }
+        try await devicePump.perform { peer in
+            try peer.hello()
+            try peer.declare(try ActuatorWireTests.declarationWithTorch())
+        }
+        // 12.1d — the host may only command what the counterpart declared, so
+        // the declaration has to arrive before the command is originable.
+        _ = await Self.collect(from: hostPump, until: { events in
+            events.contains { if case .declared = $0 { return true }; return false }
+        })
+        try await hostPump.perform { peer in
+            peer.withHandle { handle in
+                var setting = ppcp_actuator_setting()
+                #expect(ppcp_actuator_setting_on_off(&setting, true) == PPCP_OK)
+                #expect(ppcp_peer_actuator_command(handle, "act:torch", &setting) == PPCP_OK)
+            }
+        }
+
+        let seen = await Self.collect(from: devicePump, until: { events in
+            events.contains { if case .actuatorCommanded = $0 { return true }; return false }
+        })
+        // ⭐ **`engineAnswered: false` — the event is an obligation, not a
+        // notification.** Since libppcp L30 the engine writes no ack for a
+        // well-formed, declared, host-originated command, so `MSG` 1c's answer is
+        // the embedding's; `replyTo` is what correlates it (1a), and a zero there
+        // would leave nothing to answer.
+        let commanded = try #require(seen.compactMap { event -> (String, Bool, UInt64, Bool)? in
+            if case .actuatorCommanded(let id, let isOn, let replyTo, let answered) = event {
+                return (id, isOn, replyTo, answered)
+            }
+            return nil
+        }.first)
+        #expect(commanded.0 == "act:torch")
+        #expect(commanded.1)
+        #expect(commanded.2 != 0)
+        #expect(commanded.3 == false, "MSG 12.1c — the answer is owed by this peer")
+
+        // ⛔ **And the answer goes back, carrying the ACHIEVED value.** `false`
+        // against a request of `true` is the thermal-cutoff case: on the phone it
+        // is `isTorchActive` read back after the write, and an echo of the
+        // request could not produce it. The host is driven to the point of
+        // receiving the ack, so this is the round trip and not a send.
+        try await devicePump.perform { peer in
+            try peer.sendActuatorCommandApplied(actuatorId: "act:torch", isOn: false,
+                                                inReplyTo: commanded.2)
+        }
+        let acked = await Self.collect(from: hostPump, until: { events in
+            events.contains {
+                if case .other(let kind) = $0 {
+                    return kind == Int32(PPCP_EVENT_ACTUATOR_COMMAND_ACK.rawValue)
+                }
+                return false
+            }
+        })
+        #expect(acked.contains {
+            if case .other(let kind) = $0 {
+                return kind == Int32(PPCP_EVENT_ACTUATOR_COMMAND_ACK.rawValue)
+            }
+            return false
+        }, "MSG 1c — answering is a MUST, and the ack reached the host")
 
         await devicePump.stop()
         await hostPump.stop()

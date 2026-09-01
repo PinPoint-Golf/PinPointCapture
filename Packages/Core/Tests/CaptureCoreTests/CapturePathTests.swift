@@ -303,7 +303,8 @@ struct CapturePathTests {
             }
             let recorder = try CaptureSessionRecorder(
                 writer: writer, declaration: try Self.declaration(),
-                session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase))
+                session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase,
+                                           openedAtNs: 1_000_000_000))
             try recorder.open(stream: Self.metadataStream)
 
             var account = try #require(recorder.coverage(of: Self.metadataStream.id))
@@ -352,7 +353,8 @@ struct CapturePathTests {
         // nowhere else. The writer refuses a `stream_open` before it.
         try writer.record(declaration: try Self.declaration())
         try writer.open(session: PpcpSessionRecord(id: Self.sessionId,
-                                                   timebaseRef: Self.timebase))
+                                                   timebaseRef: Self.timebase,
+                                                   openedAtNs: 1_000_000_000))
         try writer.open(stream: Self.previewStream)
         #expect(throws: SessionStoreError.previewIsNotRecordable) {
             try writer.announce(delivered, isPreview: true)
@@ -392,7 +394,8 @@ struct CapturePathTests {
         }
         let recorder = try CaptureSessionRecorder(
             writer: writer, declaration: try Self.declaration(),
-            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase))
+            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase,
+                                       openedAtNs: 1_000_000_000))
         try recorder.open(stream: Self.videoStream)
         let before = sink.bytes.count
         try recorder.announce(assembly, clip: { Data([0x00]) })
@@ -501,7 +504,8 @@ struct CapturePathTests {
         }
         let recorder = try CaptureSessionRecorder(
             writer: writer, declaration: try Self.declaration(),
-            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase))
+            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase,
+                                       openedAtNs: 1_000_000_000))
         try recorder.open(stream: Self.videoStream)
 
         for state in CaptureState.allCases {
@@ -557,7 +561,8 @@ struct CapturePathTests {
         }
         let recorder = try CaptureSessionRecorder(
             writer: writer, declaration: try Self.declaration(),
-            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase))
+            session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase,
+                                       openedAtNs: 1_000_000_000))
         try recorder.open(stream: Self.videoStream)
 
         let before = sink.bytes.count
@@ -597,6 +602,7 @@ struct CapturePathTests {
         let recorder = try CaptureSessionRecorder(
             writer: writer, declaration: try Self.declaration(),
             session: PpcpSessionRecord(id: Self.sessionId, timebaseRef: Self.timebase,
+                                       openedAtNs: 1_000_000_000,
                                        epochWallUtcNs: 1_787_000_000_000_000_000,
                                        epochAtNs: 10_000_000_000,
                                        epochTimebaseId: Self.timebase))

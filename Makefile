@@ -91,7 +91,7 @@ CONFORM_RUN_MS ?= 45000
 # claim. This is the set `docs/conformance/ppcp-conformance.md` §1 states, and the two must
 # not drift — a row that passes against a set this application does not claim is
 # measuring somebody else.
-CONFORM_PROFILES ?= core,capture,detect,mint,live,offline,markup
+CONFORM_PROFILES ?= core,capture,detect,mint,live,offline,markup,actuate
 CONFORM_OUT      ?= docs/conformance
 # IOP-3 / IOP-10 — the bundles PinPointStudio imports. Small, and checked in.
 BUNDLE_OUT       ?= docs/conformance/bundles

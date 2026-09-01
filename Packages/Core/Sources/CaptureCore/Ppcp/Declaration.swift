@@ -121,6 +121,26 @@ public struct PpcpDeclarationInput: Sendable {
     public var declaresIMU: Bool
     public var viewpoint: PpcpViewpoint?
 
+    /// `CORE` §5.19 — the Actuators this peer will accept commands for.
+    ///
+    /// ⛔ **NOT a `SourcePlan`, and 5.19b is why**: `Source.kind` and
+    /// `Actuator.kind` are disjoint registries, and an Actuator carries no
+    /// `CaptureProfile` because nothing about format, rate or calibration
+    /// applies to something that is switched rather than sampled. It travels
+    /// alongside the Sources here for the same reason it does on the wire.
+    ///
+    /// ⚠ **5.19a — enumerated at declaration time**, by the platform layer, from
+    /// what the hardware actually has (`AVFoundationCaptureDevice`'s
+    /// `torchCapability()`). Never from a spec sheet, on the same terms as
+    /// REQ-FPS-1's rule for capture formats.
+    ///
+    /// ⚠ **5.19c — empty is a correct declaration.** A front-camera-only setup,
+    /// a phone with no rear flash and a simulator with no camera at all each
+    /// declare none and participate fully, exactly as a peer with no Source
+    /// does. Defaulted for that reason: a call site that says nothing is saying
+    /// "none", which is true and is the honest answer.
+    public var actuators: [PpcpActuatorDeclaration]
+
     /// `CORE` 5.2 `product` — informational. ⛔ 5.2c: a peer MUST NOT infer any
     /// capability, convention or geometry from it (I19), which is why it is last
     /// and why nothing in this file reads it back.
@@ -137,6 +157,7 @@ public struct PpcpDeclarationInput: Sendable {
                 declaresMicrophone: Bool = true,
                 declaresIMU: Bool = true,
                 viewpoint: PpcpViewpoint? = nil,
+                actuators: [PpcpActuatorDeclaration] = [],
                 product: (vendor: String, model: String, version: String)? = nil) {
         self.peerId = peerId
         self.protocolVersion = protocolVersion
@@ -149,6 +170,7 @@ public struct PpcpDeclarationInput: Sendable {
         self.declaresMicrophone = declaresMicrophone
         self.declaresIMU = declaresIMU
         self.viewpoint = viewpoint
+        self.actuators = actuators
         self.product = product
     }
 }
@@ -168,7 +190,16 @@ public enum PpcpProfileSet {
         PPCP_PROFILE_MINT,
         PPCP_PROFILE_LIVE,
         PPCP_PROFILE_OFFLINE,
-        PPCP_PROFILE_MARKUP
+        PPCP_PROFILE_MARKUP,
+        // ⛔ Erratum E58 / CR-02 — `CORE` §2.2.3's "owns a torch". It confers
+        // Actuator declaration and the `actuator_command` exchange, and it
+        // requires Core only. ⚠ It is claimed **because the exchange is
+        // implemented**, not because the phone has a light: a peer that declared
+        // `actuate` and answered nothing would be exactly the false claim
+        // `CONF` §1 exists to catch. A device with no torch still claims it —
+        // 5.19c makes an empty `actuators` list a full participant, and the
+        // profile says what this peer *implements*, not what it owns.
+        PPCP_PROFILE_ACTUATE
     ]
 }
 
@@ -236,6 +267,23 @@ public final class PpcpDeclaration: @unchecked Sendable {
         public func hash(into hasher: inout Hasher) { hasher.combine(id) }
     }
 
+    /// One Actuator, as the rest of the application wants to read it back.
+    ///
+    /// ⛔ **Not a `SourceView`, and 5.19b is why.** `Source.kind` and
+    /// `Actuator.kind` are separate open registries and an Actuator carries no
+    /// `CaptureProfile` — nothing about format, rate or calibration applies to
+    /// something switched rather than sampled — so there is nothing to merge and
+    /// a merged type would have to carry an always-empty `profiles`.
+    public struct ActuatorView: Sendable, Hashable {
+        public let id: String
+        public let kind: String
+        /// `CORE` 5.19 `control`, as the wire spells it.
+        public let control: String
+        public let label: String?
+        /// 12.1a / I39 — whether a command to this Actuator carries `on`.
+        public let isOnOff: Bool
+    }
+
     /// One Source, as the rest of the application wants to read it back.
     public struct SourceView: Sendable, Hashable {
         public let id: String
@@ -252,6 +300,14 @@ public final class PpcpDeclaration: @unchecked Sendable {
     private let profileIdStorage: UnsafeMutableBufferPointer<ppcp_id>
     private let captureProfileStorage: UnsafeMutableBufferPointer<ppcp_capture_profile>
     private let sourceStorage: UnsafeMutableBufferPointer<ppcp_source>
+    /// ⛔ **Trap 6 — owned here and released only in `deinit`.** `libppcp`
+    /// allocates nothing: `ppcp_peer_desc_set_actuators` stores the pointer and
+    /// the engine reads through it while queueing `declare`, so this buffer must
+    /// outlive the call and be freed exactly once. It is allocated beside
+    /// `sourceStorage` **before** the `do` block for the reason spelled out on
+    /// `sources` below — a class initialiser that throws runs `deinit`, and a
+    /// buffer the `catch` also released was freed twice.
+    private let actuatorStorage: UnsafeMutableBufferPointer<ppcp_actuator>
     private let descStorage: UnsafeMutablePointer<ppcp_peer_desc>
 
     /// ⚠ **`var` with a default, not `let`, and the reason is memory safety
@@ -261,6 +317,17 @@ public final class PpcpDeclaration: @unchecked Sendable {
     /// on *where* the throw happened. Giving it a value up front makes `deinit`
     /// the single owner, which is what let the `catch` below stop releasing.
     public private(set) var sources: [SourceView] = []
+
+    /// `CORE` 5.19a — the Actuators this peer declares, **read back off the
+    /// `ppcp_actuator` structs the wire will carry**.
+    ///
+    /// ⚠ Off the declaration, not off the input, on exactly `sources`' terms and
+    /// `declaredProfiles`' terms: a view built from the same Swift values that
+    /// fed the constructors would agree with itself whatever the library did,
+    /// which is `CONF` §2c in miniature.
+    ///
+    /// ⚠ Empty is a correct declaration (5.19c) and never an error.
+    public private(set) var actuators: [ActuatorView] = []
 
     /// - Parameter allowingNoCameraSource: ⛔ **`false` everywhere except D9's
     ///   conformance harness.** A capture device with no camera is a broken
@@ -282,11 +349,13 @@ public final class PpcpDeclaration: @unchecked Sendable {
         profileIdStorage = .allocate(capacity: max(input.profiles.count, 1))
         captureProfileStorage = .allocate(capacity: max(profileTotal, 1))
         sourceStorage = .allocate(capacity: max(plans.count, 1))
+        actuatorStorage = .allocate(capacity: max(input.actuators.count, 1))
         descStorage = .allocate(capacity: 1)
         timebaseStorage.initialize(repeating: ppcp_timebase())
         profileIdStorage.initialize(repeating: ppcp_id())
         captureProfileStorage.initialize(repeating: ppcp_capture_profile())
         sourceStorage.initialize(repeating: ppcp_source())
+        actuatorStorage.initialize(repeating: ppcp_actuator())
         descStorage.initialize(to: ppcp_peer_desc())
 
         do {
@@ -359,6 +428,47 @@ public final class PpcpDeclaration: @unchecked Sendable {
                                           timebaseStorage.baseAddress!, input.timebases.count))
             try check(ppcp_peer_desc_set_sources(descStorage, sourceStorage.baseAddress!,
                                                  plans.count))
+
+            // ── D13: `Peer.actuators` (CORE §5.19a) ──────────────────────────
+            //
+            // ⛔ **A top-level key of `declare`, a sibling of `sources`**
+            // (erratum E66, `PPCP-MSG` 3.3f). E58 put the field on the `Peer`
+            // entity and left 3.3's schema block alone, so nesting it in the
+            // `peer` head and hoisting it beside `sources` were both defensible
+            // readings — and two conformant peers would each have declared
+            // Actuators the other could not see, with nothing malformed at
+            // either end. The library owns the placement; this call is on the
+            // hoisted side of it because there is only one side now.
+            //
+            // ⛔ **5.19b — an Actuator is not a Source and does not go through
+            // `SourcePlan`.** The two `kind` registries are disjoint and an
+            // Actuator carries no `CaptureProfile`; putting the torch through
+            // the planner would have had to invent one.
+            //
+            // ⚠ **5.19c — a peer owning none omits the key entirely.** The
+            // library writes nothing for a zero count, and a phone with no rear
+            // flash, a front-camera-only setup and the simulator each declare
+            // none and participate fully.
+            for (index, actuator) in input.actuators.enumerated() {
+                let slot = actuatorStorage.baseAddress! + index
+                try check(ppcp_actuator_make(slot, actuator.id, input.peerId,
+                                             actuator.kind, actuator.control.rawValue))
+                if let label = actuator.label {
+                    try check(ppcp_actuator_set_label(slot, label))
+                }
+                try check(ppcp_actuator_validate(slot))
+            }
+            try check(ppcp_peer_desc_set_actuators(descStorage,
+                                                   actuatorStorage.baseAddress!,
+                                                   input.actuators.count))
+            // ⚠ Read back OUT of the C structs, as `sources` is above: a view
+            // assembled from `input` would agree with itself whatever the
+            // library did (`CONF` §2c in miniature). `isOnOff` in particular is
+            // the library's own answer to 12.1a's question, not a re-reading of
+            // the enum that was passed in.
+            actuators = (0..<input.actuators.count).map {
+                Self.view(of: actuatorStorage.baseAddress! + $0)
+            }
             if let product = input.product {
                 try check(ppcp_peer_desc_set_product(descStorage, product.vendor,
                                                      product.model, product.version))
@@ -381,18 +491,20 @@ public final class PpcpDeclaration: @unchecked Sendable {
 
     deinit {
         Self.release(timebaseStorage, profileIdStorage, captureProfileStorage,
-                     sourceStorage, descStorage)
+                     sourceStorage, actuatorStorage, descStorage)
     }
 
     private static func release(_ timebases: UnsafeMutableBufferPointer<ppcp_timebase>,
                                 _ profileIds: UnsafeMutableBufferPointer<ppcp_id>,
                                 _ captureProfiles: UnsafeMutableBufferPointer<ppcp_capture_profile>,
                                 _ sources: UnsafeMutableBufferPointer<ppcp_source>,
+                                _ actuators: UnsafeMutableBufferPointer<ppcp_actuator>,
                                 _ desc: UnsafeMutablePointer<ppcp_peer_desc>) {
         timebases.deallocate()
         profileIds.deallocate()
         captureProfiles.deallocate()
         sources.deallocate()
+        actuators.deallocate()
         desc.deallocate()
     }
 
@@ -473,6 +585,19 @@ public final class PpcpDeclaration: @unchecked Sendable {
             try check(ppcp_cbor_writer_finish(&writer, &length))
             return Data(buffer[0..<length])
         }
+    }
+
+    /// One `ppcp_actuator`, read back off the struct the wire will carry.
+    private static func view(of a: UnsafePointer<ppcp_actuator>) -> ActuatorView {
+        let actuator = a.pointee
+        return ActuatorView(id: ppcpString(actuator.id),
+                            kind: ppcpString(actuator.kind),
+                            control: ppcpString(actuator.control),
+                            // ⚠ `has_label` and not "is it empty" — 5.1's
+                            // absence-is-not-a-value, on a field whose empty
+                            // string would be a legal label.
+                            label: actuator.has_label ? ppcpString(actuator.label) : nil,
+                            isOnOff: ppcp_actuator_control_is_on_off(a))
     }
 
     private static func view(of p: UnsafePointer<ppcp_capture_profile>) -> ProfileView {

@@ -210,6 +210,27 @@ public struct PpcpSessionRecord: Sendable, Hashable {
     public var id: String
     /// ⛔ I16 — immutable once set. There is no `ppcp_session_set_timebase_ref`.
     public var timebaseRef: String
+    /// `CORE` 5.10h (erratum E61) — **when the Session opened**, expressed in
+    /// `timebaseRef`. Set once and never revised.
+    ///
+    /// ⛔ **Mandatory, and it is a constructor parameter for the reason the
+    /// library made it one:** before it existed, a consumer asking "how long has
+    /// this Session run" had to fabricate a start time from the first message it
+    /// happened to see, and 5.10h exists to prevent exactly that. A default here
+    /// would put the fabrication one layer up and call it an omission.
+    ///
+    /// ⛔ **`ppcp_session_validate` requires `opened_at.tb == timebase_ref`**
+    /// (`ppcp_model_session.c:471`), so this number is read on `timebaseRef`'s
+    /// clock and the instant is labelled with it. A caller with a reading on a
+    /// *different* clock has to convert it or it is naming the wrong scale.
+    ///
+    /// ⚠ **It reaches no wire and no file, and that is a specification gap
+    /// rather than a choice here** (CR-02 plan §10 #3). `MSG` §4.1's
+    /// `session_open` body was never given an `opened_at` field and
+    /// `session_resume`'s body carries only ids, so `libppcp` uses this value to
+    /// *validate* and nothing else. It is still carried honestly, because the
+    /// moment it does get a carrier a wrong value becomes a wrong claim.
+    public var openedAtNs: Int64
     /// `CORE` 6.5b — `Session.epoch` is a wall-clock **label** beside an instant
     /// in a timebase that measures (I15). Both or neither.
     public var epochWallUtcNs: Int64?
@@ -217,11 +238,13 @@ public struct PpcpSessionRecord: Sendable, Hashable {
     public var epochTimebaseId: String?
 
     public init(id: String, timebaseRef: String,
+                openedAtNs: Int64,
                 epochWallUtcNs: Int64? = nil,
                 epochAtNs: Int64? = nil,
                 epochTimebaseId: String? = nil) {
         self.id = id
         self.timebaseRef = timebaseRef
+        self.openedAtNs = openedAtNs
         self.epochWallUtcNs = epochWallUtcNs
         self.epochAtNs = epochAtNs
         self.epochTimebaseId = epochTimebaseId
@@ -248,12 +271,22 @@ public struct PpcpSessionRecord: Sendable, Hashable {
     /// ⚠ The epoch is **not** taken from `session_open` either. The host's epoch
     /// instant is on the host's clock, and this device's own `WallClockAnchor` is
     /// the only label it can honestly put beside a local instant.
+    /// - Parameter openedAtNs: ⛔ **5.10h, and the honest value here is not the
+    ///   host's.** `session_open` carries no `opened_at` (CR-02 plan §10 #3), so
+    ///   a device joining a Session a host opened *cannot* learn the host's
+    ///   instant and must not invent one. What a caller supplies is this
+    ///   device's own reading of the moment it joined — set once, never revised,
+    ///   and never the moment of a later resume. It is the earliest instant this
+    ///   peer can attest to, which is a narrower claim than `Session.opened_at`
+    ///   and is recorded as such rather than dressed up as the wider one.
     public init(_ parameters: PpcpSessionParameters,
+                openedAtNs: Int64,
                 epochWallUtcNs: Int64? = nil,
                 epochAtNs: Int64? = nil,
                 epochTimebaseId: String? = nil) {
         self.init(id: parameters.sessionId,
                   timebaseRef: parameters.timebaseRefId,
+                  openedAtNs: openedAtNs,
                   epochWallUtcNs: epochWallUtcNs,
                   epochAtNs: epochAtNs,
                   epochTimebaseId: epochTimebaseId)
@@ -656,7 +689,12 @@ public final class DevicePeer: @unchecked Sendable {
     /// host is holding the Session.
     public func openSession(_ record: PpcpSessionRecord) throws {
         var session = ppcp_session()
-        try check(ppcp_session_make_hostless(&session, record.id, record.timebaseRef))
+        // ⛔ 5.10h — `opened_at` is expressed in `timebase_ref`, and
+        // `ppcp_session_validate` checks that the two ids agree.
+        var openedAt = ppcp_instant()
+        try check(ppcp_instant_make_z(&openedAt, record.timebaseRef, record.openedAtNs))
+        try check(ppcp_session_make_hostless(&session, record.id, record.timebaseRef,
+                                             &openedAt))
         if let wall = record.epochWallUtcNs, let atNs = record.epochAtNs,
            let tb = record.epochTimebaseId {
             var at = ppcp_instant()
@@ -664,6 +702,28 @@ public final class DevicePeer: @unchecked Sendable {
             try check(ppcp_session_set_epoch(&session, wall, &at))
         }
         try check(ppcp_peer_session_open(try handle(), &session))
+        noteSessionOpened(atNs: record.openedAtNs)
+    }
+
+    /// `CORE` 5.10h — the instant this peer holds for the Session it is in.
+    ///
+    /// ⛔ **Set once and never revised**, which is the clause itself rather than
+    /// tidiness: a resume that re-stamped this would put the *resume* moment
+    /// where the *open* moment belongs, and a host reading "how long has this
+    /// session run" would get a number that shrank every time the link dropped.
+    /// `nil` means nobody has told this peer, and `sendSessionResume` refuses
+    /// rather than inventing one.
+    public private(set) var sessionOpenedAtNs: Int64?
+
+    /// Records the opening instant for a Session **this peer did not open**.
+    ///
+    /// ⚠ `session_open` carries no `opened_at` (CR-02 plan §10 #3), so what a
+    /// live device can honestly record is the instant it saw the Session open —
+    /// on its own clock, once. Later calls are ignored, not applied: 5.10h says
+    /// never revised, and the second caller is always the resume path.
+    public func noteSessionOpened(atNs: Int64) {
+        guard sessionOpenedAtNs == nil else { return }
+        sessionOpenedAtNs = atNs
     }
 
     /// Whether the engine already holds a Stream record under this id.
@@ -1056,20 +1116,34 @@ public final class DevicePeer: @unchecked Sendable {
         return try body(event.kind, event.channel, event.message)
     }
 
-    /// The same, with `ppcp_event.imported` (`MSG` 4.1a1 / 9.1b, erratum E28).
+    /// The same, with `ppcp_event.imported` (`MSG` 4.1a1 / 9.1b, erratum E28) and
+    /// `ppcp_event.status`.
     ///
     /// ⛔ **This is the overload a live link must use.** Reading an event without
     /// asking whether it is imported is what F-S5-3 was: the frames of an offered
     /// Session go onto the live link by design (`ENC` 7a), and only this flag
     /// tells them apart from the Session actually in progress.
+    ///
+    /// ⛔ **`status` is how an embedding tells "you owe an answer" from "already
+    /// answered", and it is not decoration.** `peer_handle_msg` raises an event
+    /// for every frame it decoded, carrying the handler's own result: a Request
+    /// the engine adjudicated on its own authority arrives with a non-`PPCP_OK`
+    /// status and has *already* been answered on the wire. `PPCP-MSG` §12 is the
+    /// case that forced this out — since libppcp L30 the engine hands a
+    /// well-formed `actuator_command` over unanswered (`PPCP_OK`) but still
+    /// answers 12.1d, 12.1a and 12a itself — and an embedding that replied to
+    /// one of those would put a second, contradicting ack on the wire against
+    /// MSG 1a's one-answer-per-Request correlation.
     @discardableResult
     public func nextEventImported<T>(
-        _ body: (ppcp_event_kind, PpcpChannel?, Bool, UnsafePointer<ppcp_msg>?) throws -> T
+        _ body: (ppcp_event_kind, PpcpChannel?, Bool, ppcp_result,
+                 UnsafePointer<ppcp_msg>?) throws -> T
     ) rethrows -> T? {
         harvestEvents()
         guard events.isEmpty == false else { return nil }
         let event = events.removeFirst()
-        return try body(event.kind, event.channel, event.imported, event.message)
+        return try body(event.kind, event.channel, event.imported, event.status,
+                        event.message)
     }
 
     public var queuedEventCount: Int {

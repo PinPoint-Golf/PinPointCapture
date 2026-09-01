@@ -28,6 +28,7 @@
 | **Live** | yes | Sessions with a host, sync, heartbeat, arm. |
 | **Offline** | yes | The session store *is* the bundle (plan A9). |
 | **Markup** | yes | Device-authored annotations, host annotations stored opaque. |
+| **Actuate** | yes | CR-02 / erratum E58. The torch declared as an `Actuator` (`CORE` 5.19, `control: on_off`), `actuator_command` answered, `actuator_state` originated. ⚠ Claimed because the exchange is **implemented**, not because this phone owns a light: 5.19c makes an empty `actuators` list a full participant, so a device with no torch claims the profile and declares no Actuator. |
 | **Arbitrate** | **no** | Host-only by `CORE` I20. The negative test applies: this application parses `capture_request` and **never originates it**, and never originates `session_link`. |
 
 ### The claim, as the instrument receives it
@@ -38,7 +39,7 @@ place (`CONFORM_PROFILES`) so the two cannot drift — a row that passes against
 set this application does not claim is measuring somebody else.
 
 ```
-core,capture,detect,mint,live,offline,markup
+core,capture,detect,mint,live,offline,markup,actuate
 ```
 
 ⚠ **`arbitrate` is deliberately absent.** This is a capture peer: I20 gives
@@ -80,7 +81,7 @@ make conform          # builds, launches the simulator, then runs the tool
 which is, with the port filled in:
 
 ```sh
-ppcp-conform --profiles core,capture,detect,mint,live,offline,markup \
+ppcp-conform --profiles core,capture,detect,mint,live,offline,markup,actuate \
              --role capture --listen PORT --column PinPointCapture \
              --json docs/conformance/ppcp-conform.json \
              --markdown docs/conformance/ppcp-conform.md \
@@ -1638,7 +1639,7 @@ it and `shot.h` is explicit that the **embedding** must call it on a relation
 change, because the library owns no event loop.
 
 ⛔ **There is nothing to call on this side.** This application declares `core,
-capture, detect, mint, live, offline, markup` and **not Arbitrate**; I20 gives
+capture, detect, mint, live, offline, markup, actuate` and **not Arbitrate**; I20 gives
 arbitration to a peer with `role: host` and to no other, and `ppcp_arbiter_new`
 refuses this peer outright. The `relation_update` handler in `ConformanceHarness`
 says so at the point an implementer would look for the call.

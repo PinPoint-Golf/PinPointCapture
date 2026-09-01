@@ -110,6 +110,102 @@ public protocol CaptureDevice: AnyObject, Sendable {
     func ppcpDeclarationInput(peerId: String,
                               viewpoint: PpcpViewpoint?) throws -> PpcpDeclarationInput
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  The torch (`CORE` §5.19, `PPCP-MSG` §12)
+    //
+    //  ⚠ **Three methods, and adding them was a decision** (REQ-PORT-2). They
+    //  are here rather than on `AVFoundationCaptureDevice` for the reason
+    //  `startRetaining` and `extractClip` give above and it is the same reason
+    //  each time: the thing that owns the hardware is the concrete class, and a
+    //  capability nothing above the platform layer can reach is a capability the
+    //  application cannot declare, command or report. §12 needs all three of
+    //  those, from Core, and `AVCaptureDevice` may not cross this line
+    //  (REQ-PORT-3) — `hasTorch`, `torchMode` and `isTorchActive` stay behind
+    //  it and only `TorchCapability`, `TorchRequest`, `TorchOutcome` and
+    //  `TorchChange` come through. An Android port replaces these three methods
+    //  and nothing else.
+    //
+    //  ⛔ Three rather than one, because they answer three different questions
+    //  at three different times: what to *declare* (5.19a, before any command
+    //  exists), what a command *achieved* (12.1c, synchronously), and what
+    //  changed with *nobody commanding* (12.2a, on a tick). Collapsing any two
+    //  would put a wire obligation on the wrong clock.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// `CORE` 5.19a — what this device would declare in `Peer.actuators`.
+    ///
+    /// ⛔ **Answerable before `warmUp`, and it has to be.** The declaration is
+    /// built at connect time from a hardware walk, not from a running capture
+    /// session, so this must not depend on there being one. A device with no
+    /// torch — a front-camera-only setup, or a simulator with no camera at all —
+    /// answers `.absent`, and 5.19c makes that a full participant rather than an
+    /// error. ⛔ It never throws for the same reason.
+    func torchCapability() -> TorchCapability
+
+    /// `PPCP-MSG` 12.1 — apply an on/off command and report what the hardware is
+    /// **actually** doing afterwards.
+    ///
+    /// ⛔ **Returns the achieved state, never `Void` and never an echo of the
+    /// request** (12.1c). A `Void` setter would make the ack a guess, and trap 3
+    /// is the standing lesson that a queued or accepted command is not an
+    /// achieved one — it has been fixed twice already, for `arm` and for
+    /// `stream_open`, whose comment reads *"we had the comment without the
+    /// code."* The read-back is what stops it being written a third time.
+    ///
+    /// ⛔ **Does not throw, and that is deliberate** — the same argument
+    /// `extractClip` makes for `absent`. A refusal is a *result* here: 12.1b
+    /// requires exactly one reason from an open registry, and `TorchOutcome`
+    /// carries it as a value so D15 can put it straight on the wire. A thrown
+    /// `Error` would have to be mapped back into that vocabulary at the call
+    /// site, which is where the vocabulary would drift.
+    func setTorch(_ request: TorchRequest) -> TorchOutcome
+
+    /// `PPCP-MSG` 12.2a — a state change **no acknowledged command caused**,
+    /// since the last time this was asked.
+    ///
+    /// ⛔ **Consuming.** It reports a change once and re-baselines, so a caller
+    /// polling it on a tick emits one `actuator_state` per change rather than
+    /// one per tick — which is 12.2a's own distinction and the same
+    /// on-change-not-per-tick rule D16's statistics emitters follow.
+    ///
+    /// ⛔ An applied command re-baselines too, so a change the peer just
+    /// acknowledged never surfaces here: 12.2a says `actuator_state` "is not
+    /// sent to confirm a command the requester already has an acknowledgement
+    /// for", and a port that reported both would make that the caller's problem
+    /// to filter — with only the caller's guess about which change was which.
+    ///
+    /// ⚠ Polled, not observed. See the ⚠ on `TorchChange`: this codebase has no
+    /// KVO anywhere and `waitForConvergence` says so where it polls instead.
+    func torchChangeSincePoll() -> TorchChange?
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Per-Source availability (`CORE` §5.20, `PPCP-MSG` §5.5)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// `CORE` 5.20 — what the **hardware** says about each Source this device
+    /// declares, keyed by the `source_id` on the wire.
+    ///
+    /// ⛔ **Hardware only, and the split is the point.** `in_use` and
+    /// `disconnected` are things only an `AVCaptureDevice` can answer;
+    /// `permission_denied`, `thermal_limit` and `storage_full` are already read
+    /// elsewhere in this application and would be read twice, from two clocks,
+    /// if they were answered here as well. The caller overlays those.
+    ///
+    /// ⛔ **Answerable before `warmUp`** — 5.20b turns on `DeviceStatus` being
+    /// reachable earlier than `Readiness`, and a method that needed a running
+    /// session would answer the `Readiness` question instead. It walks the
+    /// discovery session, exactly as `torchCapability()` does and for the same
+    /// reason.
+    ///
+    /// ⚠ **Keyed on `source_id`, never on a device's `uniqueID`.** The wire
+    /// names Sources and a receiver joins on that name; anything else is a
+    /// second identity for the same thing.
+    ///
+    /// ⚠ A Source this device cannot read a hardware answer for is **absent from
+    /// the dictionary** rather than reported `available`. Absence is "not known"
+    /// (`CORE` §5.1) and the caller says nothing about it.
+    func sourceHardwareAvailability() -> [String: SourceAvailability]
+
     /// `CORE` §5.11.2 — take preview frames off the capture path, or stop.
     ///
     /// ⚠ Defaulted, because a device with no sample callback has nothing to tap
