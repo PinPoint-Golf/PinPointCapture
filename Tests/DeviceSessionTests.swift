@@ -914,6 +914,40 @@ struct DeviceSessionTests {
         let session = try #require(await link.hostSession, "session_open never arrived")
         print("DEVICE-RUN session=\(session.sessionId) ref=\(session.timebaseRefId)")
 
+        // ⛔ **WAIT FOR THE CLOCKS BEFORE ARMING, BECAUSE A PERSON DOES.**
+        // The manual procedure is: connect the camera, watch the agreement
+        // settle under 5 ms, and only then start capturing. 6.1f's sigma is the
+        // arbitration gate — arm above it and PinPointStudio arbitrates on a
+        // relation wider than the window, so Shots are excluded and the run
+        // measures the warm-up rather than the product.
+        //
+        // ⚠ This test used to arm immediately, held the link about 29 s, and the
+        // host's worst sigma never came below 23 ms — so the host never started
+        // a session, `armed()` was false, every arbitrated Shot was dropped and
+        // not one `capture_request` was ever sent. The swing "passed" while
+        // nothing downstream of it had run.
+        //
+        // Reported, never asserted: a slow network is not this test's failure,
+        // and CONF's rule is that rows report where a person is involved.
+        // ⚠ 3 MINUTES, NOT 2.  Convergence takes up to two minutes even on the
+        // cable, so a 120 s budget sits exactly on the boundary and would fail
+        // intermittently — which is the worst kind of red, because it looks like
+        // a product fault. Sampled every 2 s; it exits the moment it converges,
+        // so a fast link costs nothing.
+        let gateMs = 5.0
+        var sigma = Double.infinity
+        for _ in 0 ..< 90 {
+            if let c = await model.link?.clockAgreement {
+                sigma = c.offsetSigmaMilliseconds
+                if sigma <= gateMs { break }
+            }
+            try await Task.sleep(for: .seconds(2))
+        }
+        print("DEVICE-RUN clock agreement before arming: ± \(sigma) ms (gate \(gateMs) ms)")
+        if sigma > gateMs {
+            print("DEVICE-RUN ⚠ armed ANYWAY above the gate — the host may exclude every Shot")
+        }
+
         await model.arm()
         try await Task.sleep(for: .seconds(3))
         let armed = await model.captureStatus.state
