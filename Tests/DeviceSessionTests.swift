@@ -948,6 +948,23 @@ struct DeviceSessionTests {
             print("DEVICE-RUN ⚠ armed ANYWAY above the gate — the host may exclude every Shot")
         }
 
+        // ⛔ **LET THE HOST GET ITS SESSION UP FIRST.**  Both ends measure the
+        // same relation and therefore cross the 5 ms gate in the same instant --
+        // observed: phone 4.699 ms, host 4.699 ms, the same number.  The host
+        // then starts a capture session, and a Shot arriving in that same second
+        // finds `armed()` still false and is dropped, so no `capture_request`
+        // ever goes out and the swing is spent for nothing.
+        //
+        // Measured 1 Sept: "arbitrated shot" at 18:45:36 and "session started" at
+        // 18:45:36 -- the shot lost the race by less than a second.
+        //
+        // ⚠ A settle, not a synchronisation: the phone cannot see the host's
+        // session state (PinPointStudio does not send `arm`, MSG 5.2 being
+        // deliberately outside the MVP), so this is the honest approximation and
+        // it is deliberately generous. A swing costs 20 s of pipeline; five
+        // seconds of waiting is cheap against losing one.
+        try await Task.sleep(for: .seconds(5))
+
         await model.arm()
         try await Task.sleep(for: .seconds(3))
         let armed = await model.captureStatus.state

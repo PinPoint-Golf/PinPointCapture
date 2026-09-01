@@ -103,7 +103,7 @@ CONFORM_WARMUP_S ?= 75
 
 COMMA := ,
 
-.PHONY: all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop rv6 _rv6_run interop read-bundle pull-bundles device deploy lint browse clean help
+.PHONY: integration-device pull-diags all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop rv6 _rv6_run interop read-bundle pull-bundles device deploy lint browse clean help
 
 # ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
 # what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
@@ -940,6 +940,92 @@ integration: gen
 	if [ $$rc -ne 0 ]; then \
 		echo "make integration: the HOST half failed — see its PROBE RESULT line"; exit $$rc; \
 	fi
+
+# ⛔ **BOTH HALVES, ON REAL HARDWARE, WITH NO PERSON IN THE LOOP.**
+#
+#   make integration-device STUDIO=/path/to/PinPointStudio [EXPECT_CLIPS=1]
+#
+# `make integration` already owns both processes and reads both verdicts
+# machine-readably -- but it runs the SIMULATOR, which has no camera and can
+# therefore never produce a clip, which is the one thing the swing-video leg
+# needs proving. This is that target pointed at the phone.
+#
+# The host half runs offscreen under `ppcp_assert.qml`, which performs the
+# procedure a person performs -- enable the phone's camera, WAIT FOR CLOCK
+# AGREEMENT UNDER 5 ms, start the capture session -- and then asserts on the clip
+# chain rather than on shots. The device half drives the shipping app through
+# `DeviceSessionTests`, arming itself and injecting its own swing.
+#
+# ⛔ **NEVER `devicectl --console` HERE.** It bridges the phone's stdout and holds
+# a CoreDevice tunnel: the kernel re-enumerates the device, every usbmux tunnel
+# dies, and the link under measurement is killed by the act of watching it. The
+# phone's diagnostics come off afterwards with `copy from`, which touches
+# nothing (see pull-diags).
+#
+# ⚠ `/usr/bin/log`, never bare `log` -- the latter is a zsh builtin that silently
+# returns nothing.
+INTEGRATION_OUT ?= $(HOME)/pinpoint-diags/$(shell date +%Y-%m-%d-%H%M%S)-integration
+EXPECT_CLIPS    ?= 1
+PROBE_TIMEOUT_MS ?= 900000
+integration-device: gen
+	@if [ -z "$(STUDIO)" ]; then \
+		echo "make integration-device: STUDIO=<PinPointStudio binary> is required."; exit 1; \
+	fi
+	@if [ ! -f "$(STUDIO_PROBE)" ]; then \
+		echo "make integration-device: no probe at $(STUDIO_PROBE)"; exit 1; \
+	fi
+	@set -e; \
+	out="$(INTEGRATION_OUT)"; mkdir -p "$$out"; \
+	echo "diagnostics → $$out"; \
+	: '⚠ usbmuxd re-enumeration is the difference between our drop and the OS'\''s.'; \
+	/usr/bin/log stream --style compact --info \
+		--predicate 'eventMessage CONTAINS[c] "setConfigurationGated"' \
+		>"$$out/usb.log" 2>&1 & usbpid=$$!; \
+	QT_QPA_PLATFORM=offscreen PINPOINT_LOG_STDERR=1 PINPOINT_PPCP_ACCEPT_ALL=1 \
+		"$(STUDIO)" --probe-qml "$(STUDIO_PROBE)" \
+		--expect-clips $(EXPECT_CLIPS) --probe-timeout-ms $(PROBE_TIMEOUT_MS) \
+		>"$$out/pps.log" 2>&1 & studiopid=$$!; \
+	trap 'kill $$studiopid $$usbpid 2>/dev/null || true' EXIT; \
+	echo "PinPointStudio offscreen (pid $$studiopid), expect-clips=$(EXPECT_CLIPS)"; \
+	sleep 8; \
+	: '⛔ BOTH HALVES DECIDE THE VERDICT.  `|| true` here would let a device'; \
+	: 'half that never ran report a pass on the host probe alone -- which is'; \
+	: 'exactly the false green this rig exists to prevent.'; \
+	devrc=0; \
+	$(MAKE) --no-print-directory test-device >"$$out/device.log" 2>&1 || devrc=$$?; \
+	grep -E '^(◇|✔|✘|↳)|DEVICE-RUN|SKIP|Test run' "$$out/device.log" || true; \
+	: 'The phone'\''s own account, off the device without touching the link.'; \
+	$(MAKE) --no-print-directory pull-diags OUT="$$out" || true; \
+	echo "--- PinPointStudio ---"; \
+	grep -E "PROBE (START|DRIVE|RESULT|DOCTOR|STATS)" "$$out/pps.log" | sed 's/^.*\[qml\] //' | sort -u || true; \
+	wait $$studiopid; rc=$$?; \
+	cp "$(DERIVED)/.test-device.log" "$$out/device-xcodebuild.log" 2>/dev/null || true; \
+	if [ $$devrc -ne 0 ]; then \
+		echo ""; \
+		echo "make integration-device: the DEVICE half failed (rc=$$devrc) — $$out/device-xcodebuild.log"; \
+		exit $$devrc; \
+	fi; \
+	if [ $$rc -ne 0 ]; then \
+		echo ""; \
+		echo "make integration-device: the HOST half failed — see its PROBE DOCTOR line above,"; \
+		echo "  and $$out for both sides' logs."; \
+		exit $$rc; \
+	fi; \
+	echo "make integration-device: PASS — $$out"
+
+# The phone's diagnostic file, off the device. ⚠ `copy from`, NOT `--console`:
+# this reads a file and holds no tunnel, so it cannot perturb the link.
+pull-diags: OUT ?= .
+pull-diags:
+	@set -e; \
+	udid=$$($(MAKE) --no-print-directory _udid); \
+	if [ -z "$$udid" ]; then echo "make pull-diags: no connected device."; exit 1; fi; \
+	mkdir -p "$(OUT)"; \
+	xcrun devicectl device copy from --device "$$udid" \
+		--domain-type appDataContainer --domain-identifier $(BUNDLE_ID) \
+		--source Documents/ppcp-diag.log --destination "$(OUT)/ppc-diag.log" \
+		>/dev/null 2>&1 || { echo "make pull-diags: nothing to pull yet."; exit 0; }; \
+	echo "phone diagnostics → $(OUT)/ppc-diag.log"
 
 device:
 	@xcrun devicectl list devices
