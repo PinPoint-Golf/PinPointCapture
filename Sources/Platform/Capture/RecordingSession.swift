@@ -700,7 +700,27 @@ public final class RecordingSession {
     public func serveCaptureRequest(shotId: String, t0Ns: Int64, t0TimebaseId: String,
                                     preNs: Int64, postNs: Int64,
                                     replyTo: UInt64) async {
-        guard let hosted = control.hosted, let video = videoStream else { return }
+        // ⛔ **THE HOST ASKED, AND THIS FUNCTION SAID NOTHING EITHER WAY.**
+        // Measured 1 Sept 2026: PinPointStudio sent `capture_request` for shot
+        // e876b5a1 naming four Streams, and the phone never answered that shot
+        // at all -- every Capture it announced was anchored to one it had minted
+        // itself.  From the host that is indistinguishable from a device that
+        // never received the request, and both guards below return in silence.
+        PpcpLog.transferEvent("capture_request received",
+                              detail: "shot \(shotId) pre \(preNs / 1_000_000)ms "
+                                      + "post \(postNs / 1_000_000)ms")
+        guard let hosted = control.hosted else {
+            PpcpLog.transferEvent("capture_request UNANSWERED", detail: "no hosted link")
+            return
+        }
+        guard let video = videoStream else {
+            // 7.3b would have us answer `absent` -- but with no Stream there is
+            // nothing to anchor an absent Capture to, which is the one case that
+            // genuinely has nothing to say.  Say it here instead of nowhere.
+            PpcpLog.transferEvent("capture_request UNANSWERED",
+                                  detail: "no video Stream open on this session")
+            return
+        }
         let captureId = "cap:\(UUID().uuidString.lowercased())"
 
         let localT0: Int64? = try? await hosted.pump.perform { peer in
@@ -709,6 +729,9 @@ public final class RecordingSession {
         }
 
         guard let localT0 else {
+            PpcpLog.transferEvent("capture_request → absent",
+                                  detail: "shot \(shotId) — t0 does not convert into "
+                                          + "\(PpcpTimebases.captureId); no relation yet")
             try? await hosted.pump.perform { peer in
                 try peer.captureAbsent(captureId: captureId, shotId: shotId,
                                        streamId: video.id,
@@ -726,6 +749,10 @@ public final class RecordingSession {
             intrinsics: clip.intrinsics, thermal: clip.thermal)
 
         if assembly.record.completeness == PpcpCaptureRecord.Completeness.absent {
+            PpcpLog.transferEvent("capture_request → absent",
+                                  detail: "shot \(shotId) — "
+                                          + (assembly.record.absentReason
+                                             ?? PpcpAbsentReason.outsideBuffer))
             try? await hosted.pump.perform { peer in
                 try peer.captureAbsent(captureId: captureId, shotId: shotId,
                                        streamId: video.id,
@@ -744,9 +771,29 @@ public final class RecordingSession {
         // isolated property — and `DetectionSink` is `AnyObject`-bound and
         // `@unchecked Sendable` by construction, which is what makes passing the
         // reference legitimate rather than a hole.
-        guard let sink = detectionSink else { return }
-        try? await hosted.pump.perform { [payload = clip.payload] _ in
-            try sink.announce(assembly, clip: payload)
+        guard let sink = detectionSink else {
+            PpcpLog.transferEvent("capture_request UNANSWERED",
+                                  detail: "shot \(shotId) — a clip was cut and there is no "
+                                          + "detection sink to announce it through")
+            return
+        }
+        // ⚠ `try?` again, and this one swallowed an announce.  A throw here left
+        // the host waiting for a Capture that was cut, persisted and never
+        // mentioned.
+        do {
+            try await hosted.pump.perform { [payload = clip.payload] _ in
+                try sink.announce(assembly, clip: payload)
+            }
+            // ⚠ "NO payload provider" is the one worth seeing: announce() only
+            // enqueues a transfer when a clip provider comes with it, so an
+            // announce without one is a Capture the host will wait for for ever.
+            let hasPayload = clip.payload != nil
+            PpcpLog.transferEvent("capture_request answered",
+                                  detail: "shot \(shotId) capture \(captureId) — "
+                                          + (hasPayload ? "payload queued" : "NO payload provider"))
+        } catch {
+            PpcpLog.transferEvent("capture_request ANNOUNCE FAILED",
+                                  detail: "shot \(shotId) — \(String(describing: error))")
         }
     }
 

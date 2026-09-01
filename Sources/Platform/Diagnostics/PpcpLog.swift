@@ -5,6 +5,7 @@
 
 import Foundation
 import OSLog
+import CaptureCore
 
 /// ⛔ **THIS EXISTS BECAUSE THE DEVICE HAD NO VOICE, AND IT COST TWO DAYS.**
 ///
@@ -61,6 +62,27 @@ public enum PpcpLog {
     private static func emit(_ line: String, to logger: Logger) {
         logger.notice("\(line, privacy: .public)")
         print("[ppcp] \(line)")
+        // ⛔ **THE THIRD SINK, AND THE ONLY ONE THAT CAN BE READ WITHOUT
+        // BREAKING WHAT IT IS MEASURING.**
+        //
+        // The other two are both unreachable in practice on a cabled phone:
+        // `idevicesyslog` reads the legacy syslog relay and carries no os_log at
+        // all, and `devicectl … --console` bridges stdout while holding a
+        // CoreDevice tunnel that re-enumerates the device — the kernel logs
+        // `setConfigurationGated`, every usbmux tunnel dies, and the link under
+        // measurement is killed by the act of watching it (1 Sept 2026: zero
+        // re-enumerations in the one run that did not use it).
+        //
+        // So every category also goes to the file PpcpDiagnostics already keeps
+        // — bounded, off-thread, non-throwing — which comes off with a plain
+        // `devicectl device copy from` and touches nothing.  That file existed
+        // for the channel lifecycle and carried none of this; a transfer that
+        // stalled could not be seen at all.
+        //
+        // ⚠ Same secrets rule as the other two: no key material, no PRK, no PSK
+        // identity, no payload (RV 7.2b, CORE 13d). Session and pairing ids are
+        // permitted, and nothing here composes anything else.
+        PpcpDiagnostics.note(line)
     }
 
     /// A channel was dialled, authenticated, and bound — or failed on the way.
