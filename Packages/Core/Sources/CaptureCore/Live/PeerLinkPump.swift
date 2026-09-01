@@ -247,6 +247,9 @@ public actor PeerLinkPump {
     public func start(tickIntervalNs: Int64 = PeerLinkPump.defaultTickIntervalNs) {
         guard tasks.isEmpty, stopped == false else { return }
         for channel in channels() {
+            // Records what already has a loop, so `attachPreview()` cannot add a
+            // second one for a channel the transport had bound before we started.
+            attached.insert(channel.channel)
             tasks.append(Task { [weak self] in await self?.receiveLoop(channel) })
         }
         tasks.append(Task { [weak self] in
@@ -256,6 +259,15 @@ public actor PeerLinkPump {
             }
         })
     }
+
+    /// Set when the optional `preview` channel dies.  The link stays up; this is
+    /// what lets a later preview request know there is no channel to use and
+    /// answer honestly rather than writing into a closed socket.
+    public private(set) var previewChannelFailed = false
+
+    /// Channels that already have a receive loop.  One loop per channel:
+    /// concurrent `receive()` on one connection interleaves the byte stream.
+    private var attached: Set<PpcpChannel> = []
 
     private var isRunning: Bool { stopped == false }
 
@@ -269,12 +281,36 @@ public actor PeerLinkPump {
     /// (`ENC` 2.1d), so its bytes reach the engine like any other channel's.
     public func attachPreview(_ channel: any ByteChannel) {
         guard stopped == false else { return }
+        // ⛔ **ONE RECEIVE LOOP PER CHANNEL, AND THIS IS NOT TIDINESS.**
+        // `start()` already loops over `channels()`, which INCLUDES `preview`
+        // whenever the transport had it bound by then — and on the cable it
+        // usually does, because PinPointStudio dials the third channel as part
+        // of the wired dial while over WiFi we dial it ourselves, later.  So the
+        // cabled case started a loop here on a channel that already had one, and
+        // two tasks then called `receive()` on the same connection concurrently:
+        // the byte stream splits between them and the TLS state machine is
+        // driven from two places at once.
+        //
+        // ⚠ That is the transport asymmetry exactly — the case that duplicates
+        // is the case that failed, every 30-100 s, all of 1 Sep 2026, with
+        // `SSL_ERROR_SSL` / broken pipe at the far end.  The phone's own
+        // diagnostic showed the same channel reporting end-of-stream twice in
+        // the same millisecond, which is what made it visible at all.
+        guard attached.contains(channel.channel) == false else {
+            PpcpDiagnostics.note("channel \(channel.channel) already attached — "
+                                 + "second receive loop refused")
+            return
+        }
+        attached.insert(channel.channel)
+        PpcpDiagnostics.channelOpened(channel.channel)
         tasks.append(Task { [weak self] in await self?.receiveLoop(channel) })
     }
 
     public func stop(_ reason: ChannelCloseReason = .normal) async {
         guard stopped == false else { return }
+        PpcpDiagnostics.linkClosing(String(describing: reason))
         stopped = true
+        attached.removeAll()
         for task in tasks { task.cancel() }
         tasks.removeAll()
         await transport.close(reason)
@@ -326,11 +362,30 @@ public actor PeerLinkPump {
             } catch is CancellationError {
                 return
             } catch {
+                // ⛔ **AN OPTIONAL CHANNEL FAILING IS NOT THE LINK FAILING.**
+                // This used to `stop()` for ANY channel, and `stop()` cancels
+                // every task and closes every channel — so one blip on
+                // `preview` took control and bulk down with it.  `ENC` 2.1d
+                // makes the third channel optional; 5.11i puts preview first in
+                // line to degrade and 5.11j says it is discarded rather than
+                // preserved.  Losing it means "no picture", not "session over".
+                //
+                // ⚠ The clean-EOF path below ALREADY discriminated this way —
+                // only the error path over-reacted, which is why a cabled phone
+                // dropped its whole session every 30-100 s on 1 Sep 2026 while
+                // an end-of-stream on the same channel was shrugged off.
+                PpcpDiagnostics.channelFailed(channel.channel, error)
+                if channel.channel == .preview {
+                    previewChannelFailed = true
+                    return
+                }
                 await stop(.failed(String(describing: error)))
                 return
             }
             guard let arrived else {
                 // A clean end of stream on channel 0 is the counterpart leaving.
+                PpcpDiagnostics.channelEnded(channel.channel)
+                if channel.channel == .preview { previewChannelFailed = true }
                 if channel.channel == .control { await stop(.peerClosed) }
                 return
             }
