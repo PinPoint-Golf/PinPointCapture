@@ -989,6 +989,30 @@ struct DeviceSessionTests {
         }
         #expect(shots.isEmpty == false, "no Shot was minted")
 
+        // ⛔ **STAY ARMED UNTIL THE HOST HAS ASKED, BECAUSE DISARMING CLOSES THE
+        // RING IT IS ASKING ABOUT.**
+        //
+        // `device.retainedClip()` returns immediately when `isRetaining` is
+        // false, and `disarm()` is what makes it false. PinPointStudio does not
+        // ask the instant it sees a Shot: 8.2h holds a group open before issuing,
+        // then the host corroborates and commits, and only then does
+        // `capture_request` go out. This test used to disarm eight seconds after
+        // the swing and the request kept arriving afterwards -- so the phone
+        // answered "I have nothing" in ONE MILLISECOND, every time, for every
+        // window size, and the leg looked broken when the ring had simply been
+        // shut before the question was asked.
+        //
+        // ⚠ Reported, never asserted. This test's subject is the phone's own
+        // clip; whether the host asked in time is the host's business and a
+        // slower host is not this row's failure. It waits, says what it saw, and
+        // carries on.
+        var served = false
+        for _ in 0 ..< 30 {
+            if await model.recording?.servedCaptureRequests ?? 0 > 0 { served = true; break }
+            try await Task.sleep(for: .seconds(1))
+        }
+        print("DEVICE-RUN host capture_request served while armed: \(served)")
+
         // ⛔ **The assertion every manual run failed.** A bundle with no payload
         // is #98's shape, and all five of today's faults ended here.
         await model.disarm()

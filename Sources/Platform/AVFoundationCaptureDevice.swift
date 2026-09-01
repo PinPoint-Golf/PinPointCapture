@@ -1044,8 +1044,26 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
                              postNs: Int64) -> RetainedClip {
         sampleQueue.sync {
             guard let recorder, recorder.isRetaining else {
+                // ⛔ **`not_retained`, NOT `outside_buffer`, AND THE DIFFERENCE
+                // COST A DAY.**  `nothingRetained`'s default reason is
+                // `outside_buffer`, which says "that moment has rolled out of my
+                // ring" -- a statement about WHEN.  This branch is not that: the
+                // ring is not running at all, which is a statement about WHETHER,
+                // and the two want completely different responses.
+                //
+                // Measured 1 Sept: PinPointStudio asked for a clip and was told
+                // `outside_buffer` in ONE MILLISECOND, twice, for a 2000 ms
+                // window and a 300 ms one.  That sent the investigation into ring
+                // depth and the design's open question 4 -- when the truth was
+                // that the phone had already disarmed and there was no ring to
+                // ask.  A one-millisecond answer is a guard, not a search.
+                //
+                // 7.3b keeps this an absent Capture either way (I10: an answer,
+                // never a failure); only the reason changes, and the reason is
+                // the whole diagnostic value of the message.
                 return RetainedClip.nothingRetained(
-                    (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs)))
+                    (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs)),
+                    reason: PpcpAbsentReason.notRetained)
             }
             return recorder.retainedClip(
                 aroundNs: t0, preNs: preNs, postNs: postNs,

@@ -706,6 +706,7 @@ public final class RecordingSession {
         // at all -- every Capture it announced was anchored to one it had minted
         // itself.  From the host that is indistinguishable from a device that
         // never received the request, and both guards below return in silence.
+        servedCaptureRequests += 1
         PpcpLog.transferEvent("capture_request received",
                               detail: "shot \(shotId) pre \(preNs / 1_000_000)ms "
                                       + "post \(postNs / 1_000_000)ms")
@@ -830,6 +831,15 @@ public final class RecordingSession {
     ///
     /// ⛔ The 20 ms sleep is only for the **idle** case, so an armed session with
     /// nothing queued is not a spin.
+    /// How many `capture_request`s this session has been asked to serve.
+    ///
+    /// ⛔ Exists so a test can STAY ARMED until the host has actually asked.
+    /// `retainedClip()` answers instantly once `disarm()` closes the ring, so a
+    /// run that disarms on a timer answers "I have nothing" to a question that
+    /// arrived one second later — which is indistinguishable, from the host,
+    /// from a device that never had the footage.
+    public private(set) var servedCaptureRequests = 0
+
     public func startTransferring() {
         guard let hosted = control.hosted else {
             // ⛔ THE SILENT NO-OP.  This is called once, when the golfer arms
