@@ -753,6 +753,25 @@ public final class AppModel {
     /// that genuinely belongs on this transition.
     public func sceneDidBecomeActive() {
         isActive = true
+        // ⛔ **HERE, NOT INSIDE beginSearchingForHost() — THERE ARE TWO LOOPS.**
+        // The guard was first written one level down and did not work, because
+        // `startWiredReconcile()` is a SIBLING call, not a nested one: a 2 s
+        // level loop that publishes wired presence and lets the host dial in
+        // over usbmux, entirely independently of the browse. `make test-device`
+        // requires a connected phone, so the cable is always there and that
+        // second path always ran.
+        //
+        // The app must not fight its own tests: `DeviceSessionTests` is
+        // app-HOSTED, so this process's own AppModel exists alongside the one
+        // each test builds, and a second dial from one peer id is refused by
+        // PinPointStudio's §6.1 rule. Suppressing both loops leaves the link
+        // entirely to the test.
+        if Self.isUnderTest {
+            // Said out loud: a search that silently did nothing is the other
+            // half of this bug.
+            PpcpLog.reconnect("suppressed", detail: "under test — the test owns the link")
+            return
+        }
         startWiredReconcile()
         beginSearchingForHost()
     }
@@ -819,6 +838,26 @@ public final class AppModel {
     ///
     /// ⛔ Idempotent. Two searches would be two browses and, worse, two dials to
     /// the same host.
+    /// ⛔ **THE APP MUST NOT FIGHT ITS OWN TESTS.** `DeviceSessionTests` is
+    /// app-HOSTED: it runs inside this process, builds its own `AppModel` and
+    /// dials the host itself. With the app's automatic search also running there
+    /// are TWO dials from one phone, PinPointStudio keeps the first and closes
+    /// the second as a duplicate (its design §6.1, "one phone, one link"), and
+    /// the test's link is the one that dies -- so `session_open` never reaches
+    /// it and every hosted assertion fails on a fault that is not in the
+    /// product.
+    ///
+    /// Measured 1 Sept: `aHostedSwingProducesAClip` failed at
+    /// `await link.hostSession` on every run, against a host whose log said
+    /// "keeping the one it has and closing the newcomer" each time. The suite
+    /// exists to take the person out of the hardware loop and could not, because
+    /// nothing here knew it was under test.
+    static var isUnderTest: Bool {
+        NSClassFromString("XCTestCase") != nil
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["PPC_NO_AUTOCONNECT"] == "1"
+    }
+
     public func beginSearchingForHost() {
         // ⛔ **The cable is not the radio, and this is not part of the browse.**
         // It is here because this is the moment §3 already decided on — the app

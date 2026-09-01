@@ -838,6 +838,11 @@ interop-app: gen
 #
 # ⚠ A device build needs provisioning, so this is `-allowProvisioningUpdates` and
 # will be slower than the simulator suite the first time.
+# ⚠ A device run is slower than the simulator's: provisioning, install, launch,
+# and the hosted rows deliberately sleep 12 s for `session_open` and 8 s for the
+# arbiter's issue hold. 600 s is the suite; a single row needs far less.
+DEVICE_TIMEOUT_S    ?= 900
+DEVICE_ONLY_TESTING ?= PinPointCaptureTests/DeviceSessionTests
 test-device: gen
 	@udid=$$($(MAKE) --no-print-directory _udid); \
 	if [ -z "$$udid" ]; then \
@@ -848,7 +853,8 @@ test-device: gen
 	set -o pipefail; \
 	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
 	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
-	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) \
+	$(GUARD) $(DEVICE_TIMEOUT_S) xcodebuild test \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -856,12 +862,22 @@ test-device: gen
 		-derivedDataPath $(DERIVED) \
 		-jobs $(JOBS) \
 		-allowProvisioningUpdates \
-		-only-testing:PinPointCaptureTests/DeviceSessionTests \
+		-only-testing:$(DEVICE_ONLY_TESTING) \
 		-default-test-execution-time-allowance 300 \
 		-maximum-test-execution-time-allowance 600 \
 		>$(DERIVED)/.test-device.log 2>&1 </dev/null; \
+	echo $$? > $(DERIVED)/.xcodebuild-status; \
 	grep -E '^(◇|✔|✘|↳)|DEVICE-RUN|SKIP|error:|Test run|\*\* TEST' \
-		$(DERIVED)/.test-device.log || true
+		$(DERIVED)/.test-device.log || true; \
+	status=$$(cat $(DERIVED)/.xcodebuild-status 2>/dev/null || echo 1); \
+	if [ $$status -eq $(GUARD_STATUS) ]; then \
+		echo ""; \
+		echo "make test-device: TIMED OUT after $(DEVICE_TIMEOUT_S)s and was killed."; \
+		echo "  A device suite that hangs used to hang for ever: this target was"; \
+		echo "  the only unattended xcodebuild in this file with no \$$(GUARD)."; \
+		echo "  Check the phone is unlocked, trusted and not showing a dialog."; \
+	fi; \
+	exit $$status
 
 # ⛔ **Both halves of an integration run, in one command, with no person in it.**
 #

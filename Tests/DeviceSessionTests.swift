@@ -25,7 +25,28 @@ import Testing
 import CaptureCore
 @testable import PinPointCapture
 
-@Suite("Device run — the camera halves, and B14")
+/// ⛔ **`.serialized`, AND IT IS THE WHOLE REASON THE HOSTED ROWS EVER RAN.**
+///
+/// Four tests here dial PinPointStudio independently — `aHostedSwingProducesAClip`
+/// through `ReconnectCoordinator().attempt()`, and three more through
+/// `reachStudio()` — each building its own `AppModel`. Without this trait
+/// swift-testing runs them CONCURRENTLY IN ONE PROCESS, and one process has one
+/// `PeerIdentity.current` (a UUID persisted in UserDefaults), so all four declare
+/// the same peer id. PinPointStudio then applies its §6.1 rule — "one phone, one
+/// link", keep the incumbent, close the newcomer — and whichever test lost the
+/// race never receives `session_open`. Every hosted assertion then fails at
+/// `#require(await link.hostSession)` on a fault that is not in either product.
+///
+/// Measured 1 Sept 2026: three consecutive `make test-device` runs, identical
+/// failure, host log reading "keeping the one it has and closing the newcomer"
+/// each time. Every other host-dialling suite in this repo already carries the
+/// trait (`AppAgainstStudioTests`, `InteropTests`, `TransportLoopbackTests`);
+/// this was the only one that did not.
+///
+/// ⚠ The scheme's `parallelizable = "NO"` does NOT cover this — that governs
+/// XCTest's multi-process target parallelism, not swift-testing's in-process
+/// concurrency.
+@Suite("Device run — the camera halves, and B14", .serialized)
 struct DeviceSessionTests {
 
     /// `nil` when there is no physical camera, which is how every test here skips.
