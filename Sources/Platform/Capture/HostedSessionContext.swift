@@ -78,11 +78,13 @@ public struct HostedSessionContext: Sendable {
         async throws -> HostedSessionContext {
         try await pump.perform { peer in
             let queue = PayloadTransferQueue(peer: peer)
+            let live = LiveDetectionSink(peer: peer, queue: queue)
+            live.onEvent = { event, detail in PpcpLog.transferEvent(event, detail: detail) }
             return HostedSessionContext(
                 pump: pump,
                 parameters: parameters,
                 queue: queue,
-                live: LiveDetectionSink(peer: peer, queue: queue),
+                live: live,
                 mint: try DeviceMint(peer: peer, promotion: promotion),
                 hostPeerId: hostPeerId)
         }

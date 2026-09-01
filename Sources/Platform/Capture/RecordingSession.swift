@@ -784,17 +784,63 @@ public final class RecordingSession {
     /// ⛔ The 20 ms sleep is only for the **idle** case, so an armed session with
     /// nothing queued is not a spin.
     public func startTransferring() {
-        guard let hosted = control.hosted else { return }
+        guard let hosted = control.hosted else {
+            // ⛔ THE SILENT NO-OP.  This is called once, when the golfer arms
+            // Capture.  With no hosted link at that instant it returns and
+            // NOTHING EVER STARTS THE DRAIN — so a link that comes up later
+            // announces Captures on control and never sends a byte on bulk.
+            // Indistinguishable, from the host, from a phone that has nothing.
+            PpcpLog.transferEvent("NOT started", detail: "no hosted link when Capture was armed")
+            return
+        }
         transferTask?.cancel()
+        PpcpLog.transferEvent("drain started",
+                              detail: "budget \(Self.transferBudgetBytes) bytes/pass")
         transferTask = Task.detached(priority: .utility) {
+            var idleSince: ContinuousClock.Instant? = nil
             while Task.isCancelled == false {
-                let sent = (try? await hosted.pump.perform { _ in
-                    try hosted.queue.pump(budgetBytes: Self.transferBudgetBytes)
-                }) ?? 0
-                if sent == 0 {
+                var sent = 0
+                do {
+                    sent = try await hosted.pump.perform { _ in
+                        try hosted.queue.pump(budgetBytes: Self.transferBudgetBytes)
+                    }
+                } catch {
+                    // ⛔ AND THIS IS WHY NOTHING MOVED AND NOTHING SAID SO.  It
+                    // was `try?`: a throw here became nil, nil became 0 bytes,
+                    // 0 bytes became a 20 ms sleep, and the loop tried again for
+                    // ever.  A clip that could never encode retried silently
+                    // fifty times a second.  `try?` hides everything -- the same
+                    // lesson the preview path cost nine stacked defects to learn.
+                    PpcpLog.transferEvent("pump FAILED", detail: String(describing: error))
+                    try? await Task.sleep(for: .milliseconds(200))
+                    continue
+                }
+                if sent > 0 {
+                    idleSince = nil
+                    PpcpLog.transferEvent("sent", detail: "\(sent) byte(s) this pass")
+                } else {
+                    // Idle is normal; idle WITH WORK QUEUED is not, and that is
+                    // the state the host reads as `pending` for ever.
+                    let queued = (try? await hosted.pump.perform { _ in
+                        hosted.queue.pendingCaptureIds.count
+                    }) ?? 0
+                    if queued > 0 {
+                        let now = ContinuousClock.now
+                        if let since = idleSince {
+                            if now - since > .seconds(5) {
+                                PpcpLog.transferEvent(
+                                    "STALLED",
+                                    detail: "\(queued) job(s) queued and nothing sent for 5s")
+                                idleSince = now
+                            }
+                        } else {
+                            idleSince = now
+                        }
+                    }
                     try? await Task.sleep(for: .milliseconds(20))
                 }
             }
+            PpcpLog.transferEvent("drain stopped")
         }
     }
 

@@ -36,6 +36,7 @@ public enum PpcpLog {
     private static let link = Logger(subsystem: subsystem, category: "ppcp.link")
     private static let wired = Logger(subsystem: subsystem, category: "ppcp.wired")
     private static let rendezvous = Logger(subsystem: subsystem, category: "ppcp.rv")
+    private static let transfer = Logger(subsystem: subsystem, category: "ppcp.transfer")
 
     private static let subsystem = "org.pinpointstudio.capture"
 
@@ -81,5 +82,20 @@ public enum PpcpLog {
     /// nothing", which was indistinguishable from "it tried and failed".
     public static func reconnect(_ event: String, detail: String = "") {
         emit("reconnect \(event) \(detail)", to: rendezvous)
+    }
+
+    /// ⛔ **THE PAYLOAD TRANSFER, WHICH HAD NO VOICE AT ALL.**
+    ///
+    /// A Capture is announced on control and its bytes follow on bulk. When the
+    /// bytes did not follow, every surface said the same nothing: the host saw
+    /// `transfer: pending` and waited, the phone's own row said `sending`, and
+    /// the drain loop swallowed whatever it threw behind a `try?` and slept for
+    /// 20 ms before trying again, for ever.
+    ///
+    /// Measured 1 Sept against PinPointStudio: five Captures announced against
+    /// real Shots, `bulk 0/0` on the link, and not one line on either side
+    /// saying why. This is that line.
+    public static func transferEvent(_ event: String, detail: String = "") {
+        emit("transfer \(event) \(detail)", to: transfer)
     }
 }

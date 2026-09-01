@@ -27,6 +27,9 @@ public final class LiveDetectionSink: DetectionSink, @unchecked Sendable {
 
     private let peer: DevicePeer
     private let queue: PayloadTransferQueue
+    /// Diagnostics out, without this Package taking a dependency on the app's
+    /// logger.  Set by the app; nil in tests.
+    public var onEvent: (@Sendable (String, String) -> Void)?
     /// Every Capture announced through this sink, in order — what a screen shows
     /// as the per-shot sync column, read back from the library's transfer table.
     public private(set) var announced: [String] = []
@@ -70,6 +73,16 @@ public final class LiveDetectionSink: DetectionSink, @unchecked Sendable {
         }
         try peer.announce(record)
         announced.append(record.id)
+        // ⚠ An announce with NO job is a Capture the host will wait for for
+        // ever: 8.1 makes the bytes follow the announce, and `clip == nil` means
+        // there are none to follow it with.  Said out loud, because from the
+        // host it looks identical to a transfer that simply has not started.
+        if job == nil {
+            onEvent?("announce WITHOUT payload", "capture \(record.id) — nothing will follow it")
+        } else {
+            onEvent?("announce + payload queued",
+                     "capture \(record.id) — \(record.bytes) byte(s)")
+        }
         // ⛔ Enqueued **after** the announce. 8.2a makes `payload_begin` follow
         // the `capture_announce` for the Capture it carries, and a queue that
         // could run first would break that ordering under exactly the load it
