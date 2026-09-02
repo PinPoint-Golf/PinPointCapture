@@ -958,18 +958,48 @@ struct DeviceSessionTests {
         // Measured 1 Sept: "arbitrated shot" at 18:45:36 and "session started" at
         // 18:45:36 -- the shot lost the race by less than a second.
         //
-        // ⚠ A settle, not a synchronisation: the phone cannot see the host's
-        // session state (PinPointStudio does not send `arm`, MSG 5.2 being
-        // deliberately outside the MVP), so this is the honest approximation and
-        // it is deliberately generous. A swing costs 20 s of pipeline; five
-        // seconds of waiting is cheap against losing one.
+        // ⚠ A settle, not a synchronisation: the host starts its capture
+        // session on its own reading of the same gate, and the wait below is
+        // what actually synchronises the two. A swing costs 20 s of pipeline;
+        // five seconds of waiting is cheap against losing one.
         try await Task.sleep(for: .seconds(5))
 
-        await model.arm()
-        try await Task.sleep(for: .seconds(3))
+        // ⭐ **ARMED BY THE HOST, NOT BY THIS TEST** (2 Sept 2026).  Studio's
+        // Capture sends `arm` to every phone (MSG 5.2) the moment its session
+        // starts; the probe on the other side starts that session once the
+        // clocks agree.  This row used to call `arm()` itself, which proved the
+        // phone could arm and nothing about who is meant to.  It now waits for
+        // the host's `arm` to land and asserts that it did — the same wait a
+        // golfer performs, which is none: they do not touch the phone.
+        //
+        // ⚠ While waiting, note whether the host lit the torch (the probe does,
+        // before it starts capture).  `torch` is written only by a host command
+        // or a 12.2a change, so a reading of `on` here means the host asked.
+        var armedAfterS = -1
+        for second in 0 ..< 90 {
+            if await model.captureStatus.state == .armed { armedAfterS = second; break }
+            try await Task.sleep(for: .seconds(1))
+        }
         let armed = await model.captureStatus.state
         let why = await model.capabilityError ?? "—"
-        #expect(armed == .armed, "did not reach armed: \(why)")
+        // `torch` is nil until a command lands or a change is seen; non-nil
+        // here means the host asked (the probe lights it before capture).
+        let sawTorchOn = await model.torch != nil
+        print("DEVICE-RUN armed by the host after \(armedAfterS) s (state \(armed), torch commanded: \(sawTorchOn))")
+        #expect(armed == .armed, "the host's arm never landed: \(why)")
+
+        // ⭐ **THE TORCH SURVIVES ARMING.**  Arming used to rebuild the camera
+        // graph, which reset `torchMode` and put out the light the host had
+        // just switched on.  Read a few seconds after `armed` so the 1 Hz
+        // health tick has had its chance to report a 12.2a change.
+        if sawTorchOn {
+            try await Task.sleep(for: .seconds(3))
+            let torch = await model.torch
+            print("DEVICE-RUN torch after arming: \(String(describing: torch))")
+            #expect(torch?.on == true, "the torch went out when capture started: \(String(describing: torch))")
+        } else {
+            print("DEVICE-RUN torch was never lit by the host — survival not checked")
+        }
 
         // ⛔ One swing. PinPointStudio's pipeline is unavailable for 15–40 s after
         // each, so a burst measures their backlog rather than our capture.

@@ -477,17 +477,46 @@ struct ArmedScreen: View {
                     .accessibilityHint(Text("Re-checks placement, framing and light"))
                 }
 
-                Button(action: onArm) {
-                    Text("Capture")
+                if hostControlsCapture {
+                    // ⭐ **THE HOST'S BUTTON, NOT THIS ONE** (2 Sept 2026).  With
+                    // Studio linked, its Capture/Stop arms and disarms every
+                    // phone in the bay — with two or three of them nobody walks
+                    // round tapping each.  So there is nothing to press here;
+                    // the line says who has the button.  *End session* above
+                    // stays as the local override (REQ-STATE-1).
+                    Text("\(hostShortName) controls capture")
                         .font(.ppRowLabel.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
+                        .accessibilityLabel(Text("Capture is controlled by \(hostShortName)"))
+                } else {
+                    Button(action: onArm) {
+                        Text("Capture")
+                            .font(.ppRowLabel.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: PPMetrics.Size.primaryButton)
+                    }
+                    .tint(Color.ppAccent)
+                    .accessibilityHint(Text("Starts retaining shots on this device"))
                 }
-                .tint(Color.ppAccent)
-                .accessibilityHint(Text("Starts retaining shots on this device"))
             }
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.roundedRectangle(radius: PPMetrics.Radius.card))
+    }
+
+    /// Whether a host holds this device's Capture button.  `.lost` hands it
+    /// back: a host that is gone cannot arm anything, and a golfer stranded on
+    /// a cold camera with no button is the #97 shape again.
+    private var hostControlsCapture: Bool {
+        switch hostLink.state {
+        case .connected, .weak, .resyncing: true
+        case .none, .pairing, .lost: false
+        }
+    }
+
+    private var hostShortName: String {
+        CaptureScreenStyle.shortHostName(hostLink.hostName) ?? "Studio"
     }
 
     /// What the confirmation says is about to be closed.

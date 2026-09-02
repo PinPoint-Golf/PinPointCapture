@@ -120,4 +120,12 @@ public enum PpcpLog {
     public static func transferEvent(_ event: String, detail: String = "") {
         emit("transfer \(event) \(detail)", to: transfer)
     }
+
+    /// `PPCP-MSG` §12 — the torch: what was commanded, what the hardware then
+    /// did, and every change nobody commanded.  Added 2 Sept 2026 when a torch
+    /// the host had lit went out on arm and no line at either end said which
+    /// of arm's five steps put it out.
+    public static func actuator(_ event: String, detail: String = "") {
+        emit("actuator \(event) \(detail)", to: link)
+    }
 }

@@ -377,10 +377,17 @@ public final class AppModel {
         // abandoned. ⛔ Set **before** the first suspension point, or the guard
         // is the bug it is guarding against.
         guard isArming == false else { return }
+        // ⭐ Idempotent on an armed or settling device (2 Sept 2026).  The host
+        // now sends `arm` on its own capture start, and the device suite — and
+        // a golfer's thumb — can ask again; a second arm used to rebuild the
+        // camera, open a second RecordingSession's Streams on the same peer
+        // (5.1a refuses them) and split the session in two.
+        guard captureStatus.state != .armed, isSettling == false else { return }
         isArming = true
         defer { isArming = false }
 
         await warmUp()
+        noteTorchChange(after: "warmUp")
         // ⛔ `warmUp` has stated the reason by now — it no longer fails silently
         // — so this returns to a screen that can say what happened.
         // ⛔ **Every exit from here reports.** An `arm` that leaves a host
@@ -389,6 +396,7 @@ public final class AppModel {
         // the same hole as sending no `readiness` at all (PinPointStudio, 27 Aug).
         guard captureStatus.state == .warm else { reportReadiness(); return }
         await startRecording()
+        noteTorchChange(after: "startRecording")
         guard let recording, let mode = activeMode else { reportReadiness(); return }
         // ⛔ REQ-BUF-1, and the same rule the comment above states for warm-up:
         // a device that cannot retain must not reach `armed`. This is the half
@@ -402,12 +410,20 @@ public final class AppModel {
             reportReadiness()
             return
         }
+        noteTorchChange(after: "startRetaining")
         startDetecting()
+        noteTorchChange(after: "startDetecting")
         // REQ-META-1 / REQ-CLIP-1 — attitude and gravity. ⛔ Started with the
         // session and stopped with it, for the same privacy reason the
         // microphone is (7.2, REQ-PRIV-4): a motion sensor running outside a
         // capture session is something this application must not have.
         recording.startMetadata()
+        noteTorchChange(after: "startMetadata")
+        // ⭐ A torch the host lit is re-lit if any step above put it out, and
+        // the health tick keeps re-lighting it for a few seconds more — the
+        // platform's own teardown lands asynchronously.  See `reassertTorch`.
+        torchReassertUntilNs = MachClock.hostTimeNs + Self.torchReassertWindowNs
+        reassertTorch(after: "arm")
         // A real Session, opened now, holding the shots this arm produces.
         session = Session(name: Self.sessionName(for: recording.anchor.wallClock),
                           start: recording.anchor.wallClock,
@@ -479,6 +495,7 @@ public final class AppModel {
                     self.isSettling = false
                     self.captureStatus.state = .armed
                     self.reportReadiness()
+                    self.reassertTorch(after: "settled")
                     return
                 }
                 if MachClock.hostTimeNs - startedAt > Self.settleTimeoutNs {
@@ -564,13 +581,23 @@ public final class AppModel {
     /// one: no way to state a terminal negative. `blocked_reason` does not fit —
     /// nothing is blocked. Raised with PinPointStudio 27 Aug 2026; their arming
     /// timeout is the honest interim on their side.
-    public func disarm() {
+    ///
+    /// ⭐ `stayWarm` (2 Sept 2026) — a host's `disarm`.  The session screen's
+    /// Stop is a pause between buckets, and the host still holds this camera's
+    /// preview: going cold would tear the preview down, put the torch out and
+    /// charge the next Capture a full warm-up (up to ~8.85 s, #101).  MSG 5.2c
+    /// — arm and disarm cycle within one open session — is the same point from
+    /// the protocol's side.  The ring, detection, metadata and bundle still
+    /// close exactly as before; only the camera graph and the health tick stay.
+    /// A golfer's own *End session* passes `false` and goes cold as it always
+    /// did: with no host there is nothing to keep the camera warm for.
+    public func disarm(stayWarm: Bool = false) {
         settleTask?.cancel()
         settleTask = nil
         isSettling = false
         stopDetecting()
         recording?.stopMetadata()
-        stopHealthPolling()
+        if stayWarm == false { stopHealthPolling() }
         stopRecording()
         // ⛔ **Read the counters BEFORE stopping.** `stopRetaining` drops the
         // recorder and its stats go with it, so a disarm would otherwise erase
@@ -588,8 +615,12 @@ public final class AppModel {
         // idempotent — but the ordering is stated at both ends rather than left
         // to one of them remembering.
         device.stopRetaining()
-        device.goCold()
-        captureStatus.state = .cold
+        if stayWarm {
+            captureStatus.state = .warm
+        } else {
+            device.goCold()
+            captureStatus.state = .cold
+        }
         session.end = Date()
     }
 
@@ -1286,19 +1317,8 @@ public final class AppModel {
         // on the wire is D15; this makes the change *visible*, which is D14's
         // whole obligation. The property is what D15 will read.
         let nowNs = MachClock.hostTimeNs
-        if let change = device.torchChangeSincePoll() {
-            lastAutonomousTorchChange = change
-            torch = change.state
-            // `PPCP-MSG` 12.2a — a change no acknowledged command caused, so it
-            // is the message's own case rather than a correction.
-            if let link, let actuator = link.declaration.actuators.first {
-                Task { [weak link, state = change.state] in
-                    await link?.sendActuatorState(actuatorId: actuator.id,
-                                                  isOn: state.on,
-                                                  sinceNs: change.observedAtNs)
-                }
-            }
-        }
+        noteTorchChange(after: "health tick")
+        if nowNs < torchReassertUntilNs { reassertTorch(after: "health tick") }
         // `PPCP-MSG` 5.5 — above the `armed` guard, and that is the point of
         // CR-02 §4a. See the ⭐ in `warmUp`.
         refreshDeviceStatus(nowNs: nowNs)
@@ -1361,8 +1381,65 @@ public final class AppModel {
         let outcome = device.setTorch(request)
         // ⚠ Only on `applied`. A refusal changed nothing, so overwriting the
         // observed state with anything at all would be inventing a reading.
-        if let achieved = outcome.achieved { torch = achieved }
+        if let achieved = outcome.achieved {
+            torch = achieved
+            torchWanted = request.wantsOn
+        }
+        PpcpLog.actuator("torch command", detail: "wantsOn=\(request.wantsOn) -> \(outcome)")
         return outcome
+    }
+
+    /// What the last APPLIED command asked for.  ⭐ The torch is warm-state
+    /// hardware the host switches on to frame the shot, and arming — starting
+    /// the ring, the microphone's audio session, the motion sensors — has been
+    /// seen to put it out with nobody asking (2 Sept 2026, on the rig).  This
+    /// is what `reassertTorch` restores it towards.
+    private var torchWanted = false
+    /// Until when the health tick keeps re-lighting a torch that went out.
+    private var torchReassertUntilNs: Int64 = 0
+    private static let torchReassertWindowNs: Int64 = 5_000_000_000
+
+    /// `PPCP-MSG` 12.2a, factored out of the health tick so `arm()` can take
+    /// the same reading between its steps: a change nobody commanded is made
+    /// visible, sent to the host, and — with the step it followed — logged.
+    private func noteTorchChange(after step: String) {
+        guard let change = device.torchChangeSincePoll() else { return }
+        lastAutonomousTorchChange = change
+        torch = change.state
+        PpcpLog.actuator("torch changed", detail: "after \(step): on=\(change.state.on) "
+                         + "mode=\(change.state.modeIsOn ? "on" : "off")")
+        // A change no acknowledged command caused, so it is the message's own
+        // case rather than a correction.
+        if let link, let actuator = link.declaration.actuators.first {
+            Task { [weak link, state = change.state] in
+                await link?.sendActuatorState(actuatorId: actuator.id,
+                                              isOn: state.on,
+                                              sinceNs: change.observedAtNs)
+            }
+        }
+    }
+
+    /// Re-light a torch the host asked for and something else put out.
+    ///
+    /// ⚠ Through `device.setTorch`, so a light the platform has withdrawn for
+    /// heat is refused there (`thermal_limit`) and stays out; this never
+    /// forces hardware.  The host is told (12.2a: our own re-light is a change
+    /// its last ack did not describe) so a reading that saw the dip is
+    /// corrected.
+    private func reassertTorch(after step: String) {
+        noteTorchChange(after: step)
+        guard torchWanted, torch?.on != true else { return }
+        let outcome = device.setTorch(.on)
+        PpcpLog.actuator("torch re-lit", detail: "after \(step): \(outcome)")
+        guard let achieved = outcome.achieved else { return }
+        torch = achieved
+        if let link, let actuator = link.declaration.actuators.first {
+            Task { [weak link, achieved] in
+                await link?.sendActuatorState(actuatorId: actuator.id,
+                                              isOn: achieved.on,
+                                              sinceNs: MachClock.hostTimeNs)
+            }
+        }
     }
 
     // MARK: CR-02 statistics — MSG 5.5 / 5.6
@@ -1745,7 +1822,10 @@ extension AppModel: HostLinkSessionDelegate {
 
     public func hostLinkDidRequestDisarm(_ link: HostLinkSession) {
         guard captureStatus.state == .armed || isSettling else { return }
-        disarm()
+        // The host's Stop, not the golfer's End session: the camera stays warm
+        // for the preview the host is still watching and the Capture that is
+        // coming.  See `disarm(stayWarm:)`.
+        disarm(stayWarm: true)
     }
 
     public func hostLink(_ link: HostLinkSession, didRequestStream streamId: String,
@@ -1833,8 +1913,39 @@ extension AppModel: HostLinkSessionDelegate {
         // a 12.1b reason. There is no path out of this method that answers
         // nothing.
         let outcome = setTorch(isOn ? .on : .off)
+        // ⭐ **A second reading before the ack, because the first one lags**
+        // (2 Sept 2026, on the rig).  `isTorchActive` follows `torchMode` by a
+        // few hundred milliseconds and only moves while the main thread is
+        // free — so the instantaneous read is `on: false` for a light that is
+        // coming on, and an ack built from it tells the host "off" for a torch
+        // it will see lit on the next 12.2a tick.  This method is `async`;
+        // yield, then read again through the same consuming poll the tick
+        // uses, so the tick does not then report the settling as a change.
+        //
+        // ⛔ **The CURRENT observation, not a consumed change** (run 4, 2 Sept).
+        // The first version re-read through `torchChangeSincePoll()`, and the
+        // 1 Hz tick — which uses the same consuming poll — got there first: it
+        // saw on, sent `actuator_state(on)`, and this re-read then found no
+        // change and acked the stale `off` AFTER it.  The host's last word was
+        // "off" for a torch that was lit, and the rig failed on it.  So: take
+        // the change ourselves if it is still unclaimed (the tick then sees
+        // nothing), and answer with `torch`, which whoever claimed it wrote.
+        if isOn, case .applied(let first) = outcome, first.on == false {
+            try? await Task.sleep(for: .milliseconds(Self.torchAckSettleMs))
+            noteTorchChange(after: "ack re-read")
+            if let now = torch {
+                PpcpLog.actuator("torch ack", detail: "on=\(now.on) after \(Self.torchAckSettleMs) ms")
+                return ActuatorVerdict(.applied(now))
+            }
+        }
         return ActuatorVerdict(outcome)
     }
+
+    /// How long the actuator ack waits for `isTorchActive` to follow the mode.
+    /// Measured lag on an iPhone 16 is under a second; this is well inside the
+    /// host's stall deadline and costs nothing when the first read is already
+    /// `on`.
+    private static let torchAckSettleMs = 700
 
     public func hostLink(_ link: HostLinkSession, didIssueShot shotId: String,
                          t0Ns: Int64, t0TimebaseId: String, candidateIds: [String]) {

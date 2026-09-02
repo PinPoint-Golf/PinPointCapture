@@ -40,6 +40,9 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
     private let sampleQueue = DispatchQueue(label: "org.pinpointstudio.capture.samples",
                                             qos: .userInteractive)
     private var activeDevice: AVCaptureDevice?
+    /// The mode `configure(...)` last built the graph for, or `nil` when cold.
+    /// ⭐ What makes `warmUp(mode:)` idempotent — see the note there.
+    private var configuredMode: VideoMode?
     /// REQ-BUF-1's ring, held here because the sample path that feeds it is here.
     /// ⛔ `nil` until `startRetaining`.
     private var recorder: RingBufferRecorder?
@@ -261,6 +264,23 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
     /// each unlocked control is a parameter that changes mid-session and makes
     /// two frames incomparable.
     public func warmUp(mode: VideoMode) async throws {
+        // ⭐ **ALREADY WARM FOR THIS MODE: TOUCH NOTHING** (2 Sept 2026).
+        // `AppModel.arm()` calls `warmUp()` unconditionally, and until now this
+        // rebuilt the whole graph every time — `removeInput`/`addInput` and a
+        // fresh `activeFormat` on a session that was already running exactly
+        // that format.  Two costs, both seen on hardware: the torch went out
+        // the moment capture started (a reconfigured input resets `torchMode`),
+        // and the host's preview stalled through the rebuild.  MSG 5.2c says it
+        // outright: "Rebuilding the capture session on every arm is not
+        // required by the protocol and defeats the purpose of the readiness
+        // measurement."  A session the platform stopped underneath us (an
+        // interruption that did not resume) is restarted, not rebuilt.
+        if activeDevice != nil, configuredMode == mode {
+            if !session.isRunning {
+                sampleQueue.async { [weak self] in self?.session.startRunning() }
+            }
+            return
+        }
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [Self.deviceType(for: mode.lens)],
             mediaType: .video,
@@ -282,7 +302,16 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         // and commitConfiguration". ⚠ Unreachable on a simulator, which has no
         // camera and throws out of this method long before here; it crashed on
         // the first frame of the first device run (24 Aug 2026).
+        // ⭐ A torch the host switched on survives a REAL reconfiguration (a
+        // mode change on a warm device).  Read before the graph is rebuilt,
+        // re-applied after it is running again — the platform resets the mode
+        // with the input, and nobody commanded that (MSG 12.2a would have to
+        // report it as an autonomous change, and 12.1c would then be reporting
+        // a light the host asked for as one it did not).
+        let torchWasOn = activeDevice.map { $0.hasTorch && $0.torchMode == .on } ?? false
+
         try configure(session: session, device: device, format: format, mode: mode)
+        configuredMode = mode
 
         // See `configure`'s note above its old lock lines: focus/exposure/WB
         // were left in continuous-auto there, deliberately unlocked, so they
@@ -292,11 +321,30 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         await waitForConvergence(of: device)
         try lockControls(on: device)
 
-        if !session.isRunning {
-            // Capture `self`, which is Sendable, rather than the session, which
-            // is not. startRunning() blocks, so it must not run on the caller.
-            sampleQueue.async { [weak self] in self?.session.startRunning() }
+        // Capture `self`, which is Sendable, rather than the session, which
+        // is not. startRunning() blocks, so it must not run on the caller.
+        // ⚠ The torch restore is queued BEHIND the start on the same queue:
+        // AVFoundation only lights a torch on a running session, so setting
+        // it before `startRunning()` completes is a write the platform drops.
+        sampleQueue.async { [weak self] in
+            guard let self else { return }
+            if !self.session.isRunning { self.session.startRunning() }
+            if torchWasOn { self.restoreTorch(on: device) }
         }
+    }
+
+    /// Re-light a torch the graph rebuild put out.  Best effort and logged:
+    /// a torch the platform has withdrawn (heat) stays out, and the 1 Hz
+    /// `torchChangeSincePoll()` then reports that honestly as a change.
+    private func restoreTorch(on device: AVCaptureDevice) {
+        guard device.hasTorch, device.isTorchModeSupported(.on), device.isTorchAvailable,
+              (try? device.lockForConfiguration()) != nil else {
+            print("[torch] not restored after reconfigure — unavailable or busy")
+            return
+        }
+        device.torchMode = .on
+        device.unlockForConfiguration()
+        print("[torch] restored after reconfigure — active=\(device.isTorchActive)")
     }
 
     /// Everything between `beginConfiguration` and `commitConfiguration`, and
@@ -491,6 +539,7 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         session.outputs.forEach { session.removeOutput($0) }
         session.commitConfiguration()
         activeDevice = nil
+        configuredMode = nil
     }
 
     // MARK: - The torch (CORE §5.19, PPCP-MSG §12)
@@ -664,6 +713,16 @@ public final class AVFoundationCaptureDevice: NSObject, CaptureDevice,
         // hardware is doing; `torchMode` is only what it was told. They differ
         // when the light has been cut for heat, which is the one case CB4 says
         // actually occurs on this platform.
+        //
+        // ⚠ **And it lags.** Measured on the rig, 2 Sept 2026: the read
+        // immediately after `torchMode = .on` answered `on: false, modeIsOn:
+        // true` every time, and the light was on by the next 1 Hz tick.  ⛔ A
+        // bounded spin here (150 ms of `usleep`) read `false` for the whole
+        // wait: `isTorchActive` is delivered to the main thread by the capture
+        // service, and blocking the main thread is precisely what stops it
+        // arriving.  So this returns the instantaneous reading, and the host
+        // delegate — which is `async` — takes a second, later reading before it
+        // answers (`AppModel.hostLink(_:didCommandActuator:isOn:)`).
         let achieved = Self.readTorchState(of: device)
 
         // ⛔ Re-baseline, so 12.2a does not then report this as an autonomous
