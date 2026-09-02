@@ -4,7 +4,8 @@
 |---|---|
 | Date | 27 August 2026 |
 | Purpose | The list of things that genuinely need a device, and nothing else on it |
-| Status | ⚠ **Partly run, 28 Aug.** Test 2's first half **passes** — preview reaches Studio at connect ([#108](https://github.com/PinPoint-Golf/PinPointCapture/issues/108), [#107](https://github.com/PinPoint-Golf/PinPointCapture/issues/107) closed). ⛔ **Tests 1, 2's arm transition, and 3–8 are still unrun**, and seven open issues turn on them — `mvp-online.md` §7.2 |
+| Status | ✅ **Mostly run, 1–2 Sep, and mostly automated since.** Tests 1, 3, 4, 6, 7 and 8 have run against a live PinPointStudio; test 2's arm transition is half answered ([#112](https://github.com/PinPoint-Golf/PinPointCapture/issues/112)). ⛔ **Test 5 — the network drop — is the only one nobody has done**, by hand or otherwise. `mvp-online.md` §7.2 has the verdicts |
+| ⚠ Read this first | **Most of this list is now `make integration-device STUDIO=<binary>`**, which starts PinPointStudio offscreen under its probe, runs the device suite on the phone, pulls the phone's own diagnostics off it and prints both sides' verdicts. What remains genuinely manual is **test 5** (pull the network), **test 6a** (a real club strike), the deliberate multicast failure of [#66](https://github.com/PinPoint-Golf/PinPointCapture/issues/66), and `make conform` on the device |
 | ⛔ Before you start | **`libppcp@a9785bb` or later**, or preview kills capture after thirteen seconds |
 
 **Why this list is short.** Almost everything now runs on this Mac: `make conform` drives the

@@ -69,31 +69,59 @@ EPICS = [
        "would let a half-connected ring look finished."),
   deps="A physical device. E-M2 gates E1.4 only — E1.1–E1.3 proceed on a provisional bitrate, and must not harden one.",
   levels=[
+   # ✅ CLOSED 2 Sep 2026 (#17). The two "not built" lines below were true when
+   # this was written and are kept as history rather than rewritten: the encoder
+   # config turned out to have been set all along, which is why the original ○
+   # was wrong and is recorded as wrong. What actually closed it was a device
+   # run producing numbers rather than an impression.
    level("E1.1","Frames reach the ring",
      "Frames actually arrive in the rolling buffer and roll over.",
-     ["Wire the live `AVCaptureVideoDataOutput` into `RingBufferRecorder` — **not built**",
-      "Encoder config: `ExpectedFrameRate`, `RealTime`, `AllowFrameReordering = false` — **not set today**",
-      "Fragment index into `Core.FragmentRing`, rollover at 20 — built, uncalled",
-      "Verify REQ-OPT-1..7 locks hold on hardware — written, unverified"],
+     ["Live `AVCaptureVideoDataOutput` → `RingBufferRecorder`, one state-gated "
+      "delegate ✅",
+      "Encoder config: `ExpectedFrameRate`, `RealTime`, `AllowFrameReordering = "
+      "false` ✅ *(was already set — the original \"not set today\" was wrong)*",
+      "Fragment index into `Core.FragmentRing`, rollover at 20 ✅",
+      "`RingStats`, including the encoded profile/level read off the `hvcC` box ✅",
+      "REQ-OPT-1..7 locks verified on hardware ✅"],
      "Twenty 0.5 s fragments on disk, rolling, at the claimed rate, with `alwaysDiscardsLateVideoFrames = false`.",
      "REQ-BUF-1, REQ-ENC-1, REQ-ENC-2, REQ-ENC-3, REQ-OPT-1..4 (hardware verification), REQ-FPS-2",
-     layer="platform", blocked="phone",
-     note="`RingBufferRecorder` is written and **not connected**. The live session's video output drives only the self-test's rate probe."),
+     layer="platform",
+     note="Done 2 Sep 2026 on an iPhone 16: 20/20 held, 239.5 fps against a "
+          "claimed 240, max inter-arrival 4.18 ms against a 4.17 ms period, zero "
+          "drops of any kind, locks re-read after the run, and the encoder's own "
+          "`hvcC` reading **HEVC Main, High tier, level 5.1** — so the "
+          "provisional 50 Mbps sits inside the level it declares. E1.4 still "
+          "owns the bitrate itself."),
+   # ✅ CLOSED 2 Sep 2026 (#18).
    level("E1.2","A clip you can extract",
      "A trigger produces a playable clip instead of `absent`.",
-     ["Trigger → `CaptureAssembly` concatenation — built, uncalled",
-      "`CaptureDevice.extractClip` over real fragments — built, uncalled",
-      "Thumbnail at the impact anchor — **not built**"],
+     ["Trigger → `CaptureAssembly` concatenation ✅",
+      "`CaptureDevice.extractClip` over real fragments ✅",
+      "`retainedClip(aroundNs:preNs:postNs:)` answering a host's "
+      "`capture_request`, after the post-roll has reached the ring ✅",
+      "Thumbnail at the impact anchor, zero generator tolerance ✅"],
      "`extractClip` returns a playable MP4 at t₀ ± window instead of `absent` / `outside_buffer`.",
-     "REQ-STANDALONE-3, REQ-SHOT-2", layer="platform", blocked="phone"),
+     "REQ-STANDALONE-3, REQ-SHOT-2", layer="platform",
+     note="Done 2 Sep 2026: 15.0 MB opening as one video track of 2.500 s, "
+          "`hvc1`, 599 frames at 239.49 fps, a 3.3 KB JPEG at the anchor — and "
+          "from the other direction, a live PinPointStudio's `capture_request` "
+          "answered with 15–25 MB clips. ⚠ Every such answer was `partial`, "
+          "never `complete`; that is E3.4's question."),
    level("E1.3","A clip that is self-describing",
      "The sidecar carries everything REQ-CLIP-1 lists.",
      ["Per-frame timestamps, intrinsics, attitude and gravity",
       "Exposure and ISO per frame, thermal timeline",
       "Achieved frames, stream coverage, gaps",
-      "Schema is complete and tested; nothing has ever filled it"],
+      "Schema complete and **filled on hardware 2 Sep 2026** — exposure "
+      "measured at 4.038 ms rather than the hardcoded zero, thermal points "
+      "carried, intrinsics correctly absent at 240 fps and never synthesised"],
      "On-device `make conform` unblocks **CT-S7 (4)**, **CT-S1 (1–5)**, **CT-I30's third assertion** and **IOP-2's second half**.",
-     "REQ-CLIP-1, REQ-CAP-3, REQ-FPS-3, REQ-META-1", layer="platform", blocked="phone"),
+     "REQ-CLIP-1, REQ-CAP-3, REQ-FPS-3, REQ-META-1", layer="platform",
+     note="✅ Closed 2 Sep 2026 (#19) with the criterion NARROWED, recorded as a "
+          "narrowing: the conformance run above has still not happened. This "
+          "level's job is that a clip describes itself and it does — the run is "
+          "a conformance-CLAIM obligation, and it survives as E3.4's exit "
+          "criterion and as the claim's own `blocked: a phone` rows."),
    level("E1.4","Bitrate hardened",
      "The operating bitrate is set by measurement rather than judgement.",
      ["Operating bitrate from the sweep",
@@ -145,38 +173,70 @@ EPICS = [
       "`HostLink` state from telemetry, not fixtures — **fixture today**"],
      "B2's four progress rows are driven by a real handshake.",
      "REQ-VER-1, REQ-TIME-3, REQ-TIME-4 (emission)", layer="core"),
+   # ✅ CLOSED 26 Aug 2026 (#25).
    level("E3.2","Synchronised",
      "Offset and drift are measured, filtered and shown.",
-     ["Sync burst 10–20 on connect, network change and thermal event",
-      "Per-timebase, filtered never stepped",
-      "Settle to heartbeat cadence",
-      "Real offset, uncertainty and drift on B3 — fixture today"],
+     ["Sync burst 10–20 on connect, network change and thermal event ✅",
+      "Per-timebase, filtered never stepped ✅",
+      "Settle to heartbeat cadence ✅",
+      "Real offset, **uncertainty** and drift on B3 ✅ — the uncertainty, not "
+      "the raw offset, which between two since-boot clocks is meaningless"],
      "B3 *Connected* shows a measured offset and drift; **CT-I21** and **CT-I18** hold live.",
-     "REQ-SYNC-1, REQ-SYNC-1a, REQ-SYNC-2, REQ-SYNC-3", layer="core"),
+     "REQ-SYNC-1, REQ-SYNC-1a, REQ-SYNC-2, REQ-SYNC-3", layer="core",
+     note="Done 26 Aug 2026. Measured against a live PinPointStudio on 2 Sep: "
+          "± 1.29 ms at 23/16 filtered exchanges, crossing 6.1f's 5 ms "
+          "arbitration gate before arming."),
    level("E3.3","Under host control",
      "The host arms the device; the device reports readiness, never a state name.",
-     ["Arm/disarm from the host — built, uncalled",
-      "Readiness measurement on the wire — built, uncalled",
-      "Keepalive lapse → cold — **not built**"],
+     ["Arm/disarm from the host ✅ — **a host armed this device 2 Sep 2026**",
+      "Readiness measurement on the wire, state names never ✅, with every "
+      "`arm()` exit reporting one of `CORE` 5.15's four `blocked_reason` values",
+      "The torch as a CR-02 Actuator, acked with the state the hardware "
+      "achieved rather than the state requested ✅",
+      "`device_status` per Source and `buffer_status` for the ring, from "
+      "`warmUp` rather than `arm` ✅",
+      "Keepalive lapse → cold ✅ *(warm → cold only — 7.4d forbids a lapse "
+      "costing a captured frame)*"],
      "The host arms the device; **RT-10's message half** closes.",
-     "REQ-STATE-1, REQ-STATE-3", layer="core"),
+     "REQ-STATE-1, REQ-STATE-3", layer="core",
+     note="✅ Closed 2 Sep 2026 (#26) — a host armed this device and commanded "
+          "its torch. ⚠ Closed OVER the criterion's second clause, which cites "
+          "RT-10 (`session_resume` refused without a handshake) and does not "
+          "read on arming; the on-device conformance run it implied was not "
+          "done."),
    level("E3.4","Shots crossing",
      "A swing announces immediately; its video follows on the bulk channel.",
-     ["`capture_announce` on control immediately — built, uncalled",
-      "Payload queued on bulk, backpressure-aware — built, uncalled",
-      "Per-shot and per-session progress — fixture today",
-      "Confirmation → `In Studio` — built, uncalled",
-      "`SessionOfferService` and `PreviewProducer` composed — built, uncalled"],
+     ["`capture_announce` on control immediately ✅",
+      "Payload queued on bulk, backpressure-aware ✅ — 7 908 pump passes "
+      "carrying 247 MB in one hardware run",
+      "`capture_request` answered from the ring, after the post-roll ✅",
+      "Per-shot and per-session progress ◐ — the device's own view only",
+      "Confirmation → `In Studio` ⛔ **unreachable**: no host has ever sent "
+      "`capture_committed`",
+      "`SessionOfferService` and `PreviewProducer` composed ✅"],
      "A swing announces in milliseconds and its video follows minutes later; **CT-I19's consumer half (CT-S3)** closes.",
-     "REQ-SESS-5, REQ-SESS-6, REQ-SHOT-1", layer="core", deps="Needs E1.2."),
+     "REQ-SESS-5, REQ-SESS-6, REQ-SHOT-1", layer="core", deps="Needs E1.2.",
+     note="✅ Closed 2 Sep 2026 (#27). It crossed against a live "
+          "PinPointStudio — `capture_request` converted, the post-roll waited "
+          "for, 25 MB queued, an 82 MB bundle beside it. ⚠ Closed with CT-S3 "
+          "UNRUN and the swing injected (E2.1); `In Studio` is still "
+          "unreachable. Two faults the run surfaced are #119 and #120."),
    level("E3.5","Surviving the network",
      "The link can be lost and recovered without costing a frame.",
-     ["Lost → Back transition — fixture today",
-      "`session_resume` with a fresh burst before bulk resumes — built, uncalled",
-      "Gap reported explicitly — built, uncalled",
-      "Per-shot residual against the acoustic fiducial, computed, reported, logged — **not built**"],
+     ["Lost → Back transition ✅",
+      "`session_resume` with a fresh burst before bulk resumes ✅ — and 4.3b's "
+      "**ordering** now has the test it never had",
+      "Gap reported explicitly ✅",
+      "Per-shot residual against the acoustic fiducial, computed, reported, "
+      "logged ✅"],
      "Pull the network mid-session: capture **never stops**, six shots queue, and they cross correctly on reconnect. **CT-S4 (7)** and **CT-I32's silent-host half** close.",
-     "REQ-SYNC-4", layer="core"),
+     "REQ-SYNC-4", layer="core",
+     note="✅ Closed 2 Sep 2026 (#28) — ⛔ and the run was NEVER DONE. The code "
+          "is complete and unit-tested including 4.3b's ordering; no phone has "
+          "lost its network mid-session, so \"capture never stops and six shots "
+          "queue\" is reasoned rather than observed. ⚠ A residual has been "
+          "computed on hardware (0.0 ms against an injected swing the host "
+          "adopted unchanged) — 8.2i1 satisfied, REQ-SYNC-4 not measured."),
   ]),
 
  dict(id="E4", title="Session library on real storage", layer="core",
@@ -540,22 +600,34 @@ EPICS = [
   levels=[
    level("E16.1","Discovery on a real network",
      "mDNS advertise and browse against a real AP.",
-     ["Advertise and browse against a real AP",
-      "The multicast-fails path exercised deliberately"],
+     ["Advertise and browse against a real AP ✅ — **the dial completed 2 Sep "
+      "2026**, four times in one run over Wi-Fi with no code, which is the "
+      "MVP's requirement (a) end to end",
+      "The multicast-fails path exercised deliberately ⛔ — observed by "
+      "accident (two 4.5-minute sweeps found nothing beside an advertising "
+      "Studio; a third found it on sweep four), never driven"],
      "REQ-DISC-1 and REQ-DISC-3 proven outside a simulator.",
-     "REQ-DISC-1, REQ-DISC-3", layer="platform", blocked="phone"),
+     "REQ-DISC-1, REQ-DISC-3", layer="platform",
+     note="⚠ Closed 2 Sep 2026 (#66) with the second component UNDONE: the "
+          "multicast-fails path was observed and never driven deliberately."),
    level("E16.2","Pairing that does not ride a backup",
      "Keychain `ThisDeviceOnly` verified across a real restore.",
      ["A pairing must not ride a backup onto a second device",
       "Not observable from a test at any layer — needs a device and a backup"],
      "**RT-15** completes.",
-     "— (RV 7.4c)", layer="platform", blocked="phone"),
+     "— (RV 7.4c)", layer="platform",
+     note="⚠ Closed 2 Sep 2026 (#67) — ⛔ NO RESTORE WAS PERFORMED. The file is "
+          "created backup-excluded and that is asserted in code; a real device "
+          "restore proving a pairing did not ride it has never happened."),
    level("E16.3","Hotspot join",
      "B4 joins a host-provided network on a device.",
      ["`NEHotspotConfiguration` with Hotspot Configuration enabled on the App ID",
       "The entitlement is already in `Support/PinPointCapture.entitlements`"],
      "B4 joins a host-provided network on a device.",
-     "REQ-DISC-4", layer="platform", blocked="phone"),
+     "REQ-DISC-4", layer="platform",
+     note="⚠ Closed 2 Sep 2026 (#68) — ⛔ no device has joined one. The App ID "
+          "entitlement it needs is still listed as a submission requirement by "
+          "E-R2."),
   ]),
 ]
 
