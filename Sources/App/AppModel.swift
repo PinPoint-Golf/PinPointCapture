@@ -986,6 +986,12 @@ public final class AppModel {
             // ⛔ 3.6a — recorded, never raised. `hostLink` is untouched: a search
             // that found nothing has not lost anything.
             reconnectSilence = silence
+            // ⚠ Recorded in the diag log, never raised on screen (3.6a). Added
+            // 2 Sept 2026: a WiFi search that ran for five minutes beside an
+            // advertising host left no line at all, so "it never browsed" and
+            // "it browsed and found nothing" were the same silence.
+            PpcpLog.reconnect("sweep found nothing",
+                              detail: "sweeps=\(silence.sweeps) searchedForMs=\(silence.searchedForNs / 1_000_000) pairingsHeld=\(silence.pairingsHeld)")
             return false
 
         case .noPairingsHeld:
@@ -997,10 +1003,12 @@ public final class AppModel {
 
         case .hostRefusedThePairing(_, let reason):
             reconnectDiagnosis = reason
+            PpcpLog.reconnect("host refused the pairing", detail: String(describing: reason))
             return false
 
         case .couldNotReachHost(_, let reason):
             reconnectDiagnosis = reason
+            PpcpLog.reconnect("could not reach the host", detail: String(describing: reason))
             return false
 
         case .pairingStoreUnreadable(let reason):
