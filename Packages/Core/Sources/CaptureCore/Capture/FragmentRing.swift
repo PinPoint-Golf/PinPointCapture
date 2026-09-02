@@ -320,8 +320,20 @@ public struct FragmentRing: Sendable, Hashable {
                 droppedFrames: 0, byteCount: 0)
         }
 
-        let realised = Swift.max(requested.lowerBound, firstCovered.startNs)
-            ..< Swift.min(requested.upperBound, lastCovered.endNs)
+        // ⛔ THE REALISED INTERVAL IS WHAT THE BYTES HOLD, NOT THE REQUEST
+        // CLIPPED TO THEM.  A fragment is the unit that decodes on its own
+        // (every one opens on a keyframe), so a clip is whole fragments and
+        // cannot be cut finer.  Until 2 September 2026 this clipped `realised`
+        // to the request and listed only the frames inside it, while the
+        // payload carried every frame of every overlapping fragment: a
+        // three-second request came back as 3.5 s of video described by
+        // 719 of its 838 frames, the first 119 unplaced, and the consumer's
+        // replay put frame 0 of the file at the first listed instant -- half
+        // a second early.  5.8j: every sample is placed in time.  The
+        // interval therefore spans the fragments delivered, `complete` means
+        // the request lies inside it, and `partial` means the ring's edge
+        // cut it.
+        let realised = firstCovered.startNs ..< lastCovered.endNs
 
         // Holes: any discontinuity BETWEEN retained fragments inside the realised
         // span. A ring evicts only from the front, so a hole in the middle means
@@ -345,8 +357,8 @@ public struct FragmentRing: Sendable, Hashable {
         var dropped = 0
         var bytes = 0
         for fragment in overlapping {
-            for (index, timestamp) in fragment.frameTimestampsNs.enumerated()
-            where realised.contains(timestamp) {
+            // Every frame of every fragment sent -- see the note on `realised`.
+            for (index, timestamp) in fragment.frameTimestampsNs.enumerated() {
                 frames.append(timestamp)
                 if index < fragment.exposureNs.count { exposure.append(fragment.exposureNs[index]) }
                 if index < fragment.iso.count { isoValues.append(fragment.iso[index]) }
@@ -374,7 +386,8 @@ public struct FragmentRing: Sendable, Hashable {
                 droppedFrames: 0, byteCount: 0)
         }
 
-        let covered = realised == requested && holes.isEmpty
+        let covered = realised.lowerBound <= requested.lowerBound
+            && realised.upperBound >= requested.upperBound && holes.isEmpty
         return ClipExtraction(
             requestedNs: requested,
             outcome: .present(covered ? .complete : .partial),

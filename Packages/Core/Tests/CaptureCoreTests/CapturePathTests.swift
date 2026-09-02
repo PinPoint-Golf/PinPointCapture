@@ -125,11 +125,14 @@ struct CapturePathTests {
         let clip = ring.extract(aroundNs: t0, preNs: 1_000_000_000, postNs: 2_000_000_000)
 
         #expect(clip.outcome == .present(.complete))
-        #expect(clip.realisedNs == 11_000_000_000..<14_000_000_000)
+        // The realised interval is the span of the fragments delivered, which
+        // contains the request -- a fragment decodes whole and is sent whole.
+        let realised = try #require(clip.realisedNs)
+        #expect(realised.lowerBound <= 11_000_000_000 && realised.upperBound >= 14_000_000_000)
         #expect(clip.holesNs.isEmpty)
         // ⛔ CT-I2 — every timestamp is a real one from the fragments, none of
         // them reconstructed from a position.
-        #expect(clip.frameTimestampsNs.allSatisfy { clip.realisedNs?.contains($0) == true })
+        #expect(clip.frameTimestampsNs.allSatisfy { realised.contains($0) })
         #expect(clip.frameTimestampsNs.count > 400, "3 s at 150 fps")
         // Realised rate from timestamp deltas, in millihertz (REQ-FPS-2).
         let rate = try #require(clip.realisedRateMillihertz)
@@ -167,11 +170,15 @@ struct CapturePathTests {
     /// A window reaching further back than the ring holds is `partial`, not
     /// `absent`: part of it survived, and I10 makes the owner say which.
     @Test("A window half inside the ring is partial, with the realised interval")
-    func partialWindowIsPartial() {
+    func partialWindowIsPartial() throws {
         let ring = Self.ring(from: 10_000_000_000, count: 4, capacity: 4)
         let clip = ring.extract(9_500_000_000..<10_800_000_000)
         #expect(clip.outcome == .present(.partial))
-        #expect(clip.realisedNs == 10_000_000_000..<10_800_000_000)
+        // Partial because the ring's edge cut the request at 10.0 s; the upper
+        // end reaches the end of the last fragment delivered.
+        let realised = try #require(clip.realisedNs)
+        #expect(realised.lowerBound == 10_000_000_000)
+        #expect(realised.upperBound >= 10_800_000_000)
     }
 
     // MARK: - I11 — holes are not always gaps

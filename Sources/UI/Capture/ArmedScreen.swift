@@ -531,7 +531,12 @@ struct ArmedScreen: View {
                 .foregroundStyle(StatusTone.error.foreground)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Nothing is being recorded")
+                // ⚠ The title says what is true of the RING.  While it is armed
+                // and retaining, whatever went wrong is somewhere else -- the
+                // host, a stream, the microphone -- and "nothing is being
+                // recorded" over a ring at 238 fps was a lie (2 Sept 2026).
+                Text(capture.state == .armed ? "Recording continues on this phone"
+                                             : "Nothing is being recorded")
                     .font(.ppRowLabel.weight(.semibold))
                     .foregroundStyle(Color(.label))
                 Text(message)

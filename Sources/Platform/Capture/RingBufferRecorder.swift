@@ -397,7 +397,6 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
 
         stats.observeArrival(
             atNs: FrameTimeline.nanoseconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)))
-        timeline.observe(sampleBuffer, device: device)
 
         if sessionStarted == false {
             writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
@@ -411,7 +410,21 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
             stats.framesDroppedEncoderBusy += 1
             return
         }
-        input.append(sampleBuffer)
+        // ⛔ OBSERVED ONLY ONCE THE ENCODER HAS TAKEN IT.  The timeline is the
+        // frame list a Capture ships (5.8j: every sample placed in time), so it
+        // must hold exactly the frames the file holds.  Until 2 Sept 2026 the
+        // observe came before the guard above, and a frame the encoder refused
+        // was gone from the file but kept its instant in the list: 246 listed,
+        // 233 in the file, and a consumer indexing frames by position drifted
+        // 54 ms by the end of the clip.
+        guard input.append(sampleBuffer) else {
+            // The writer can refuse after saying it was ready; that frame is as
+            // gone as one refused before.
+            timeline.observeDrop()
+            stats.framesDroppedEncoderBusy += 1
+            return
+        }
+        timeline.observe(sampleBuffer, device: device)
     }
 
     public func appendDrop() {

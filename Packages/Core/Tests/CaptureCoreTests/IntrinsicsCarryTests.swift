@@ -55,17 +55,19 @@ struct IntrinsicsCarryTests {
 
     /// ⚠ A window that clips the extraction must clip the matrices with it, or
     /// the series slides out of step with the times it is parallel to.
-    @Test("A partial window clips the matrices alongside the frames")
+    @Test("A window inside one fragment lists the whole fragment, matrices alongside")
     func matricesAreClippedWithTheFrames() {
         var ring = FragmentRing(capacity: 4)
         _ = ring.append(Self.fragment(0, startNs: 0, matrices: [
             Self.matrix(1500), Self.matrix(1501), Self.matrix(1502), Self.matrix(1503)
         ]))
 
-        // Only the middle two frames fall inside.
+        // The request covers only the middle two frames; a fragment decodes
+        // whole and is sent whole, so all four come, each with its own matrix.
         let clip = ring.extract(100_000_000..<300_000_000)
-        #expect(clip.frameTimestampsNs == [100_000_000, 200_000_000])
-        #expect(clip.intrinsics.map { $0.values[0] } == [1501, 1502])
+        #expect(clip.outcome == .present(.complete))
+        #expect(clip.frameTimestampsNs == [0, 100_000_000, 200_000_000, 300_000_000])
+        #expect(clip.intrinsics.map { $0.values[0] } == [1500, 1501, 1502, 1503])
     }
 
     /// ⛔ **Empty is the normal case, not a failure.** A device that does not

@@ -134,6 +134,31 @@ public final class AppModel {
     /// the UI must not be quiet about.
     public private(set) var recordingError: String?
 
+    /// ⛔ **The words a person sees, from the error the code got.** Until
+    /// 2 September 2026 every pump wrote `String(describing: error)` here, so
+    /// the screen read "Nothing is being recorded —
+    /// channelClosed(CaptureCore.ChannelCloseReason.peerClosed)" over a ring
+    /// that was visibly recording at 238 fps.  The ring had lost nothing; the
+    /// HOST had gone.  The raw error goes to the app log, where it belongs.
+    static func userFacing(_ error: Error) -> String {
+        PpcpLog.transferEvent("recording error", detail: String(describing: error))
+        if let transport = error as? TransportError, case .channelClosed(let why) = transport {
+            switch why {
+            case .peerClosed, .cancelled, .normal:
+                return "Studio disconnected. Recording continues on this phone; shots are kept here "
+                     + "and sent to Studio when it reconnects."
+            default:
+                return "The connection to Studio failed. Recording continues on this phone; shots "
+                     + "are kept here and sent to Studio when it reconnects."
+            }
+        }
+        if let hosted = error as? HostedSessionError, case .streamRefused(_, let kind, _, _) = hosted {
+            return "Studio refused this phone's \(kind) stream. Check the phone is enabled in "
+                 + "Studio's camera list."
+        }
+        return error.localizedDescription
+    }
+
     private let store: SessionStore
 
     /// D5's microphone, feeding D5's detector. ⛔ Started on `arm` and stopped on
@@ -507,7 +532,7 @@ public final class AppModel {
             do {
                 try recording.report(measurement)
             } catch {
-                recordingError = String(describing: error)
+                recordingError = Self.userFacing(error)
             }
         }
         // ⚠ Unsolicited, and that is the point — 7.3c makes the *change* the
@@ -634,7 +659,7 @@ public final class AppModel {
                 self?.record(interruption)
             }
         } catch {
-            recordingError = String(describing: error)
+            recordingError = Self.userFacing(error)
         }
     }
 
@@ -1210,7 +1235,7 @@ public final class AppModel {
             try store.delete(bundle)
             recordingError = nil
         } catch {
-            recordingError = "Could not delete that session: \(error)"
+            recordingError = "Could not delete that session: \(error.localizedDescription)"
         }
     }
 
@@ -1297,7 +1322,7 @@ public final class AppModel {
         } catch {
             // §9.2 — a Stream that stopped accounting for itself is not a
             // cosmetic failure, and the close will refuse rather than lie.
-            recordingError = String(describing: error)
+            recordingError = Self.userFacing(error)
         }
     }
 
@@ -1512,7 +1537,7 @@ public final class AppModel {
             // ⛔ Surfaced. A session detecting nothing is a session whose swings
             // are not being timed, and §9.2 makes that the one thing the UI must
             // not be quiet about.
-            recordingError = String(describing: error)
+            recordingError = Self.userFacing(error)
             return
         }
         mintTicker = Task { @MainActor [weak self] in
@@ -1551,7 +1576,7 @@ public final class AppModel {
                 heardInstantByCandidate[detection.candidate.id] = detection.candidate.atNs
             }
         } catch {
-            recordingError = String(describing: error)
+            recordingError = Self.userFacing(error)
         }
     }
 
@@ -1607,7 +1632,7 @@ public final class AppModel {
             // today, a queued shot stayed invisible on C3 for the whole session.
             refreshTransferState()
         } catch {
-            recordingError = String(describing: error)
+            recordingError = Self.userFacing(error)
         }
     }
 
@@ -1630,7 +1655,7 @@ public final class AppModel {
             // I10 exists to prevent.
             try session.close(completeness: .partial, closedAtNs: nil)
         } catch {
-            recordingError = String(describing: error)
+            recordingError = Self.userFacing(error)
         }
     }
 
@@ -1638,7 +1663,7 @@ public final class AppModel {
         do {
             try recording?.record(interruption)
         } catch {
-            recordingError = String(describing: error)
+            recordingError = Self.userFacing(error)
         }
     }
 
