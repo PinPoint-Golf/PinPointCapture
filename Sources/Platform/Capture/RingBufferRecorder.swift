@@ -247,6 +247,13 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
     /// REQ-BUF-1 — "retaining ~20 fragments".
     public static let fragmentCapacity = 20
 
+    /// `CORE` 5.21 `retention_target` — what the ring is *trying* to hold.
+    ///
+    /// ⚠ The two constants that actually decide it, multiplied here rather than
+    /// written as a third constant that could disagree with them.
+    public static let retentionTargetNs =
+        Int64(Double(fragmentCapacity) * fragmentSeconds * 1_000_000_000)
+
     private let queue: DispatchQueue
     private let directory: URL
     private let timebaseId: String
@@ -462,8 +469,12 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
     public func retainedClip(aroundNs t0: Int64, preNs: Int64, postNs: Int64,
                              thermal: [PpcpThermalPoint] = []) -> RetainedClip {
         let extraction = ring.extract(aroundNs: t0, preNs: preNs, postNs: postNs)
+        // Read beside the extraction, under the same queue, so the two describe
+        // the same instant of the ring.
+        let held = ring.retainedNs
         guard extraction.isAbsent == false else {
-            return RetainedClip(extraction: extraction, exposure: .noExposure)
+            return RetainedClip(extraction: extraction, exposure: .noExposure,
+                                retainedNs: held)
         }
         let batch = FrameTimeline.Batch(timestampsNs: extraction.frameTimestampsNs,
                                         exposureNs: extraction.exposureNs,
@@ -484,7 +495,8 @@ public final class RingBufferRecorder: NSObject, @unchecked Sendable {
                 let (_, bytes) = try self.clip(aroundNs: t0, preNs: preNs, postNs: postNs)
                 guard let bytes else { throw RecorderError.notRecording }
                 return bytes
-            })
+            },
+            retainedNs: held)
     }
 
     /// The Capture and its `AchievedFrames`, assembled honestly.

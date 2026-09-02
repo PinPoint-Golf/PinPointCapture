@@ -916,7 +916,7 @@ integration: gen
 	@set -e; \
 	probelog=$(DERIVED)/.integration-studio.log; \
 	QT_QPA_PLATFORM=offscreen "$(STUDIO)" \
-		--probe-qml "$(STUDIO_PROBE)" \
+		--probe-qml "$(STUDIO_PROBE)" --linger \
 		$(if $(CORROBORATE),--corroborate,) \
 		--expect-shots $(EXPECT_SHOTS) >"$$probelog" 2>&1 & \
 	studiopid=$$!; \
@@ -936,7 +936,16 @@ integration: gen
 		$(DERIVED)/.integration-device.log || true; \
 	echo "--- PinPointStudio ---"; \
 	grep -E "PROBE (START|RESULT|STATS)" "$$probelog" || tail -5 "$$probelog"; \
-	wait $$studiopid; rc=$$?; \
+	: '⛔ THE VERDICT IS THE LOG LINE, NOT THE EXIT CODE.  With --linger a host'; \
+	: 'that passed is still up (the device half dials it again after the clip'; \
+	: 'lands); it is ended here and read from what it printed.  A host that'; \
+	: 'failed or timed out exited on its own and its code is what it was.'; \
+	if kill -0 $$studiopid 2>/dev/null; then \
+		kill $$studiopid 2>/dev/null || true; wait $$studiopid 2>/dev/null || true; \
+		if grep -q "PROBE RESULT PASS" "$$probelog"; then rc=0; else rc=1; fi; \
+	else \
+		wait $$studiopid; rc=$$?; \
+	fi; \
 	if [ $$rc -ne 0 ]; then \
 		echo "make integration: the HOST half failed — see its PROBE RESULT line"; exit $$rc; \
 	fi
@@ -982,7 +991,7 @@ integration-device: gen
 		--predicate 'eventMessage CONTAINS[c] "setConfigurationGated"' \
 		>"$$out/usb.log" 2>&1 & usbpid=$$!; \
 	QT_QPA_PLATFORM=offscreen PINPOINT_LOG_STDERR=1 PINPOINT_PPCP_ACCEPT_ALL=1 \
-		"$(STUDIO)" --probe-qml "$(STUDIO_PROBE)" \
+		"$(STUDIO)" --probe-qml "$(STUDIO_PROBE)" --linger \
 		--expect-clips $(EXPECT_CLIPS) --probe-timeout-ms $(PROBE_TIMEOUT_MS) \
 		>"$$out/pps.log" 2>&1 & studiopid=$$!; \
 	trap 'kill $$studiopid $$usbpid 2>/dev/null || true' EXIT; \
@@ -995,10 +1004,23 @@ integration-device: gen
 	$(MAKE) --no-print-directory test-device >"$$out/device.log" 2>&1 || devrc=$$?; \
 	grep -E '^(◇|✔|✘|↳)|DEVICE-RUN|SKIP|Test run' "$$out/device.log" || true; \
 	: 'The phone'\''s own account, off the device without touching the link.'; \
+	: '⚠ Not immediately: pulled straight after xcodebuild returned, the copy'; \
+	: 'once lacked the last nine minutes of the run (1 Sept 2026) and the same'; \
+	: 'command a minute later had them.  Let the test host finish writing.'; \
+	sleep 5; \
 	$(MAKE) --no-print-directory pull-diags OUT="$$out" || true; \
 	echo "--- PinPointStudio ---"; \
 	grep -E "PROBE (START|DRIVE|RESULT|DOCTOR|STATS)" "$$out/pps.log" | sed 's/^.*\[qml\] //' | sort -u || true; \
-	wait $$studiopid; rc=$$?; \
+	: '⛔ THE VERDICT IS THE LOG LINE, NOT THE EXIT CODE.  With --linger a host'; \
+	: 'that passed is still up (the device half dials it again after the clip'; \
+	: 'lands); it is ended here and read from what it printed.  A host that'; \
+	: 'failed or timed out exited on its own and its code is what it was.'; \
+	if kill -0 $$studiopid 2>/dev/null; then \
+		kill $$studiopid 2>/dev/null || true; wait $$studiopid 2>/dev/null || true; \
+		if grep -q "PROBE RESULT PASS" "$$out/pps.log"; then rc=0; else rc=1; fi; \
+	else \
+		wait $$studiopid; rc=$$?; \
+	fi; \
 	cp "$(DERIVED)/.test-device.log" "$$out/device-xcodebuild.log" 2>/dev/null || true; \
 	if [ $$devrc -ne 0 ]; then \
 		echo ""; \

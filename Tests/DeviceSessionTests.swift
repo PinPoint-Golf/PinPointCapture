@@ -1011,7 +1011,7 @@ struct DeviceSessionTests {
             if await model.recording?.servedCaptureRequests ?? 0 > 0 { served = true; break }
             try await Task.sleep(for: .seconds(1))
         }
-        print("DEVICE-RUN host capture_request served while armed: \(served)")
+        print("DEVICE-RUN host capture_request answered while armed: \(served)")
 
         // ⛔ **The assertion every manual run failed.** A bundle with no payload
         // is #98's shape, and all five of today's faults ended here.

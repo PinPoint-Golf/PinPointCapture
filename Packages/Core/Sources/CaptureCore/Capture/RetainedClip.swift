@@ -51,16 +51,29 @@ public struct RetainedClip: Sendable {
     /// payload to provide.
     public var payload: (@Sendable () throws -> Data)?
 
+    /// What the ring held **at the moment it was asked**, in the capture
+    /// timebase; `nil` where no ring was running.
+    ///
+    /// ⚠ Carried for the `absent` answer, which is otherwise a single word.
+    /// "outside_buffer" has been true for four different reasons on hardware —
+    /// an interval in the wrong clock, an interval that rolled out, a request
+    /// that arrived before its post-roll existed, and a ring that was never
+    /// running — and only the requested span set beside the held span tells
+    /// them apart.
+    public var retainedNs: Range<Int64>?
+
     public init(extraction: ClipExtraction,
                 exposure: ExposureObservation,
                 intrinsics: IntrinsicsObservation? = nil,
                 thermal: [PpcpThermalPoint] = [],
-                payload: (@Sendable () throws -> Data)? = nil) {
+                payload: (@Sendable () throws -> Data)? = nil,
+                retainedNs: Range<Int64>? = nil) {
         self.extraction = extraction
         self.exposure = exposure
         self.intrinsics = intrinsics
         self.thermal = thermal
         self.payload = payload
+        self.retainedNs = retainedNs
     }
 
     /// Nothing was retained around this interval — 8.4b's `outside_buffer`.

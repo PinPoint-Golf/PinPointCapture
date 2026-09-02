@@ -321,6 +321,38 @@ public extension DevicePeer {
         return try convert(instant, to: to)?.ns
     }
 
+    /// The one relation `instant` would apply for `from` → `to`, or `nil` where
+    /// the set holds none. ⚠ For diagnostics: a conversion that landed in the
+    /// wrong place is explained by the relation it went through — its offset,
+    /// its slope, and above all **how long ago it was observed**, because
+    /// `ppcp_relation_apply` extrapolates the slope from `observed_at`.
+    func relation(from: String, to: String) throws -> ppcp_timebase_relation? {
+        var fromId = ppcp_id(), toId = ppcp_id()
+        try check(ppcp_id_set_z(&fromId, from))
+        try check(ppcp_id_set_z(&toId, to))
+        return try withRelations { relations in
+            ppcp_relations_find(relations, &fromId, &toId).map { $0.pointee }
+        }
+    }
+
+    /// `CORE` 5.4's uncertainty of expressing `nowNs` in `to`, in nanoseconds:
+    /// the offset sigma and the skew sigma grown over the interval since the
+    /// relation was observed. `nil` where there is no relation to evaluate.
+    func sigmaNs(_ nowNs: Int64, on from: String, expressedIn to: String) throws -> Double? {
+        guard from != to else { return 0 }
+        var instant = ppcp_instant()
+        try check(ppcp_instant_make_z(&instant, from, nowNs))
+        var toId = ppcp_id()
+        try check(ppcp_id_set_z(&toId, to))
+        return try withRelations { relations in
+            var sigma = 0.0
+            let result = ppcp_relations_sigma_ns(relations, &instant, &toId, &sigma)
+            if result == PPCP_ERR_NOT_FOUND || result == PPCP_ERR_INVALID { return nil }
+            try check(result)
+            return sigma
+        }
+    }
+
     /// 8.2i1's test, one call. `nil` where the instant cannot be expressed in
     /// `to` — no relation, or an `unrelated` one — and ⛔ **never a zero offset
     /// substituted to make it expressible** (5.4b).

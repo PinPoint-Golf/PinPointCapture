@@ -398,10 +398,16 @@ public final class RecordingSession {
                     for shot in minted {
                         // ⛔ **The Candidate's own instant first, and the
                         // conversion only as a fallback.** This device heard the
-                        // ball on the clock the ring indexes; round-tripping
-                        // through the host's clock applies a rate across the gap
-                        // between two boot origins and lands tens of seconds
-                        // out — 47 s, measured, while sync reported 0.0 ms.
+                        // ball on the clock the ring indexes; a round trip
+                        // through the host's clock is a measurement applied
+                        // to a number that never needed one.  ⚠ It once
+                        // landed 47 s out while sync reported 0.0 ms, and the
+                        // cause was NOT the boot origins (`ppcp_relation_apply`
+                        // extrapolates from `observed_at`, not from zero): the
+                        // host published its relation once, at its first
+                        // two-exchange fit, and never again -- see
+                        // `serveCaptureRequest`, which has no local instant to
+                        // prefer and lives on that relation being current.
                         //
                         // ⚠ The fallback covers a Shot the HOST issued for a
                         // Candidate we never nominated (7.3a's case), where
@@ -697,6 +703,16 @@ public final class RecordingSession {
     /// device genuinely cannot say what it held at an instant it cannot place,
     /// and inventing an identity would extract the wrong seconds of video and
     /// present them as the right ones.
+    /// How long after an instant the fragment holding it can be in the ring
+    /// at all: the writer closes a fragment at each `fragmentSeconds` boundary,
+    /// and the encoder hands it over some tens of milliseconds after that.
+    ///
+    /// ⚠ A bound, not a promise. If the fragment is still not there when the
+    /// wait ends, the extraction says so as `partial` — which is the honest
+    /// answer, and a different one from refusing the whole clip.
+    nonisolated static let fragmentSettleNs: Int64 =
+        Int64(RingBufferRecorder.fragmentSeconds * 1_000_000_000) + 200_000_000
+
     public func serveCaptureRequest(shotId: String, t0Ns: Int64, t0TimebaseId: String,
                                     preNs: Int64, postNs: Int64,
                                     replyTo: UInt64) async {
@@ -706,7 +722,12 @@ public final class RecordingSession {
         // at all -- every Capture it announced was anchored to one it had minted
         // itself.  From the host that is indistinguishable from a device that
         // never received the request, and both guards below return in silence.
-        servedCaptureRequests += 1
+        //
+        // ⚠ Counted on the way OUT, not the way in: a test stays armed until
+        // this is non-zero, and the post-roll wait below means the answer can
+        // come seconds after the question.  Disarming in between closes the
+        // ring the answer is about to read.
+        defer { servedCaptureRequests += 1 }
         PpcpLog.transferEvent("capture_request received",
                               detail: "shot \(shotId) pre \(preNs / 1_000_000)ms "
                                       + "post \(postNs / 1_000_000)ms")
@@ -723,23 +744,84 @@ public final class RecordingSession {
             return
         }
         let captureId = "cap:\(UUID().uuidString.lowercased())"
+        let captureTb = PpcpTimebases.captureId
 
-        let localT0: Int64? = try? await hosted.pump.perform { peer in
-            try peer.instant(t0Ns, on: t0TimebaseId,
-                             expressedIn: PpcpTimebases.captureId)
+        // ⛔ **THE CONVERSION, AND THE RELATION IT WENT THROUGH -- IN THE SAME
+        // LINE.** `t0` is in the host's clock (5.13c) and the ring indexes in
+        // this device's; the only bridge is the relation the HOST declared for
+        // its own timebase (6.1d), which reaches this peer as `relation_update`.
+        // `ppcp_relation_apply` extrapolates that relation's slope from its
+        // `observed_at`, so a relation the host published once and never
+        // refreshed lands `t0` seconds from the footage while sync reports
+        // sub-millisecond agreement -- both numbers true, and the ring asked
+        // about an instant that never existed.  Measured 1 Sept: every
+        // `capture_request` answered `outside_buffer` one millisecond after
+        // arriving, while the same ring cut a 15 MB clip for the phone's own
+        // Shot at the same wall-clock moment.  This line is what tells those
+        // apart, and it names the relation's age because the age is the fault.
+        let converted: (t0: Int64?, via: String)? = try? await hosted.pump.perform { peer in
+            let local = try peer.instant(t0Ns, on: t0TimebaseId, expressedIn: captureTb)
+            guard let r = try peer.relation(from: t0TimebaseId, to: captureTb) else {
+                return (local, "no relation \(t0TimebaseId) → \(captureTb) in the set")
+            }
+            let sigma = try peer.sigmaNs(t0Ns, on: t0TimebaseId, expressedIn: captureTb)
+            let via = String(format: "via relation offset %.3f ms skew %.2f ppm "
+                                     + "(σ %.3f ms / %.2f ppm) observed %.1f s before t0",
+                             Double(r.offset_ns) / 1e6, r.skew_ppm,
+                             r.offset_sigma_ns / 1e6, r.skew_sigma_ppm,
+                             Double(t0Ns - r.observed_at.ns) / 1e9)
+                + (sigma.map { String(format: ", σ(t0) %.3f ms", $0 / 1e6) } ?? "")
+            return (local, via)
         }
 
-        guard let localT0 else {
+        let nowNs = MachClock.hostTimeNs
+        guard let localT0 = converted?.t0 else {
             PpcpLog.transferEvent("capture_request → absent",
                                   detail: "shot \(shotId) — t0 does not convert into "
-                                          + "\(PpcpTimebases.captureId); no relation yet")
-            try? await hosted.pump.perform { peer in
-                try peer.captureAbsent(captureId: captureId, shotId: shotId,
-                                       streamId: video.id,
-                                       reason: PpcpAbsentReason.outsideBuffer,
-                                       inReplyTo: replyTo)
-            }
+                                          + "\(captureTb); "
+                                          + (converted?.via ?? "the conversion threw"))
+            await answerAbsent(hosted, captureId: captureId, shotId: shotId,
+                               streamId: video.id, reason: PpcpAbsentReason.outsideBuffer,
+                               replyTo: replyTo)
             return
+        }
+        PpcpLog.transferEvent("capture_request t0 converted",
+                              detail: "shot \(shotId) — \(t0TimebaseId) \(t0Ns) → "
+                                      + "\(captureTb) \(localT0), "
+                                      + Self.ms(localT0 - nowNs) + " from now; "
+                                      + (converted?.via ?? ""))
+
+        // ⛔ **7.3a SAYS CONVERT AND SERVE.  IT DOES NOT SAY WHEN, AND "NOW" IS
+        // WRONG.** The host commits a Shot within a few hundred milliseconds of
+        // impact and asks at once, for `post_ms` of footage AFTER it.  The ring
+        // cannot hold what has not happened: extracting on arrival answers with
+        // the pre-roll and a hole where the swing's finish should be.  This
+        // device's own Shots never hit this because 8.2i's mint deadline holds
+        // them until the post-roll has been recorded; a host-issued request
+        // has no such deadline, so this is it.
+        //
+        // ⚠ A `t0` further in the future than the ring is deep is not a request
+        // to wait for -- no ring will ever hold it, and the number is wrong,
+        // not early.  Answered `absent` at once, saying so.
+        let readyAtNs = localT0 + Swift.max(0, postNs) + Self.fragmentSettleNs
+        let waitNs = readyAtNs - nowNs
+        if waitNs > 0 {
+            if localT0 - nowNs > RingBufferRecorder.retentionTargetNs {
+                PpcpLog.transferEvent("capture_request → absent",
+                                      detail: "shot \(shotId) — converted t0 is "
+                                              + Self.ms(localT0 - nowNs)
+                                              + " in the FUTURE, beyond the ring's "
+                                              + Self.ms(RingBufferRecorder.retentionTargetNs)
+                                              + " depth: the conversion is wrong, not the footage")
+                await answerAbsent(hosted, captureId: captureId, shotId: shotId,
+                                   streamId: video.id, reason: PpcpAbsentReason.outsideBuffer,
+                                   replyTo: replyTo)
+                return
+            }
+            PpcpLog.transferEvent("capture_request waiting",
+                                  detail: "shot \(shotId) — " + Self.ms(waitNs)
+                                          + " for the post-roll to reach the ring")
+            try? await Task.sleep(for: .nanoseconds(waitNs))
         }
 
         var clip = device.retainedClip(aroundNs: localT0, preNs: preNs, postNs: postNs)
@@ -750,17 +832,17 @@ public final class RecordingSession {
             intrinsics: clip.intrinsics, thermal: clip.thermal)
 
         if assembly.record.completeness == PpcpCaptureRecord.Completeness.absent {
+            let reason = assembly.record.absentReason ?? PpcpAbsentReason.outsideBuffer
+            // The two spans side by side, both relative to the same "now", so
+            // "outside_buffer" says WHICH side of the buffer and by how much.
+            let askedAt = MachClock.hostTimeNs
             PpcpLog.transferEvent("capture_request → absent",
-                                  detail: "shot \(shotId) — "
-                                          + (assembly.record.absentReason
-                                             ?? PpcpAbsentReason.outsideBuffer))
-            try? await hosted.pump.perform { peer in
-                try peer.captureAbsent(captureId: captureId, shotId: shotId,
-                                       streamId: video.id,
-                                       reason: assembly.record.absentReason
-                                           ?? PpcpAbsentReason.outsideBuffer,
-                                       inReplyTo: replyTo)
-            }
+                                  detail: "shot \(shotId) — \(reason); asked "
+                                          + Self.span(clip.extraction.requestedNs, from: askedAt)
+                                          + ", ring holds "
+                                          + Self.span(clip.retainedNs, from: askedAt))
+            await answerAbsent(hosted, captureId: captureId, shotId: shotId,
+                               streamId: video.id, reason: reason, replyTo: replyTo)
             return
         }
 
@@ -791,11 +873,47 @@ public final class RecordingSession {
             let hasPayload = clip.payload != nil
             PpcpLog.transferEvent("capture_request answered",
                                   detail: "shot \(shotId) capture \(captureId) — "
+                                          + "\(assembly.record.completeness) "
+                                          + Self.span(clip.extraction.realisedNs, from: localT0,
+                                                      label: "t0")
+                                          + ", "
                                           + (hasPayload ? "payload queued" : "NO payload provider"))
         } catch {
             PpcpLog.transferEvent("capture_request ANNOUNCE FAILED",
                                   detail: "shot \(shotId) — \(String(describing: error))")
         }
+    }
+
+    /// 7.3b — the absent Capture, sent.  ⚠ A throw here is logged and not
+    /// swallowed: an absent answer that never left is, from the host, a device
+    /// that never answered.
+    private func answerAbsent(_ hosted: HostedSessionContext, captureId: String,
+                              shotId: String, streamId: String, reason: String,
+                              replyTo: UInt64) async {
+        do {
+            try await hosted.pump.perform { peer in
+                try peer.captureAbsent(captureId: captureId, shotId: shotId,
+                                       streamId: streamId, reason: reason,
+                                       inReplyTo: replyTo)
+            }
+        } catch {
+            PpcpLog.transferEvent("capture_request ABSENT NOT SENT",
+                                  detail: "shot \(shotId) — \(String(describing: error))")
+        }
+    }
+
+    private nonisolated static func ms(_ ns: Int64) -> String {
+        String(format: "%+.0f ms", Double(ns) / 1e6)
+    }
+
+    /// A span in the capture timebase, expressed relative to `from` so two of
+    /// them read against each other.
+    private nonisolated static func span(_ range: Range<Int64>?, from: Int64,
+                                         label: String = "now") -> String {
+        guard let range else { return "nothing" }
+        return String(format: "[%+.0f … %+.0f] ms from \(label)",
+                      Double(range.lowerBound - from) / 1e6,
+                      Double(range.upperBound - from) / 1e6)
     }
 
     /// What the library says has happened to each announced payload.
@@ -831,13 +949,15 @@ public final class RecordingSession {
     ///
     /// ⛔ The 20 ms sleep is only for the **idle** case, so an armed session with
     /// nothing queued is not a spin.
-    /// How many `capture_request`s this session has been asked to serve.
+    /// How many `capture_request`s this session has finished serving —
+    /// answered, or given up on with a logged reason.
     ///
-    /// ⛔ Exists so a test can STAY ARMED until the host has actually asked.
-    /// `retainedClip()` answers instantly once `disarm()` closes the ring, so a
-    /// run that disarms on a timer answers "I have nothing" to a question that
-    /// arrived one second later — which is indistinguishable, from the host,
-    /// from a device that never had the footage.
+    /// ⛔ Exists so a test can STAY ARMED until the host's question has been
+    /// answered.  `retainedClip()` answers instantly once `disarm()` closes the
+    /// ring, so a run that disarms on a timer answers "I have nothing" to a
+    /// question that arrived one second later — which is indistinguishable,
+    /// from the host, from a device that never had the footage.  ⚠ Counted on
+    /// completion and not on arrival: serving waits for the post-roll.
     public private(set) var servedCaptureRequests = 0
 
     public func startTransferring() {

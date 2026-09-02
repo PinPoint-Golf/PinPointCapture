@@ -1364,12 +1364,7 @@ public final class AppModel {
     private var discardBaselineByStream: [String: Int] = [:]
 
     /// `CORE` 5.21 `retention_target` — what the ring is *trying* to hold.
-    ///
-    /// ⚠ The two constants that actually decide it, multiplied here rather than
-    /// written as a third constant that could disagree with them.
-    static let ringRetentionTargetNs =
-        Int64(Double(RingBufferRecorder.fragmentCapacity)
-              * RingBufferRecorder.fragmentSeconds * 1_000_000_000)
+    static let ringRetentionTargetNs = RingBufferRecorder.retentionTargetNs
 
     /// `PPCP-MSG` 5.5 — emit a `device_status` for every declared Source whose
     /// availability moved since the last tick.
