@@ -43,6 +43,29 @@ JOBS        := 3
 # 74 cases, **median 0.001s**, slowest **14.0s**, whole suite ~55s. The ceiling is
 # an order of magnitude above that on purpose — it is a backstop against a hang,
 # not a performance budget, and it must never fire on a slow-but-honest machine.
+# ⛔ **`-collect-test-diagnostics never` ON EVERY TEST RUN, AND IT IS THE FIX FOR
+# A TEN-MINUTE STALL.** Measured 3 September 2026: a suite that PASSED in 56.8s
+# held xcodebuild until 661.3s elapsed, and the log says why —
+#
+#   IDETestOperationsObserverDebug: Failure collecting diagnostics from
+#   simulator: Timed out after 600.0 seconds while waiting for a response
+#   from the invoked process
+#
+# The default is `on-failure`, and swift-testing's `withKnownIssue` counts as a
+# failure for this purpose: the ten conformance/interop cases that SKIP
+# themselves when no `ppcp-sim`/`PPCP_INTEROP_HOST` is in the environment are
+# recorded as issues, so a plain `make test` triggers a sysdiagnose collection
+# EVERY TIME. The simulator never answers it, the collector waits its full
+# hard-coded 600s, gives up, and prints `** TEST SUCCEEDED **`. Nothing is
+# collected — the ten minutes buy a timeout message.
+#
+# ⚠ This is why the run always looked like a hang and never was, and why raising
+# TEST_TIMEOUT_S "fixed" it: the stall is a fixed 600s that the guard was racing.
+# Do not remove it to get diagnostics on a real failure — this collector has
+# never once produced any. The xcresult bundle under $(DERIVED)/Logs/Test is
+# where a failure is actually read.
+NO_DIAG     := -collect-test-diagnostics never
+
 GUARD        := /usr/bin/perl -e 'alarm shift; exec @ARGV'
 GUARD_STATUS := 142
 TEST_TIMEOUT_S  ?= 600
@@ -270,7 +293,7 @@ test-app: gen
 	@set -o pipefail; \
 	mkdir -p $(DERIVED); rm -f $(DERIVED)/.xcodebuild-status; \
 	log=$(DERIVED)/.test-app.log; \
-	$(GUARD) $(TEST_TIMEOUT_S) xcodebuild test \
+	$(GUARD) $(TEST_TIMEOUT_S) xcodebuild test $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -383,7 +406,7 @@ _rv6_run:
 	fi; \
 	TEST_RUNNER_PPCP_RV6_PORT=$(RV6_PORT) \
 	TEST_RUNNER_PPCP_RV6_MODE=$(RV6_MODE) \
-	$(GUARD) $(TEST_TIMEOUT_S) xcodebuild test-without-building \
+	$(GUARD) $(TEST_TIMEOUT_S) xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -462,7 +485,7 @@ conform-sim: gen
 	testlog=$$(mktemp -t ppcp-conform-test); \
 	TEST_RUNNER_PPCP_CONFORM_PORT=$$port \
 	TEST_RUNNER_PPCP_CONFORM_ROW=$(ROW) \
-	TEST_RUNNER_PPCP_CONFORM_SCENARIO=$(SCENARIO) xcodebuild test-without-building \
+	TEST_RUNNER_PPCP_CONFORM_SCENARIO=$(SCENARIO) xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -526,7 +549,7 @@ conform-tool: gen
 	port=$$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'); \
 	echo "ppcp-conform on port $$port, profiles $(CONFORM_PROFILES)"; \
 	echo "starting the simulator first — see the ordering note above"; \
-	TEST_RUNNER_PPCP_CONFORM_TOOL_PORT=$$port xcodebuild test-without-building \
+	TEST_RUNNER_PPCP_CONFORM_TOOL_PORT=$$port xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -632,7 +655,7 @@ conform-iop: gen
 	rc=0; \
 	set -o pipefail; \
 	TEST_RUNNER_PPCP_IOP2_PORT=$$port2 TEST_RUNNER_PPCP_IOP1_PORT=$$port1 \
-	TEST_RUNNER_PPCP_CONFORM_ROW=iop xcodebuild test-without-building \
+	TEST_RUNNER_PPCP_CONFORM_ROW=iop xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -748,7 +771,7 @@ interop: gen
 	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
 	TEST_RUNNER_PPCP_INTEROP_HOST_ACOUSTIC=$(HOST2) \
 	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
-	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -809,7 +832,7 @@ interop-app: gen
 	set -o pipefail; \
 	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
 	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
-	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -854,7 +877,7 @@ test-device: gen
 	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
 	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
 	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) \
-	$(GUARD) $(DEVICE_TIMEOUT_S) xcodebuild test \
+	$(GUARD) $(DEVICE_TIMEOUT_S) xcodebuild test $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
 		-configuration $(CONFIG) \
@@ -925,7 +948,7 @@ integration: gen
 	sleep 8; \
 	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
 	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
-	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
 		-destination '$(TEST_DEST)' -derivedDataPath $(DERIVED) \
 		-only-testing:PinPointCaptureTests/AppAgainstStudioTests \
