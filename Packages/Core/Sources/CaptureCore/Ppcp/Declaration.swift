@@ -121,6 +121,11 @@ public struct PpcpDeclarationInput: Sendable {
     public var declaresIMU: Bool
     public var viewpoint: PpcpViewpoint?
 
+    /// `CORE` 5.2a — `role: host`. ⚠ **This application is never a host**; it is
+    /// here so a test can stand up an in-process counterpart whose declaration
+    /// matches the engine it runs on (`ppcp_peer_declare` refuses a mismatch).
+    public var isHost = false
+
     /// `CORE` §5.19 — the Actuators this peer will accept commands for.
     ///
     /// ⛔ **NOT a `SourcePlan`, and 5.19b is why**: `Source.kind` and
@@ -422,7 +427,8 @@ public final class PpcpDeclaration: @unchecked Sendable {
             sources = views
 
             // ── The Peer itself ───────────────────────────────────────────────
-            try check(ppcp_peer_desc_make(descStorage, input.peerId, PPCP_ROLE_CAPTURE,
+            try check(ppcp_peer_desc_make(descStorage, input.peerId,
+                                          input.isHost ? PPCP_ROLE_HOST : PPCP_ROLE_CAPTURE,
                                           input.protocolVersion,
                                           profileIdStorage.baseAddress!, input.profiles.count,
                                           timebaseStorage.baseAddress!, input.timebases.count))

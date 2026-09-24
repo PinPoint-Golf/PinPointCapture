@@ -126,7 +126,7 @@ CONFORM_WARMUP_S ?= 75
 
 COMMA := ,
 
-.PHONY: integration-device pull-diags all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop rv6 _rv6_run interop read-bundle pull-bundles device deploy lint browse clean help
+.PHONY: integration-decline integration-device pull-diags all gen build build-device _udid _udid_paired test test-core test-app conform conform-sim conform-tool conform-iop rv6 _rv6_run interop read-bundle pull-bundles device deploy lint browse clean help
 
 # ⚠ **Two instruments, one target.** `make conform` runs `ppcp-conform`, which is
 # what fills the matrix column (plan A11). `make conform SCENARIO=<name>` keeps
@@ -912,6 +912,11 @@ test-device: gen
 # as more than that (PinPointStudio's own caveat, 27 Aug).
 STUDIO_PROBE ?= $(HOME)/Projects/PinPointStudio/tools/probes/ppcp_assert.qml
 EXPECT_SHOTS ?= 1
+# ⭐ DECLINE=1 (#105, CR-03) — Studio's own corroboration rule refuses the
+# phone's Shot and says so with `shot_disposition`; the app half asserts the
+# clip left the phone mid-link and the session drained. Only that row runs, so
+# no other row dials the same host while it is deciding.
+INTEGRATION_ONLY = $(if $(DECLINE),AppAgainstStudioTests/aShotStudioDeclinesLeavesThePhone(),AppAgainstStudioTests)
 integration: gen
 	@if [ -z "$(STUDIO)" ] || [ -z "$(HOST)" ] || [ -z "$(PSK)" ]; then \
 		echo "make integration: STUDIO=<binary> HOST=<host:port> PSK=<64 hex> are required."; \
@@ -928,17 +933,19 @@ integration: gen
 	QT_QPA_PLATFORM=offscreen "$(STUDIO)" \
 		--probe-qml "$(STUDIO_PROBE)" --linger \
 		$(if $(CORROBORATE),--corroborate,) \
-		--expect-shots $(EXPECT_SHOTS) >"$$probelog" 2>&1 & \
+		$(if $(DECLINE),--decline-mode --expect-declines 1,--expect-shots $(EXPECT_SHOTS)) \
+		>"$$probelog" 2>&1 & \
 	studiopid=$$!; \
 	trap 'kill $$studiopid 2>/dev/null || true' EXIT; \
-	echo "PinPointStudio offscreen (pid $$studiopid), corroborate=$(if $(CORROBORATE),on,off), expect $(EXPECT_SHOTS)"; \
+	echo "PinPointStudio offscreen (pid $$studiopid), corroborate=$(if $(CORROBORATE),on,off), $(if $(DECLINE),expect 1 decline,expect $(EXPECT_SHOTS))"; \
 	sleep 8; \
 	TEST_RUNNER_PPCP_INTEROP_HOST=$(HOST) \
 	TEST_RUNNER_PPCP_INTEROP_PSK=$(PSK) \
-	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) xcodebuild test-without-building $(NO_DIAG) \
+	TEST_RUNNER_PPCP_INTEROP_IDENTITY=$(IDENTITY) \
+	TEST_RUNNER_PPCP_INTEROP_EXPECT_DECLINE=$(if $(DECLINE),1,) xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIG) \
 		-destination '$(TEST_DEST)' -derivedDataPath $(DERIVED) \
-		-only-testing:PinPointCaptureTests/AppAgainstStudioTests \
+		'-only-testing:PinPointCaptureTests/$(INTEGRATION_ONLY)' \
 		-default-test-execution-time-allowance 300 \
 		-maximum-test-execution-time-allowance 600 \
 		>$(DERIVED)/.integration-device.log 2>&1 </dev/null || true; \
@@ -959,6 +966,11 @@ integration: gen
 	if [ $$rc -ne 0 ]; then \
 		echo "make integration: the HOST half failed — see its PROBE RESULT line"; exit $$rc; \
 	fi
+
+# #105's exit test against the real host, in one word:
+#   make integration-decline STUDIO=… HOST=… PSK=… IDENTITY=…
+integration-decline:
+	$(MAKE) integration DECLINE=1
 
 # ⛔ **BOTH HALVES, ON REAL HARDWARE, WITH NO PERSON IN THE LOOP.**
 #
@@ -983,7 +995,13 @@ integration: gen
 #
 # ⚠ `/usr/bin/log`, never bare `log` -- the latter is a zsh builtin that silently
 # returns nothing.
-INTEGRATION_OUT ?= $(HOME)/pinpoint-diags/$(shell date +%Y-%m-%d-%H%M%S)-integration
+
+# Diagnostics land in the repo, not $HOME -- these runs are project evidence and
+# docs cite their paths.  Not under build/: a clean wipes that, and the whole
+# point of a run directory is that it survives to be read afterwards.  Ignored
+# via the `diags/` entry in .gitignore.  $(CURDIR) because the target recurses
+# into $(MAKE) and the device half changes directory.
+INTEGRATION_OUT ?= $(CURDIR)/diags/$(shell date +%Y-%m-%d-%H%M%S)-integration
 EXPECT_CLIPS    ?= 1
 PROBE_TIMEOUT_MS ?= 900000
 integration-device: gen

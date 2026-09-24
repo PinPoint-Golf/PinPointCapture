@@ -306,7 +306,15 @@ public final class RecordingSession {
                     var clip = device.retainedClip(
                         aroundNs: requested.lowerBound + half,
                         preNs: half, postNs: half)
-                    Self.persist(&clip, forT0Ns: requested.lowerBound + half,
+                    // ⛔ **Keyed on `t0`, not on the window's midpoint** (#105).
+                    // The window is [t0 − 1.5 s, t0 + 3 s), so its midpoint is
+                    // t0 + 0.75 s — and `adoptClip` looks the file up by `t0`.
+                    // Keyed on the midpoint, no minted clip was ever joined to
+                    // its Capture id, so `releaseDeliveredClips` never deleted
+                    // one: confirmed, declined or otherwise. Found by
+                    // `ShotDispositionAppTests`, the first test to put a real
+                    // clip file behind a hosted Shot.
+                    Self.persist(&clip, forT0Ns: requested.lowerBound + Self.clipPreNs,
                                  in: bundle)
                     return clip
                 })

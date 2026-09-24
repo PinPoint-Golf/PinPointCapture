@@ -3,9 +3,10 @@
 //
 //  ⚠ What a simulator can reach: the hostless arm with the stub camera (the path
 //  `CapturePathAppTests` already drives), which opens a real session folder on
-//  disk. The hosted half — deleting a clip once Studio confirms it, and the
-//  drain after the host's Stop — needs a host and is a device-run check against
-//  PPS (`DeviceSessionTests`).
+//  disk. The hosted half — deleting a clip once the host confirms or declines
+//  it, and the drain after the host's Stop — is `ShotDispositionAppTests`, on
+//  every run against an in-process host, and `DeviceSessionTests` against the
+//  real PinPointStudio.
 
 import Foundation
 import Testing

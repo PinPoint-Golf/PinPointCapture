@@ -1304,7 +1304,7 @@ public final class AppModel {
     // `docs/conformance/ppcp-conformance.md` §1.
 
     /// Sessions the host has stopped whose payload is still going across.
-    private var draining: [RecordingSession] = []
+    private(set) var draining: [RecordingSession] = []
     private var retentionTask: Task<Void, Never>?
 
     /// The per-arm folder a session writes into. ⚠ One per arm, because a hosted

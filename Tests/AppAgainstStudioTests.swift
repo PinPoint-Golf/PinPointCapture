@@ -57,7 +57,8 @@ struct AppAgainstStudioTests {
     /// PinPointStudio accepts the third `link_bind` at all — which is the half of
     /// preview that does not need pixels, and the half they asked us to test.
     static func connected(sessionId: String,
-                          store: SessionStore? = nil) async throws -> AppModel? {
+                          store: SessionStore? = nil,
+                          device: (any CaptureDevice)? = nil) async throws -> AppModel? {
         guard let (endpoint, credentials) = try credentials() else { return nil }
         let transport = try await PpcpConnector()
             .connect(to: endpoint, credentials: credentials,
@@ -66,11 +67,18 @@ struct AppAgainstStudioTests {
         let root = URL.documentsDirectory
             .appendingPathComponent("app-vs-studio-\(sessionId)", isDirectory: true)
         try? FileManager.default.removeItem(at: root)
-        let model = AppModel(device: CaptureDeviceFactory.create(),
+        let model = AppModel(device: device ?? CaptureDeviceFactory.create(),
                              store: store ?? SessionStore(root: root))
-        let declaration = try PpcpDeclaration(
+        // ⚠ A supplied device declares itself — the stub has a camera, which is
+        // what gives a Shot a clip for the host to decline (#105).
+        let declaration: PpcpDeclaration? = device != nil ? nil : try PpcpDeclaration(
             ConformanceHarness.declarationWithoutACamera(peerId: PeerIdentity.current),
             allowingNoCameraSource: true)
+        if device != nil {
+            model.refreshCapability()
+            model.permissions = Permissions(camera: .allowed, microphone: .allowed,
+                                            localNetwork: .allowed, motion: .allowed)
+        }
         await model.connect(transport: transport, sessionId: sessionId,
                             hostDisplayName: "PinPointStudio", declaration: declaration)
         return model
@@ -220,6 +228,64 @@ struct AppAgainstStudioTests {
         }
 
         model.disarm()
+        await model.disconnect()
+    }
+
+    // MARK: #105 — the real host declines
+
+    /// ⭐ **`make integration-decline`: PinPointStudio itself refuses the Shot.**
+    /// Under `--decline-mode` its acoustic detector is available and hears
+    /// nothing, so this phone's uncorroborated Candidate is excluded, the phone
+    /// mints under 8.2i with a clip from the stub camera, and Studio declines the
+    /// unadopted Shot. The same assertions as `ShotDispositionAppTests`, against
+    /// the real host's own decision.
+    @Test("#105 — a Shot Studio declines leaves the phone mid-link")
+    func aShotStudioDeclinesLeavesThePhone() async throws {
+        guard InteropTests.value("EXPECT_DECLINE") == "1" else {
+            withKnownIssue("not a decline run — `make integration-decline`",
+                           isIntermittent: true) { Issue.record("skipped") }
+            return
+        }
+        let device = StubCaptureDevice()
+        device.retainedClipBytes = Data((0..<200_000).map { UInt8($0 % 251) })
+        guard let model = try await Self.connected(sessionId: "ses:studio-105",
+                                                   device: device) else {
+            return Self.skipped()
+        }
+        // The probe drives Studio: camera enabled, clocks agreed, session
+        // started — and Studio's `arm` arms this phone.
+        var armed = false
+        for _ in 0..<120 where !armed {
+            armed = model.captureStatus.state == .armed
+            if !armed { try await Task.sleep(for: .seconds(1)) }
+        }
+        print("APP-VS-STUDIO decline armed-by-host=\(armed)")
+        try #require(armed, "Studio never armed this phone")
+
+        await model.observe(SyntheticAudio.oneSwing(timebaseId: PpcpTimebases.captureId,
+                                                    startNs: MachClock.hostTimeNs))
+        var declined = false
+        for _ in 0..<600 where !declined {
+            await model.pumpMint()
+            declined = model.session.shots.last?.syncState == .declined
+            if !declined { try await Task.sleep(for: .milliseconds(50)) }
+        }
+        let state = model.session.shots.last?.syncState.displayText ?? "no shot minted"
+        print("APP-VS-STUDIO decline shot-state=\(state)")
+        #expect(declined, "Studio did not decline the Shot: \(state)")
+
+        await model.retentionTick()
+        let clips = model.recording.map { rec in
+            ((try? FileManager.default.contentsOfDirectory(
+                atPath: rec.bundle.clipsDirectory.path)) ?? []).filter { $0.hasSuffix(".mp4") }
+        } ?? []
+        print("APP-VS-STUDIO decline clips-left=\(clips.count)")
+        #expect(clips.isEmpty, "CORE 5.14g exit 5 — the declined clip was kept")
+
+        model.disarm(stayWarm: true, keepDelivering: true)
+        await model.retentionTick()
+        print("APP-VS-STUDIO decline draining=\(model.draining.count)")
+        #expect(model.draining.isEmpty, "the stopped session never drained")
         await model.disconnect()
     }
 }

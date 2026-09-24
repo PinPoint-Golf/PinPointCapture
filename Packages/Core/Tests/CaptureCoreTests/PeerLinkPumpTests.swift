@@ -244,10 +244,7 @@ struct PeerLinkPumpTests {
             try peer.announce(LiveLinkTests.shotCapture("cap:declined"))
         }
         try await hostPump.perform { peer in
-            peer.withHandle { handle in
-                #expect(ppcp_peer_shot_disposition(handle, "sht:1", PPCP_DISPOSITION_DECLINED,
-                                                   "not_corroborated") == PPCP_OK)
-            }
+            try peer.shotDisposition(shotId: "sht:1", reason: "not_corroborated")
         }
 
         let seen = await Self.collect(from: devicePump, until: { events in
@@ -261,6 +258,56 @@ struct PeerLinkPumpTests {
         })
         let released = try await devicePump.perform { $0.isEvictable(captureId: "cap:declined") }
         #expect(released, "CORE 5.14g exit 5 — applied by the library before the event")
+
+        await devicePump.stop()
+        await hostPump.stop()
+    }
+
+    /// The host half `DevicePeerHost` gives a test: a HOSTED `session_open`,
+    /// and a `capture_committed` naming the digest the owner announced.
+    @Test("A host peer opens a hosted Session and commits a Capture it was offered")
+    func aHostPeerOpensAHostedSessionAndCommits() async throws {
+        let (deviceSide, hostSide) = PipeTransport.pair()
+        let device = try DevicePeer(peerId: "peer:device", role: .capture)
+        let host = try DevicePeer(peerId: "peer:host", role: .host, listener: true)
+        let devicePump = PeerLinkPump(peer: device, transport: deviceSide,
+                                      nowNs: { Self.clock() })
+        let hostPump = PeerLinkPump(peer: host, transport: hostSide,
+                                    nowNs: { Self.clock() })
+        await devicePump.start()
+        await hostPump.start()
+
+        try await hostPump.perform { try $0.hello() }
+        try await devicePump.perform { try $0.hello() }
+        try await hostPump.perform { peer in
+            try peer.openHostedSession(id: "ses:hosted", timebaseRef: "tb:host",
+                                       openedAtNs: 1_000_000_000)
+        }
+        let opened = await Self.collect(from: devicePump, until: { events in
+            events.contains { if case .sessionOpened = $0 { return true }; return false }
+        })
+        #expect(opened.contains {
+            if case .sessionOpened(let id) = $0 { return id == "ses:hosted" }
+            return false
+        })
+
+        try await devicePump.perform { peer in
+            try peer.openStream(LiveLinkTests.videoStream)
+            try peer.announce(LiveLinkTests.shotCapture("cap:kept"))
+        }
+        // The host needs the announce before it can name its digest.
+        var committed = false
+        for _ in 0..<100 where !committed {
+            committed = (try? await hostPump.perform { try $0.captureCommitted(captureId: "cap:kept") }) != nil
+            if !committed { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        #expect(committed)
+        var state: ShotSyncState?
+        for _ in 0..<100 where state != .inStudio {
+            state = try await devicePump.perform { $0.transfer(of: "cap:kept")?.state }
+            if state != .inStudio { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        #expect(state == .inStudio, "CORE 5.14g exit 1 — confirmed, and only by the receiver")
 
         await devicePump.stop()
         await hostPump.stop()

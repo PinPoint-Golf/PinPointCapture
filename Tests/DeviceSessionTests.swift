@@ -1074,6 +1074,12 @@ struct DeviceSessionTests {
             try await Task.sleep(for: .seconds(1))
         }
         print("DEVICE-RUN delivered and deleted before the link went: \(drained)")
+        // ⛔ Asserted, no longer only printed (#105). Every clip was committed or
+        // declined by the host, so nothing is owed, and a session that still sits
+        // here is the "cannot be cleared" symptom. The simulator proves the same
+        // path on every run in `ShotDispositionAppTests`; this proves it against
+        // the real PinPointStudio.
+        #expect(drained, "the stopped session never drained while the link was up")
         await model.disconnect()
         let left = await model.bundlesOnDevice()
         #expect(left.isEmpty, "\(left.count) session(s) still on the phone after the link ended")

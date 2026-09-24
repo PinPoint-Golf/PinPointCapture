@@ -421,6 +421,11 @@ struct CapturePathAppTests {
 final class StubCaptureDevice: CaptureDevice, @unchecked Sendable {
 
     var refusesToRetain = false
+    /// ⭐ Bytes to hand back as the clip around any `t0`, or `nil` for the
+    /// honest `outside_buffer` answer a stub with no ring gives. Set it and a
+    /// hosted session writes a real clip file, which is what lets the
+    /// simulator exercise `CORE` 5.14g end to end (#105).
+    var retainedClipBytes: Data?
     private(set) var startRetainingCalls = 0
     private(set) var stopRetainingCalls = 0
     private(set) var isRetaining = false
@@ -499,8 +504,22 @@ final class StubCaptureDevice: CaptureDevice, @unchecked Sendable {
     /// ⚠ A stub that never retains, so the honest answer is the `absent` one —
     /// which is what these tests are about (`arm` refusing to claim otherwise).
     func retainedClip(aroundNs t0: Int64, preNs: Int64, postNs: Int64) -> RetainedClip {
-        RetainedClip.nothingRetained(
-            (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs)))
+        let window = (t0 - Swift.max(0, preNs))..<(t0 + Swift.max(0, postNs))
+        guard let bytes = retainedClipBytes else { return .nothingRetained(window) }
+        // A 150 fps grid over the window, with a locked exposure (5.8d) — the
+        // shape the shipping ring produces, without a ring.
+        let period: Int64 = 6_666_666
+        var frames: [Int64] = []
+        var at = (window.lowerBound / period + 1) * period
+        while at < window.upperBound { frames.append(at); at += period }
+        let extraction = ClipExtraction(
+            requestedNs: window, outcome: .present(.complete), fragments: [],
+            realisedNs: window, holesNs: [], frameTimestampsNs: frames,
+            exposureNs: Array(repeating: 1_000_000, count: frames.count),
+            iso: Array(repeating: 640, count: frames.count),
+            droppedFrames: 0, byteCount: bytes.count)
+        return RetainedClip(extraction: extraction, exposure: .lockedConstant(1_000_000),
+                            payload: { bytes })
     }
 
     func observeInterruptions(_ handler: @escaping @MainActor (InterruptionRecord) -> Void) {}
