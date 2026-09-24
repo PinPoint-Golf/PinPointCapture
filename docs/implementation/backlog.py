@@ -240,16 +240,19 @@ EPICS = [
       "carrying 247 MB in one hardware run",
       "`capture_request` answered from the ring, after the post-roll ✅",
       "Per-shot and per-session progress ◐ — the device's own view only",
-      "Confirmation → `In Studio` ⛔ **unreachable**: no host has ever sent "
-      "`capture_committed`",
+      "Confirmation → `In Studio` ◐ — PinPointStudio sends `capture_committed`, "
+      "and `ShotDispositionAppTests` reaches it against a scripted host on every "
+      "`make test`; not yet watched on hardware",
       "`SessionOfferService` and `PreviewProducer` composed ✅"],
      "A swing announces in milliseconds and its video follows minutes later; **CT-I19's consumer half (CT-S3)** closes.",
      "REQ-SESS-5, REQ-SESS-6, REQ-SHOT-1", layer="core", deps="Needs E1.2.",
      note="✅ Closed 2 Sep 2026 (#27). It crossed against a live "
           "PinPointStudio — `capture_request` converted, the post-roll waited "
           "for, 25 MB queued, an 82 MB bundle beside it. ⚠ Closed with CT-S3 "
-          "UNRUN and the swing injected (E2.1); `In Studio` is still "
-          "unreachable. Two faults the run surfaced are #119 and #120."),
+          "UNRUN and the swing injected (E2.1); `In Studio` was then "
+          "unreachable, and is now reached against a scripted host on every "
+          "`make test` (24 Sep, #105) — not yet on hardware. Two faults the run "
+          "surfaced are #119 and #120."),
    level("E3.5","Surviving the network",
      "The link can be lost and recovered without costing a frame.",
      ["Lost → Back transition ✅",
