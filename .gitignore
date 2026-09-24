@@ -44,3 +44,8 @@ tools/interop/*.log
 # editor baked in — and rebuilds from the .dc.html sources beside it. Those are
 # the design; this is a build of it. See docs/design/opening-v2/README.md.
 docs/design/opening-v2/pinpoint-opening-flow.html
+
+# Integration-rig diagnostics (make integration-device, INTEGRATION_OUT).
+# Multi-megabyte host/device/USB logs per run — kept out of build/ so a clean
+# does not wipe evidence that docs cite by path.
+diags/
