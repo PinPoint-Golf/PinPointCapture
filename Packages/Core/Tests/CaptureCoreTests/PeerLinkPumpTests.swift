@@ -234,15 +234,20 @@ struct PeerLinkPumpTests {
                                       nowNs: { Self.clock() })
         let hostPump = PeerLinkPump(peer: host, transport: hostSide,
                                     nowNs: { Self.clock() })
-        await devicePump.start()
-        await hostPump.start()
-
+        // ⛔ **Both `hello`s BEFORE either pump starts.** A started pump feeds
+        // what arrives, and a peer that has been fed the other side's `hello`
+        // has left `PPCP_PEER_INIT` — so its own `hello()` is refused. Which
+        // got there first was the scheduler's choice: green under the busy
+        // pool of `make test-core`, red when run alone. `Pipe.write` buffers
+        // until a reader exists, so nothing is fed until `start()`.
         try await hostPump.perform { try $0.hello() }
         try await devicePump.perform { peer in
             try peer.hello()
             try peer.openStream(LiveLinkTests.videoStream)
             try peer.announce(LiveLinkTests.shotCapture("cap:declined"))
         }
+        await devicePump.start()
+        await hostPump.start()
         try await hostPump.perform { peer in
             try peer.shotDisposition(shotId: "sht:1", reason: "not_corroborated")
         }
@@ -274,11 +279,16 @@ struct PeerLinkPumpTests {
                                       nowNs: { Self.clock() })
         let hostPump = PeerLinkPump(peer: host, transport: hostSide,
                                     nowNs: { Self.clock() })
-        await devicePump.start()
-        await hostPump.start()
-
+        // ⛔ **Both `hello`s BEFORE either pump starts.** A started pump feeds
+        // what arrives, and a peer that has been fed the other side's `hello`
+        // has left `PPCP_PEER_INIT` — so its own `hello()` is refused. Which
+        // got there first was the scheduler's choice: green under the busy
+        // pool of `make test-core`, red when run alone. `Pipe.write` buffers
+        // until a reader exists, so nothing is fed until `start()`.
         try await hostPump.perform { try $0.hello() }
         try await devicePump.perform { try $0.hello() }
+        await devicePump.start()
+        await hostPump.start()
         try await hostPump.perform { peer in
             try peer.openHostedSession(id: "ses:hosted", timebaseRef: "tb:host",
                                        openedAtNs: 1_000_000_000)
@@ -331,14 +341,19 @@ struct PeerLinkPumpTests {
                                       nowNs: { Self.clock() })
         let hostPump = PeerLinkPump(peer: host, transport: hostSide,
                                     nowNs: { Self.clock() })
-        await devicePump.start()
-        await hostPump.start()
-
+        // ⛔ **Both `hello`s BEFORE either pump starts.** A started pump feeds
+        // what arrives, and a peer that has been fed the other side's `hello`
+        // has left `PPCP_PEER_INIT` — so its own `hello()` is refused. Which
+        // got there first was the scheduler's choice: green under the busy
+        // pool of `make test-core`, red when run alone. `Pipe.write` buffers
+        // until a reader exists, so nothing is fed until `start()`.
         try await hostPump.perform { try $0.hello() }
         try await devicePump.perform { peer in
             try peer.hello()
             try peer.declare(try ActuatorWireTests.declarationWithTorch())
         }
+        await devicePump.start()
+        await hostPump.start()
         // 12.1d — the host may only command what the counterpart declared, so
         // the declaration has to arrive before the command is originable.
         _ = await Self.collect(from: hostPump, until: { events in
