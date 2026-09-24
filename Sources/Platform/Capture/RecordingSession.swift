@@ -76,8 +76,8 @@ public final class RecordingSession {
     /// ⛔ **Fixed, because `Session.timebase_ref` is immutable (I16)** and the
     /// bundle's `session_open` is already written by the time a host could turn
     /// up. A host appearing mid-session does not convert one — the next arm opens
-    /// a hosted Session, and the hostless one it replaces is what
-    /// `SessionOfferService` exists to hand over.
+    /// a hosted Session. ⚠ The hostless one it replaces used to be handed over
+    /// by `SessionOfferService`, which is mothballed (#122).
     public enum Control {
         case hostless
         case hosted(HostedSessionContext)
@@ -508,12 +508,16 @@ public final class RecordingSession {
     nonisolated private static func persist(_ clip: inout RetainedClip,
                                             forT0Ns t0Ns: Int64,
                                             in bundle: SessionBundle) {
+        persist(&clip, to: Self.pendingClipURL(forT0Ns: t0Ns, in: bundle), in: bundle)
+    }
+
+    nonisolated private static func persist(_ clip: inout RetainedClip, to url: URL,
+                                            in bundle: SessionBundle) {
         guard let payload = clip.payload else { return }
         do {
             let bytes = try payload()
             try FileManager.default.createDirectory(at: bundle.clipsDirectory,
                                                     withIntermediateDirectories: true)
-            let url = Self.pendingClipURL(forT0Ns: t0Ns, in: bundle)
             try bytes.write(to: url, options: .atomic)
             clip.payload = { try Data(contentsOf: url) }
         } catch {
@@ -531,29 +535,106 @@ public final class RecordingSession {
         bundle.clipsDirectory.appendingPathComponent("t0-\(t0Ns).mp4")
     }
 
-    /// Join the `t0`-keyed clip to the Capture that now names it, and render its
-    /// thumbnail.
+    /// Join the `t0`-keyed clip to the Capture that now names it.
     ///
-    /// ⚠ Thumbnail generation is detached: it decodes a frame, and `pumpMint`
-    /// runs on the main actor. A picture for a row is never worth a stutter in
-    /// the capture UI.
+    /// ⛔ **The join is what lets a delivered clip be deleted** (#122): the
+    /// library's eviction predicate speaks Capture ids, and the file is named by
+    /// `t0`. ⚠ The file is not renamed — the payload provider already handed to
+    /// the queue reads this path.
+    ///
+    /// ⚠ No thumbnail any more. It was the session library's row picture (C3),
+    /// and the library is mothballed (#121); decoding a frame per shot for a
+    /// screen that does not exist was heat for nothing.
     private func adoptClip(forT0Ns t0Ns: Int64, captureId: String?) {
         guard let captureId else { return }
         let clipURL = Self.pendingClipURL(forT0Ns: t0Ns, in: bundle)
         guard FileManager.default.fileExists(atPath: clipURL.path) else { return }
+        clipFiles[captureId] = clipURL
+    }
 
-        let thumbnailURL = bundle.thumbnailFile(captureId: captureId)
-        let directory = bundle.thumbnailsDirectory
-        // ⚠ Where t₀ falls inside the clip, not where it falls on the capture
-        // clock — the generator only knows about the asset's own timeline.
-        let offsetNs = Self.clipPreNs
-        Task.detached(priority: .utility) {
-            guard let jpeg = try? await ClipThumbnail.jpeg(fromClipAt: clipURL,
-                                                           atNs: offsetNs) else { return }
-            try? FileManager.default.createDirectory(at: directory,
-                                                     withIntermediateDirectories: true)
-            try? jpeg.write(to: thumbnailURL, options: .atomic)
+    // MARK: Nothing kept past delivery (#122)
+
+    /// Capture id → the clip file behind it, for every clip still on the phone.
+    private var clipFiles: [String: URL] = [:]
+
+    /// Deletes every clip the receiver has confirmed.
+    ///
+    /// ⛔ **Through the library's I38 predicate and nothing else**
+    /// (`PayloadTransferQueue.evictable`). 5.14g1 forbids shedding a payload the
+    /// receiver has not confirmed "regardless of retention policy"; *after* it
+    /// has, the file is only a copy of what Studio already holds.
+    ///
+    /// - Returns: how many clips were deleted.
+    @discardableResult
+    public func releaseDeliveredClips() async -> Int {
+        guard let hosted = control.hosted, clipFiles.isEmpty == false else { return 0 }
+        let ids = Array(clipFiles.keys)
+        let delivered = (try? await hosted.pump.perform { _ in
+            hosted.queue.evictable(from: ids)
+        }) ?? []
+        for id in delivered {
+            guard let url = clipFiles.removeValue(forKey: id) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                PpcpLog.transferEvent("delivered clip NOT deleted",
+                                      detail: "\(id) — \(String(describing: error))")
+            }
         }
+        if delivered.isEmpty == false {
+            PpcpLog.transferEvent("delivered clips deleted",
+                                  detail: "\(delivered.count), \(clipFiles.count) still held")
+        }
+        return delivered.count
+    }
+
+    /// Whether any payload is still waiting to go.
+    public func hasPendingTransfers() async -> Bool {
+        guard let hosted = control.hosted else { return false }
+        let pending = (try? await hosted.pump.perform { _ in
+            hosted.queue.pendingCaptureIds.count
+        }) ?? 0
+        return pending > 0
+    }
+
+    /// Every payload sent and every clip confirmed and deleted: nothing of this
+    /// session is left that Studio does not already hold.
+    public func isDrained() async -> Bool {
+        let pending = await hasPendingTransfers()
+        return pending == false && clipFiles.isEmpty
+    }
+
+    /// The host's Stop: capture ends, delivery does not.
+    ///
+    /// ⛔ **PPS sends `disarm` without waiting for transfers**, and `close()`
+    /// cancels the drain — so the last clip of every session went nowhere until
+    /// the offer service re-sent it on a later link. With that mothballed
+    /// (#122), Stop closes the Streams (so the next arm can reuse their ids,
+    /// 5.1a) and leaves the upload running; the caller discards the session
+    /// once ``isDrained()`` says so, or when the link ends.
+    public func endCapture() {
+        guard hasEndedCapture == false, isClosed == false else { return }
+        hasEndedCapture = true
+        stopMetadata()
+        closeHostedStreams()
+    }
+
+    private var hasEndedCapture = false
+
+    /// Ends this session and keeps nothing (#122).
+    ///
+    /// ⛔ **Never `recorder.close`.** That writes the `ENC` §7 tail, which reads
+    /// every clip back through its provider — a gigabyte copied into the bundle
+    /// only to be deleted, and a throw part-way for any clip already released.
+    /// The caller deletes the session's folder straight after.
+    public func discard() {
+        guard isClosed == false else { return }
+        isClosed = true
+        stopTransferring()
+        stopMetadata()
+        if hasEndedCapture == false { closeHostedStreams() }
+        try? handle.close()
+        clipFiles.removeAll()
     }
 
     /// The Streams a hostless capture session opens, from what was declared.
@@ -825,7 +906,12 @@ public final class RecordingSession {
         }
 
         var clip = device.retainedClip(aroundNs: localT0, preNs: preNs, postNs: postNs)
-        Self.persist(&clip, forT0Ns: localT0, in: bundle)
+        // ⚠ Keyed by the Capture id, which is known here — unlike a minted
+        // Shot's clip. A `t0` key let two requests for one instant overwrite
+        // each other's file.
+        let clipURL = bundle.clipsDirectory.appendingPathComponent("\(captureId).mp4")
+        Self.persist(&clip, to: clipURL, in: bundle)
+        if clip.payload != nil { clipFiles[captureId] = clipURL }
         let assembly = CaptureBuilder.shotCapture(
             id: captureId, shotId: shotId, stream: video,
             extraction: clip.extraction, exposure: clip.exposure,
@@ -1026,6 +1112,10 @@ public final class RecordingSession {
         transferTask = nil
     }
 
+    /// Whether the bulk drain is running. ⚠ `AppModel` holds a new arm's drain
+    /// back while a previous session is still delivering (#122).
+    public var isTransferring: Bool { transferTask != nil }
+
     /// The next `metadata` segment, if one is due.
     ///
     /// ⛔ **A `continuous` Stream must account for its whole open interval**
@@ -1113,9 +1203,10 @@ public final class RecordingSession {
                       closedAtNs: Int64? = nil) throws {
         guard isClosed == false else { return }
         isClosed = true
-        // ⚠ Whatever is still queued stops here. 5.14g's exits are the library's
-        // to decide, and an unsent payload is not lost — it is in the bundle,
-        // which is the whole of "live bytes are bundle bytes".
+        // ⚠ Whatever is still queued stops here. ⛔ Since #122 the app does not
+        // call this: a hosted session ends with `endCapture()` and `discard()`,
+        // because this writes the bundle tail, which reads every clip back.
+        // Kept for the paths that still want a complete bundle on disk.
         stopTransferring()
         // ⛔ **Close this session's Streams on the LINK peer, which outlives it.**
         // 5.1a fixes a Stream's identity for its lifetime and `peer_stream_add`

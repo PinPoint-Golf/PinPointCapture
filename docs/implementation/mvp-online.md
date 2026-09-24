@@ -23,7 +23,7 @@
 | **(c)** | After every shot and every candidate, the data reaches Studio |
 | **(d)** | **Online only** — no offline catch-up, no store-and-forward |
 
-⚠ **(d) is a scope reduction, not a product decision.** It removes E9 entirely, most of E4, `SessionOfferService` and the offline half of E21. ⛔ It does **not** remove the bundle: `CORE`'s *live bytes are bundle bytes* means the same records go to the wire and to disk, so the writer stays and the device keeps its own session library. §4.2 makes that a demo step precisely so "online only" cannot quietly become "online or nothing".
+⚠ **(d) is now a product decision as well as a scope reduction (24 Sep 2026, OPEN-6).** It removes E9 entirely, most of E4, `SessionOfferService` and the offline half of E21. ⛔ **Superseded: this paragraph used to say (d) does not remove the bundle and that the device keeps its own session library.** Since #121 and #122 the phone is a tripod camera with a status screen, the library is mothballed, and the bundle is **scratch space**. The writer still runs (*live bytes are bundle bytes*), but each clip is deleted once Studio confirms it, a stopped session is deleted once its last clip is delivered, and anything left when the link ends, or found at connect, is deleted too. §4.2 checks that nothing is left.
 
 ### ⛔ (a) was stated backwards until 24 August, and the table below always had it right
 
@@ -283,11 +283,15 @@ DEVICE-RUN bundle sess:e6657841-… — 82 MB, 1 shot(s) in the session
 6. Five shots, no reconnect.
 7. ✅ **Done, 2 Sep.** Close the app and reopen it; the device reconnects **with no pairing step and no code**. All four steps proven on hardware (§2.2c), four times in one run over Wi-Fi. ⚠ Still worth running once with the host's address deliberately changed, since that is the case the mechanism was chosen for — and once with multicast blocked, which [#66](https://github.com/PinPoint-Golf/PinPointCapture/issues/66) closed without doing (§2.2c).
 
-### 4.2 The check that (d) stayed honest
+### 4.2 The check that nothing is left on the phone (#122)
 
-✅ **Checked on 2 September, and it holds.** The device suite's last row reads the library after a hosted session: **81 MB and 82 MB bundles**, each carrying the session's shot and a clip with real bytes, written while the same records went over the wire. ⚠ The assertion is deliberately `byteCount > 1 MB` — a bundle with a thumbnail and no clip is [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)'s shape, and it is the failure this step exists to catch.
+⛔ **Inverted on 24 September.** This step used to check that the phone *kept* a copy of what crossed. On 2 September it did: 81 MB and 82 MB bundles. The product no longer wants that copy, so the check now runs the other way:
 
-⚠ On a real session afterwards: five clips in the library with thumbnails, against five that crossed. If this step fails, "online only" has become "online or nothing", which is a different product.
+- **A real clip crossed.** The device suite asserts that the transfer table held a payload over 1 MB. A Capture with no bytes behind it is [#98](https://github.com/PinPoint-Golf/PinPointCapture/issues/98)'s shape, and that is still the failure worth catching.
+- **Nothing is left.** After the host's Stop, the drain and the end of the link, `bundlesOnDevice()` is empty.
+- **Reported, not asserted:** whether the drain finished before the link went. That depends on Studio committing every Capture.
+
+⚠ On a real session: after the last shot has crossed and Studio has stopped, the app container holds no session folder (`devicectl`; `make pull-bundles` is simulator-only).
 
 ---
 
@@ -413,7 +417,7 @@ The numbers are in §3.1a and §3.2a. What is worth carrying forward is the patt
 | [#28](https://github.com/PinPoint-Golf/PinPointCapture/issues/28) E3.5 — network recovery ✅ **CLOSED 2 Sep** | A dropped link ends the demo rather than surviving it. ⚠ **Out of date as a statement about the code**: it is built, `03a25a6` gave 4.3b's ordering the test it never had, and `8201ec8` made a link that dies while the app is foregrounded recover on its own. Out of the *demo*, not out of the tree |
 | [#26](https://github.com/PinPoint-Golf/PinPointCapture/issues/26) E3.3 — arm from host ✅ **CLOSED 2 Sep** | Nice to have. Arm on the device. ⛔ **This row is now simply wrong and is kept to show it moved**: as of 2 September **the host arms this device and the device test waits for it**, the torch is a CR-02 Actuator answering `actuator_command` with the state the hardware achieved, and a host's disarm leaves the camera warm. Host control is in the product, not in the "out" list |
 | [#20](https://github.com/PinPoint-Golf/PinPointCapture/issues/20) E1.4 — bitrate | The 50 Mbps placeholder holds. E-M2 owns it, and it is now load-bearing in shipped code |
-| E9 export, E5 replay, E6 markup, `SessionOfferService` | Offline catch-up is what (d) removes |
+| E9 export, E5 replay, E6 markup, `SessionOfferService` | Offline catch-up is what (d) removes. ⚠ Since #121/#122 the UI for them and `SessionOfferService` itself are in `Mothballed/`, out of the build |
 | The fleet case — one confirmation per device per host | `RV` B15. Its prerequisite is B2's per-peer re-keying, not a fifth rendezvous path. ⚠ E22's multi-device stereo makes this bite sooner than CR-01's "several bays" suggested |
 | ⛔ **Guided pairing — `RV` §11, RV-6** | Decided 24 Aug: a future capability. ⚠ Being built now, and not discarded — it stops gating the MVP. Its conformance obligation under 9g applies whenever it *is* claimed |
 | ⛔ Any rendezvous mechanism not in `PPCP-RV` | Standing |

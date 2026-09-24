@@ -1043,18 +1043,40 @@ struct DeviceSessionTests {
         }
         print("DEVICE-RUN host capture_request answered while armed: \(served)")
 
-        // ⛔ **The assertion every manual run failed.** A bundle with no payload
-        // is #98's shape, and all five of today's faults ended here.
-        await model.disarm()
-        try await Task.sleep(for: .seconds(2))
+        // ⛔ **The assertion every manual run failed.** A Capture with no
+        // payload is #98's shape, and all five of today's faults ended here.
+        // ⚠ Read off the transfer table, not a bundle: since #122 nothing is
+        // kept on the phone past its delivery, so there is no bundle to weigh.
+        try await Self.expectARealClipWasQueued(model)
+        try await Self.expectNothingLeftAfterStop(model)
+    }
 
-        let bundles = await model.bundlesOnDevice()
-        let newest = try #require(bundles.first, "no bundle was written")
-        print("DEVICE-RUN bundle \(newest.sessionId) — \(newest.byteCount / 1_000_000) MB")
-        #expect(newest.byteCount > 1_000_000,
-                "bundle is \(newest.byteCount) bytes — the Capture was announced absent")
+    /// A Capture went onto the transfer queue with real bytes behind it.
+    static func expectARealClipWasQueued(_ model: AppModel) async throws {
+        let rows = await model.recording?.transferRows ?? []
+        let largest = rows.compactMap(\.bytes).max() ?? 0
+        print("DEVICE-RUN transfer rows \(rows.count), largest \(largest / 1_000_000) MB")
+        #expect(largest > 1_000_000,
+                "no queued payload over 1 MB — the Capture was announced absent")
+    }
 
+    /// #122 — the host's Stop, then the drain, then the link: nothing of the
+    /// session may be left on the phone afterwards.
+    ///
+    /// ⚠ **Whether the drain finishes before the link goes is reported, not
+    /// asserted.** It needs Studio to commit every Capture, which is the host's
+    /// behaviour; what is asserted is that the phone keeps nothing either way.
+    static func expectNothingLeftAfterStop(_ model: AppModel) async throws {
+        await model.disarm(stayWarm: true, keepDelivering: true)
+        var drained = false
+        for _ in 0 ..< 60 {
+            if await model.bundlesOnDevice().isEmpty { drained = true; break }
+            try await Task.sleep(for: .seconds(1))
+        }
+        print("DEVICE-RUN delivered and deleted before the link went: \(drained)")
         await model.disconnect()
+        let left = await model.bundlesOnDevice()
+        #expect(left.isEmpty, "\(left.count) session(s) still on the phone after the link ended")
     }
 
     // MARK: The rest of the hardware list, automated
@@ -1199,11 +1221,12 @@ struct DeviceSessionTests {
         await model.disconnect()
     }
 
-    /// **Test 8 — the honesty check.** `mvp-online.md` §4.2: the bundle must carry
-    /// the same records that went over the wire, or "online only" has quietly
-    /// become "online or nothing", which is a different product.
-    @Test("The bundle holds what crossed — shots, and a clip with bytes")
-    func theBundleHoldsWhatCrossed() async throws {
+    /// **Test 8 — the honesty check, inverted by #122.** `mvp-online.md` §4.2
+    /// used to require the bundle to carry what crossed the wire. PPC is now
+    /// online only and keeps nothing on the phone past its delivery, so the
+    /// check is the other way round: a real clip crossed, and nothing is left.
+    @Test("A clip with bytes crosses, and nothing is left on the phone after")
+    func nothingIsLeftAfterTheSession() async throws {
         guard let capability = Self.liveCapability(), capability.bestMode != nil else {
             print("SKIP — no physical camera"); return
         }
@@ -1216,20 +1239,10 @@ struct DeviceSessionTests {
                                                     startNs: MachClock.hostTimeNs))
         try await Task.sleep(for: .seconds(8))
         let shots = await model.session.shots.count
-        await model.disarm()
-        try await Task.sleep(for: .seconds(2))
-
-        let bundles = await model.bundlesOnDevice()
-        let newest = try #require(bundles.first, "no bundle was written")
-        print("DEVICE-RUN bundle \(newest.sessionId) — \(newest.byteCount / 1_000_000) MB, "
-              + "\(shots) shot(s) in the session")
-
-        // ⛔ A bundle with no payload is #98's shape, and every fault found on
+        print("DEVICE-RUN \(shots) shot(s) in the session")
+        // ⛔ A Capture with no payload is #98's shape, and every fault found on
         // 27 August ended here.
-        #expect(newest.byteCount > 1_000_000, """
-                the bundle is \(newest.byteCount) bytes — the Capture was \
-                announced `absent`, so nothing was filmed
-                """)
-        await model.disconnect()
+        try await Self.expectARealClipWasQueued(model)
+        try await Self.expectNothingLeftAfterStop(model)
     }
 }

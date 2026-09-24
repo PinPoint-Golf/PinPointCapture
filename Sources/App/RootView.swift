@@ -158,6 +158,9 @@ struct RootView: View {
             }
             model.refreshCapability()
             model.refreshHealth()
+            // #122 — nothing is kept on the phone past its session; anything a
+            // previous run left behind goes now.
+            model.sweepLeftovers()
         }
     }
 

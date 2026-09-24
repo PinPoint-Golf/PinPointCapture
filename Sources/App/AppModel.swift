@@ -583,14 +583,18 @@ public final class AppModel {
     /// close exactly as before; only the camera graph and the health tick stay.
     /// A golfer's own *End session* passes `false` and goes cold as it always
     /// did: with no host there is nothing to keep the camera warm for.
-    public func disarm(stayWarm: Bool = false) {
+    ///
+    /// - Parameter keepDelivering: the host's Stop (#122). Capture ends; the
+    ///   payload already announced keeps going across, and the session is
+    ///   deleted once it has. Otherwise the session is discarded at once.
+    public func disarm(stayWarm: Bool = false, keepDelivering: Bool = false) {
         settleTask?.cancel()
         settleTask = nil
         isSettling = false
         stopDetecting()
         recording?.stopMetadata()
         if stayWarm == false { stopHealthPolling() }
-        stopRecording()
+        stopRecording(keepDelivering: keepDelivering)
         // ⛔ **Read the counters BEFORE stopping.** `stopRetaining` drops the
         // recorder and its stats go with it, so a disarm would otherwise erase
         // the measurement of the run that just happened — which is the only
@@ -624,8 +628,7 @@ public final class AppModel {
     /// A host that opened a Session before the arm gets a hosted recording; an
     /// arm with no host gets a hostless one, and a host arriving later does not
     /// convert it — `Session.timebase_ref` is immutable (I16) and the bundle's
-    /// `session_open` is already written. The hostless Session it leaves behind
-    /// is what `SessionOfferService` exists to hand over.
+    /// `session_open` is already written.
     private func startRecording() async {
         guard recording == nil else { return }
         shotIdByCapture.removeAll()
@@ -638,8 +641,10 @@ public final class AppModel {
                 promotion: DetectAndMint.defaultPromotion())
             let sessionId = link?.hostSession?.sessionId
                 ?? "ses:\(UUID().uuidString.lowercased())"
+            let armStore = SessionStore(root: store.root.appendingPathComponent(
+                "arm-\(UUID().uuidString.lowercased())", isDirectory: true))
             let session = try RecordingSession(
-                store: store, device: device,
+                store: armStore, device: device,
                 sessionId: sessionId,
                 control: hosted.map(RecordingSession.Control.hosted) ?? .hostless,
                 // ⛔ **The mode, not `activeMode?.id`** (#102). `id` names a
@@ -657,14 +662,16 @@ public final class AppModel {
             recording = session
             recordingError = nil
             updateIdleTimer()
+            startRetentionLoop()
 
             // ⛔ The link's Streams are the recording session's own records, so
             // the wire and the bundle name one `profile_id` and one `opened_at`.
             if hosted != nil {
                 try await session.openHostedStreams()
                 // REQ-SESS-5/6 — payload follows the announce on its own channel,
-                // at whatever rate the socket allows.
-                session.startTransferring()
+                // at whatever rate the socket allows. ⚠ Held back while a stopped
+                // session is still delivering; `retentionTick` starts it after.
+                if draining.isEmpty { session.startTransferring() }
                 // ⛔ **Preview is NOT opened here any more.** It belongs to the
                 // link, not to a recording session — `LivePreview`, opened when
                 // the host asks for it at connect. Opening it from arm made a
@@ -718,12 +725,10 @@ public final class AppModel {
             // ⛔ Commands come back this way. State is still polled — see
             // `startHostLinkPolling` — and the two are deliberately separate.
             session.delegate = self
-            // ⛔ `MSG` 9.1 — what this device already holds, offered to the host
-            // it just reached. ⚠ The read closure is here because `CaptureCore`
-            // opens no file (ground rule 8); the store is the app's.
-            await session.attachOfferStore(store) { bundle in
-                try Data(contentsOf: bundle.bundleFile)
-            }
+            // ⛔ #122 — a new link starts from an empty store. Anything a
+            // previous link left is deleted, not offered: the offer path is
+            // mothballed.
+            sweepLeftovers()
             hostLink = session.hostLink
             await session.open()
             hostLink = session.hostLink
@@ -783,6 +788,15 @@ public final class AppModel {
         // ⛔ 5.11j — preview is live-only, so its Stream dies with the link that
         // carried it. Nothing to resume, nothing to keep.
         stopPreview()
+        // ⛔ #122 — the connection dropping ends the session, and what it had
+        // not delivered goes with it. A hosted recording cannot outlive its link
+        // anyway: its Mint engine and queue live on this link's peer, and a new
+        // link cannot resume them. It also stops a reconnecting host's `arm`
+        // being ignored because the state still read `.armed`.
+        if recording != nil || captureStatus.state == .armed || isSettling {
+            disarm(stayWarm: false)
+        }
+        discardAllDraining()
         await link.close(reason)
         self.link = nil
         updateIdleTimer()
@@ -1256,7 +1270,10 @@ public final class AppModel {
     /// this stays because it is how a test, or the retention sweep, sees what
     /// the container actually holds.
     public func bundlesOnDevice() -> [RecordedBundle] {
-        guard let bundles = try? store.bundles() else { return [] }
+        // ⚠ One folder per arm since #122, each a store of its own — plus
+        // whatever an older build left directly under the root.
+        let armStores = Self.children(of: store.root).map { SessionStore(root: $0) }
+        let bundles = ([store] + armStores).flatMap { (try? $0.bundles()) ?? [] }
         return bundles.map { bundle in
             let values = try? bundle.directory.resourceValues(
                 forKeys: [.contentModificationDateKey])
@@ -1264,6 +1281,121 @@ public final class AppModel {
                 sessionId: bundle.sessionId,
                 fileDate: values?.contentModificationDate ?? .distantPast,
                 byteCount: Self.directorySize(bundle.directory))
+        }
+    }
+
+    private nonisolated static func children(of directory: URL) -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)) ?? [])
+            .filter(\.hasDirectoryPath)
+    }
+
+    // MARK: Nothing kept past delivery (#122)
+    //
+    // Mark, 24 Sep 2026: "delete after delivery, delete any left behind when
+    // capture stops or the connection drops. on connect clear out anything left
+    // behind. we should not be keeping anything cached on device any longer than
+    // the session and shot."
+    //
+    // ⛔ **Deleting after delivery is conformant; the other two are not.** CORE
+    // 5.14g / 5.14g1 / I38 forbid evicting payload the receiver has not
+    // confirmed "regardless of retention policy". Link end and the connect sweep
+    // do exactly that, deliberately, and the deviation is recorded in
+    // `docs/conformance/ppcp-conformance.md` §1.
+
+    /// Sessions the host has stopped whose payload is still going across.
+    private var draining: [RecordingSession] = []
+    private var retentionTask: Task<Void, Never>?
+
+    /// The per-arm folder a session writes into. ⚠ One per arm, because a hosted
+    /// session's bundle folder is named from the HOST's session id — so a second
+    /// arm in one host session reused the first's folder and truncated its
+    /// `.ppcpbndl` under a drain that was still reading its clips.
+    private nonisolated static func armFolder(of session: RecordingSession) -> URL {
+        session.bundle.directory.deletingLastPathComponent()
+    }
+
+    /// Ends a session and deletes everything it wrote.
+    private func discard(_ session: RecordingSession) {
+        session.discard()
+        let folder = Self.armFolder(of: session)
+        // ⛔ Never the store root: a session made before per-arm folders lived
+        // directly under it, and deleting its parent would take every other
+        // session with it.
+        guard folder.standardizedFileURL != store.root.standardizedFileURL else {
+            try? FileManager.default.removeItem(at: session.bundle.directory)
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: folder)
+            PpcpLog.transferEvent("session discarded", detail: session.sessionId)
+        } catch {
+            PpcpLog.transferEvent("session folder NOT deleted",
+                                  detail: "\(session.sessionId) — \(String(describing: error))")
+        }
+    }
+
+    /// Link end: whatever has not been delivered goes (the deviation above).
+    private func discardAllDraining() {
+        let sessions = draining
+        draining.removeAll()
+        sessions.forEach(discard)
+    }
+
+    /// Deletes every folder under the store that no live or draining session
+    /// holds. Run on connect and at launch.
+    public func sweepLeftovers() {
+        var held = draining.map(Self.armFolder(of:))
+        if let recording { held.append(Self.armFolder(of: recording)) }
+        let heldPaths = Set(held.map(\.standardizedFileURL.path))
+        var removed = 0
+        for child in Self.children(of: store.root)
+        where heldPaths.contains(child.standardizedFileURL.path) == false {
+            if (try? FileManager.default.removeItem(at: child)) != nil { removed += 1 }
+        }
+        if removed > 0 {
+            PpcpLog.transferEvent("leftovers swept", detail: "\(removed) folder(s)")
+        }
+    }
+
+    /// 1 Hz: delete what has been delivered, retire drained sessions, and let a
+    /// held-back upload start once the one before it has finished.
+    ///
+    /// ⚠ **A new arm's upload waits for the previous session's.** PPS's import
+    /// sink tracks one open payload at a time, so two queues' chunks interleaved
+    /// on one bulk channel is a transfer nobody has tested.
+    private func startRetentionLoop() {
+        guard retentionTask == nil else { return }
+        retentionTask = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                guard let self else { return }
+                await self.retentionTick()
+                if self.recording == nil && self.draining.isEmpty {
+                    self.retentionTask = nil
+                    return
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    func retentionTick() async {
+        if let recording { await recording.releaseDeliveredClips() }
+        var stillSending = false
+        for session in draining {
+            await session.releaseDeliveredClips()
+            // ⚠ It may have been discarded by a link end while this awaited.
+            guard draining.contains(where: { $0 === session }) else { continue }
+            if await session.isDrained() {
+                draining.removeAll { $0 === session }
+                discard(session)
+            } else if await session.hasPendingTransfers() {
+                stillSending = true
+            }
+        }
+        if stillSending == false, let recording, recording.control.hosted != nil,
+           recording.isTransferring == false {
+            recording.startTransferring()
         }
     }
 
@@ -1716,20 +1848,22 @@ public final class AppModel {
     public private(set) var candidateCount = 0
     public private(set) var shotCount = 0
 
-    private func stopRecording() {
+    /// ⛔ **No bundle is finished any more (#122).** It used to `close()` the
+    /// session, which writes the `ENC` §7 tail by reading every clip back into
+    /// the `.ppcpbndl` — a copy of the whole session kept on the phone for a
+    /// library and an offer service that are both mothballed.
+    private func stopRecording(keepDelivering: Bool = false) {
         guard let session = recording else { return }
         recording = nil
         updateIdleTimer()
         candidateCount = 0
         shotCount = 0
-        do {
-            // ⛔ `partial`, asserted (I10). This session ended because a user
-            // disarmed it, and nothing here knows whether every swing was caught.
-            // `complete` is a claim, and a claim nobody can back is the failure
-            // I10 exists to prevent.
-            try session.close(completeness: .partial, closedAtNs: nil)
-        } catch {
-            recordingError = Self.userFacing(error)
+        if keepDelivering, session.control.hosted != nil {
+            session.endCapture()
+            draining.append(session)
+            startRetentionLoop()
+        } else {
+            discard(session)
         }
     }
 
@@ -1822,7 +1956,7 @@ extension AppModel: HostLinkSessionDelegate {
         // The host's Stop, not the golfer's End session: the camera stays warm
         // for the preview the host is still watching and the Capture that is
         // coming.  See `disarm(stayWarm:)`.
-        disarm(stayWarm: true)
+        disarm(stayWarm: true, keepDelivering: true)
     }
 
     public func hostLink(_ link: HostLinkSession, didRequestStream streamId: String,

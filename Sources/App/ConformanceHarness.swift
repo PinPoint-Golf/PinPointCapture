@@ -118,14 +118,6 @@ public actor ConformanceHarness {
         }
         public var shotsReceived: [ShotArrival] = []
 
-        // MARK: The stored Sessions this device offered (MSG §9.1)
-
-        public var offersSent: [String] = []
-        /// `sessionId` → the host's verdict, as `SessionOfferService` recorded it.
-        public var offerVerdicts: [String: String] = [:]
-        /// Whether every accepted bundle finished replaying onto the live link.
-        public var replayCompleted = false
-
         // MARK: I19 — what this device declared, read back off its own declaration
 
         public var declaredProfiles: [String] = []
@@ -153,11 +145,6 @@ public actor ConformanceHarness {
 
     private let device: any CaptureDevice
     private let distance: MicToBallDistance
-    /// IOP-1 — the stored Sessions this device offers once a host has declared.
-    /// ⛔ `nil` leaves the run byte-identical to D9's, which is why it is opt-in:
-    /// the D9 claim was measured without an offer on the wire and a harness that
-    /// started offering unconditionally would invalidate it silently.
-    private let offering: SessionStore?
     /// Wave 2 — the PSK a scanned pairing code would have produced.
     ///
     /// ⛔ **Non-`nil` switches the transport to the SHIPPING one.** `PpcpConnector`
@@ -170,14 +157,11 @@ public actor ConformanceHarness {
     private var report = Report()
     /// `Session.timebase_ref`, once a Session exists.
     private var referenceTimebaseId = PpcpTimebases.captureId
-    private var offers: SessionOfferService?
 
     public init(device: any CaptureDevice, distance: MicToBallDistance,
-                offering: SessionStore? = nil,
                 credentials: (any PpcpCredentials)? = nil) {
         self.device = device
         self.distance = distance
-        self.offering = offering
         self.credentials = credentials
     }
 
@@ -332,21 +316,6 @@ public actor ConformanceHarness {
                 case .declared(let counterpart):
                     report.counterpartPeerId = counterpart
 
-                case .sessionAccepted(let accept):
-                    guard let offers, let host = report.counterpartPeerId else { break }
-                    report.offerVerdicts[accept.sessionId] =
-                        String(describing: accept.verdict)
-                    try await pump.perform { _ in
-                        try offers.received(accept, fromHost: host)
-                    }
-                    // `ENC` 7a — the stored bundle's own frames, renumbered into
-                    // the live sequence and put back on the link. Pumped here and
-                    // again on every tick below, because `feed` stops when the
-                    // outbound queue is full and the drain is the pump's.
-                    report.replayCompleted = try await pump.perform { _ in
-                        try offers.pumpReplay(hostPeerId: host)
-                    }
-
                 case .shotReceived(let id, let t0Ns, let t0TimebaseId, _, let authority):
                     // ⛔ **The conversion, not a substitution.** The instant
                     // arrives on the Session's reference clock; expressing it on
@@ -439,23 +408,6 @@ public actor ConformanceHarness {
             // entry in `docs/conformance/ppcp-conformance.md`. It is here because 6.1f asks
             // for it whether or not it changes that row.
             _ = try? await pump.perform { try $0.publishRelations() }
-
-            // `MSG` 9.1 — offered once a host has declared **and** a Session
-            // exists. ⚠ Both, and in that order: the peer id is what the
-            // per-(host, session) disposition is keyed on, and offering before a
-            // Session is offering to a peer that has not said what it is yet.
-            if let host = report.counterpartPeerId, report.sessionId != nil {
-                try await offerStoredSessions(to: host, pump: pump)
-            }
-
-            // The replay makes progress only as the outbound queue drains, so it
-            // is pumped on the loop rather than once at accept time.
-            if let offers, let host = report.counterpartPeerId,
-               report.replayCompleted == false, report.offerVerdicts.isEmpty == false {
-                report.replayCompleted = (try? await pump.perform { _ in
-                    try offers.pumpReplay(hostPeerId: host)
-                }) ?? false
-            }
         }
 
         // Drain whatever the transfer queue still holds, so a `payload_end`
@@ -467,26 +419,6 @@ public actor ConformanceHarness {
         report.droppedEvents = (try? await pump.perform { $0.droppedEventCount }) ?? 0
         await pump.stop(.normal)
         return report
-    }
-
-    /// `MSG` 9.1 — offer every stored Session this host has not dispositioned.
-    ///
-    /// ⛔ Nothing happens where `offering` is `nil`, which is D9's shape and is
-    /// why that claim survives this file gaining an offer path.
-    private func offerStoredSessions(to hostPeerId: String,
-                                     pump: PeerLinkPump) async throws {
-        guard let store = offering, offers == nil else { return }
-        let service = try await pump.perform { peer in
-            SessionOfferService(peer: peer, store: store) { bundle in
-                try Data(contentsOf: bundle.bundleFile)
-            }
-        }
-        offers = service
-        let offered = try await pump.perform { _ in
-            try service.offerAll(toHost: hostPeerId)
-        }
-        report.offersSent = offered.map(\.sessionId)
-        report.transcript.append("offered \(offered.count) stored session(s)")
     }
 
     /// This hardware's own declaration, and whether it enumerated a camera.

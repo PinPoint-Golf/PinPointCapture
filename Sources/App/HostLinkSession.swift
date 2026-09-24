@@ -249,15 +249,6 @@ public final class HostLinkSession {
     /// the session calls back into the model.
     public weak var delegate: (any HostLinkSessionDelegate)?
 
-    /// `MSG` §9.1 — stored Sessions offered to this host, and replayed onto the
-    /// link when it accepts.
-    ///
-    /// ⚠ Held here rather than in `AppModel` because it is built on the **link**
-    /// peer and every use of it goes through `perform`. ⛔ `nil` until a store is
-    /// attached: `CaptureCore` opens no file (ground rule 8), so the bytes come
-    /// from a closure the app layer supplies.
-    private var offers: SessionOfferService?
-
     /// The bulk queue of the hosted Session in force, if any.
     ///
     /// ⛔ **Held because `session_resume` needs it** — 4.3's message carries the
@@ -432,9 +423,7 @@ public final class HostLinkSession {
             while Task.isCancelled == false {
                 guard let self else { return }
                 let now = MachClock.hostTimeNs
-                if let (state, clock) = try? await self.pump.perform({ [offers = self.offers,
-                                                                        host = self.counterpartPeerId,
-                                                                        queue = self.transferQueue,
+                if let (state, clock) = try? await self.pump.perform({ [queue = self.transferQueue,
                                                                         session = self.hostSession?.sessionId
                                                                             ?? self.sessionId] peer
                     -> (HostLinkState, ClockAgreement?) in
@@ -451,11 +440,6 @@ public final class HostLinkSession {
                                                     peerId: PeerIdentity.current,
                                                     queue: queue, nowNs: now)
                     }
-                    // ⚠ **Drained between calls, which is what makes progress.**
-                    // `pumpReplay` stops when the peer's outbound queue is full
-                    // and `perform` flushes on the way out, so the next tick
-                    // resumes from where this one stopped.
-                    if let offers, let host { try? offers.pumpReplay(hostPeerId: host) }
                     return (state, self.driver.clockAgreement)
                 }) {
                     self.linkState = state
@@ -532,11 +516,6 @@ public final class HostLinkSession {
                 try? PairingSecretStore.rename(sessionId: sessionId, to: name)
                 hostDisplayName = name
             }
-            // ⚠ **Offered on `declare`, which is the first moment the counterpart
-            // has an identity to owe them to** (7.6b). 9.1's dispositions are
-            // held per (host, session), so a second connection to the same host
-            // does not re-offer what it already took.
-            await offerStoredSessions(toHost: peerId)
 
         case .protocolError(let code):
             // Surfaced. A counterpart refusing this device is the thing a user
@@ -696,22 +675,7 @@ public final class HostLinkSession {
             // model re-reads the library's transfer table rather than inferring.
             delegate?.hostLinkTransfersChanged(self)
 
-        case .sessionAccepted(let accept):
-            // ⛔ Only `accept` starts a replay; the other two verdicts are
-            // recorded and nothing moves.
-            // ⛔ Keyed on the HOST's peer id, not the Session's. 9.1's
-            // dispositions are per (host, session) — I34 scopes Capture identity
-            // by the minting peer, and who holds it is a fact about the host.
-            guard let hostPeerId = counterpartPeerId else { break }
-            try? await pump.perform { [offers] _ in
-                try offers?.received(accept, fromHost: hostPeerId)
-            }
-
         case .linkLost:
-            // ⛔ A replay does not survive the link it was accepted on:
-            // `BundleReplay` holds the `have_digests` from a `session_accept`
-            // that belonged to it. Dropped here, re-offered on the next link.
-            offers?.linkLost()
             delegate?.hostLinkDidLoseLink(self)
 
         case .linkRestored:
@@ -814,27 +778,6 @@ public final class HostLinkSession {
             driver.recordResidual(nanoseconds: residualNs)
             return Double(residualNs) / 1_000_000
         } ?? nil
-    }
-
-    // MARK: Offering stored Sessions (MSG §9.1)
-
-    /// The store this link offers from, and how its bytes are read.
-    ///
-    /// ⛔ The read closure comes from the app layer because `CaptureCore` opens
-    /// no file, and it is a **provider** rather than `Data` because a session is
-    /// about a gigabyte.
-    public func attachOfferStore(_ store: SessionStore,
-                                 read: @escaping @Sendable (SessionBundle) throws -> Data) async {
-        offers = try? await pump.perform { peer in
-            SessionOfferService(peer: peer, store: store, read: read)
-        }
-    }
-
-    private func offerStoredSessions(toHost hostPeerId: String) async {
-        guard let offers else { return }
-        try? await pump.perform { _ in
-            try offers.offerAll(toHost: hostPeerId)
-        }
     }
 
     // MARK: The hosted Session (E3.3/E3.4)

@@ -74,14 +74,15 @@ struct InteropTests {
 
     /// **IOP-1 (wave 2)** — the reference pairing `CONF` 5a names, over the
     /// transport both products ship. The device dials, joins, opens its Streams,
-    /// answers `arm`, nominates from injected audio, and offers a stored Session
-    /// which the host imports (**IOP-10**, over the wire rather than through a
-    /// file).
-    @Test("IOP-1 / IOP-10 — the real pair over TLS, and a stored Session offered",
+    /// answers `arm` and nominates from injected audio.
+    ///
+    /// ⚠ The stored-Session offer (**IOP-10** over the wire) went with
+    /// `SessionOfferService` to `Mothballed/` (#122): PPC keeps nothing on the
+    /// phone past its delivery, so there is nothing to offer.
+    @Test("IOP-1 — the real pair over TLS",
           .timeLimit(.minutes(4)))
     func aRealPairOverTls() async throws {
-        try await runRow(hostVariable: "HOST", summary: "interop-summary.json",
-                         session: "ses:interop:wave2") { report, transcript in
+        try await runRow(hostVariable: "HOST", summary: "interop-summary.json") { report, transcript in
             // `MSG` 4.1 — the host opened a Session and this peer joined it.
             #expect(report.sessionId != nil, "\(transcript)")
             // §5.11 — a Stream per declared Source. ⛔ No camera on a simulator.
@@ -92,12 +93,6 @@ struct InteropTests {
                     "the host armed and this device did not answer\n\(transcript)")
             // 7.1d / 5.12c — every onset is emitted, promoted or not.
             #expect(report.candidatesNominated == 2, "\(transcript)")
-            // `MSG` 9.1 — the stored Session was offered and answered.
-            #expect(report.offersSent.count == 1, "offered \(report.offersSent)")
-            #expect(report.offerVerdicts.isEmpty == false,
-                    "the host answered no offer\n\(transcript)")
-            #expect(report.replayCompleted,
-                    "the accepted Session did not finish replaying\n\(transcript)")
         }
     }
 
@@ -113,8 +108,7 @@ struct InteropTests {
           .timeLimit(.minutes(4)))
     func bothPeersNominate() async throws {
         try await runRow(hostVariable: "HOST_ACOUSTIC",
-                         summary: "interop-acoustic-summary.json",
-                         session: "ses:interop:wave2-acoustic") { report, transcript in
+                         summary: "interop-acoustic-summary.json") { report, transcript in
             #expect(report.sessionId != nil, "\(transcript)")
             #expect(report.candidatesNominated == 2, "\(transcript)")
             // ⛔ The row. The host's own nominations reached this device.
@@ -127,13 +121,13 @@ struct InteropTests {
         }
     }
 
-    /// One row: dial the given listener over the shipping transport, record a
-    /// stored Session first, write the summary whatever happens, then assert.
+    /// One row: dial the given listener over the shipping transport, write the
+    /// summary whatever happens, then assert.
     ///
     /// ⚠ **The summary is written before the assertions**, so a failed row still
     /// leaves evidence. A wave-2 row whose only artefact is a red test is not
     /// evidence about interoperability.
-    private func runRow(hostVariable: String, summary: String, session: String,
+    private func runRow(hostVariable: String, summary: String,
                         assert body: (ConformanceHarness.Report, String) -> Void)
         async throws {
         guard let endpoint = Self.endpoint(hostVariable),
@@ -152,22 +146,10 @@ struct InteropTests {
         let identity = Self.hex(identityText) ?? Data(identityText.utf8)
         let credentials = try FixedPskCredentials(tlsKey: tlsKey, identity: identity)
 
-        // ⛔ **Hostless first, then hosted.** A device that only ever ran with a
-        // host would never produce the stored Session the second half offers, and
-        // the offer is the half `MSG` §9.1 exists for.
-        let root = URL.documentsDirectory
-            .appendingPathComponent("interop-bundles-\(hostVariable)", isDirectory: true)
-        try? FileManager.default.removeItem(at: root)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let store = SessionStore(root: root)
         let device = CaptureDeviceFactory.create()
         let distance = MicToBallDistance()
-        let stored = try InteropBundleFixture.record(
-            shots: 1, into: store, device: device, distance: distance,
-            sessionId: session)
-
         let harness = ConformanceHarness(device: device, distance: distance,
-                                         offering: store, credentials: credentials)
+                                         credentials: credentials)
         var failure: String?
         var report = ConformanceHarness.Report()
         do {
@@ -182,7 +164,6 @@ struct InteropTests {
         }
 
         try Self.write(summary: report, to: summary,
-                       storedSessionId: stored.bundle.sessionId,
                        endpoint: endpoint, failure: failure)
 
         #expect(failure == nil, "the dial or the run failed: \(failure ?? "")")
@@ -201,7 +182,6 @@ struct InteropTests {
     /// and no peer address beyond what the operator typed.
     static func write(summary report: ConformanceHarness.Report,
                       to name: String,
-                      storedSessionId: String,
                       endpoint: PeerEndpoint,
                       failure: String?) throws {
         var json: [String: Any] = [
@@ -241,10 +221,6 @@ struct InteropTests {
             "sync_events": report.syncEvents,
             "relation_updates": report.relationUpdates,
             "heartbeats": report.heartbeats,
-            "offers_tx": report.offersSent,
-            "offers_accepted": report.offerVerdicts,
-            "replay_completed": report.replayCompleted,
-            "stored_session_offered": storedSessionId,
             "errors": report.errorCodes,
             "dropped_events": report.droppedEvents
         ]

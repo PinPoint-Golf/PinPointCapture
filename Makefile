@@ -584,26 +584,22 @@ conform-tool: gen
 	exit $$rc
 
 # ─────────────────────────────────────────────────────────────────────────────
-# `CONF` §5 wave 1 — the two rows where this device is a real party, in ONE
+# `CONF` §5 wave 1 — the row where this device is a real party, in one
 # simulator launch.
 #
 #     make conform-iop
 #
-# ⛔ **Two counterparts, one launch, and that is not thrift.** Booting,
-# installing and launching a simulator costs tens of seconds; a row costs twenty.
-# So `ppcp-sim` is started twice — IOP-2's foreign, three-clock host on one port
-# and IOP-1's reference host on another — and the suite runs once, dialling each
-# in turn. Every port is bound by the tool with `--listen 0`, so nothing collides
-# with another agent's run.
+# ⚠ **One counterpart since #122.** IOP-1's row was the `session_offer` of stored
+# Sessions and their replay, and that path is in `Mothballed/` with
+# `SessionOfferService`: PPC keeps nothing on the phone past its delivery, so
+# there is nothing to offer. The port is bound by the tool with `--listen 0`, so
+# nothing collides with another agent's run.
 #
 #   IOP-2  three-timebase-host.json + reference-host  — two machine-vision
 #          cameras, each on its own clock, both `convention: start` /
 #          `geometry: global`. Proves I19 (this device declares what it is) and
 #          I22 (an issued `t0` on the host's clock is CONVERTED here, not
 #          adopted).
-#   IOP-1  reference-host.json + reference-host — the full session, plus a
-#          `session_offer` of two stored Sessions and their replay (`MSG` §9.1,
-#          `ENC` 7a). `offers_rx=2` is the far end's half of the assertion.
 #
 # ⛔ **`--run-ms` outlives the test, deliberately.** A counterpart that exits
 # first closes the link mid-row and the failure reads as a refusal.
@@ -632,29 +628,23 @@ conform-iop: gen
 		| $(XCB)
 	@set -e; \
 	p2=$$(mktemp -t ppcp-iop2-port); l2=$$(mktemp -t ppcp-iop2-log); \
-	p1=$$(mktemp -t ppcp-iop1-port); l1=$$(mktemp -t ppcp-iop1-log); \
 	"$(PPCP_SIM)" --role host --listen 0 --port-file "$$p2" --log-prefix iop2 \
 		--declaration $(LIBPPCP)/tools/scenarios/three-timebase-host.json \
 		--scenario reference-host --expect violations=0 \
 		--run-ms $(IOP_RUN_MS) >"$$l2" 2>&1 & \
 	sim2=$$!; \
-	"$(PPCP_SIM)" --role host --listen 0 --port-file "$$p1" --log-prefix iop1 \
-		--declaration $(LIBPPCP)/tools/scenarios/reference-host.json \
-		--scenario reference-host --expect violations=0 --expect offers_rx=2 \
-		--run-ms $(IOP_RUN_MS) >"$$l1" 2>&1 & \
-	sim1=$$!; \
-	trap 'kill $$sim1 $$sim2 2>/dev/null || true' EXIT; \
+	trap 'kill $$sim2 2>/dev/null || true' EXIT; \
 	for i in 1 2 3 4 5 6 7 8 9 10; do \
-		[ -s "$$p2" ] && [ -s "$$p1" ] && break; sleep 0.3; \
+		[ -s "$$p2" ] && break; sleep 0.3; \
 	done; \
-	port2=$$(cat "$$p2" 2>/dev/null); port1=$$(cat "$$p1" 2>/dev/null); \
-	if [ -z "$$port2" ] || [ -z "$$port1" ]; then \
-		echo "make conform-iop: a ppcp-sim never reported a port"; \
-		cat "$$l2" "$$l1"; exit 1; fi; \
-	echo "IOP-2 (three-timebase-host) on $$port2, IOP-1 (reference-host) on $$port1"; \
+	port2=$$(cat "$$p2" 2>/dev/null); \
+	if [ -z "$$port2" ]; then \
+		echo "make conform-iop: ppcp-sim never reported a port"; \
+		cat "$$l2"; exit 1; fi; \
+	echo "IOP-2 (three-timebase-host) on $$port2"; \
 	rc=0; \
 	set -o pipefail; \
-	TEST_RUNNER_PPCP_IOP2_PORT=$$port2 TEST_RUNNER_PPCP_IOP1_PORT=$$port1 \
+	TEST_RUNNER_PPCP_IOP2_PORT=$$port2 \
 	TEST_RUNNER_PPCP_CONFORM_ROW=iop xcodebuild test-without-building $(NO_DIAG) \
 		-project $(PROJECT) \
 		-scheme $(SCHEME) \
@@ -667,11 +657,10 @@ conform-iop: gen
 		>$(DERIVED)/.conform-iop.log 2>&1 </dev/null || rc=$$?; \
 	grep -E '^(◇|✔|✘|↳)|error:|Test run|\*\* TEST' $(DERIVED)/.conform-iop.log || true; \
 	echo "--- ppcp-sim, IOP-2 (three-timebase-host) ---"; tail -3 "$$l2"; \
-	echo "--- ppcp-sim, IOP-1 (reference-host) ---";      tail -3 "$$l1"; \
-	kill $$sim1 $$sim2 2>/dev/null || true; \
+	kill $$sim2 2>/dev/null || true; \
 	if [ $$rc != 0 ]; then \
-		echo "make conform-iop: A ROW FAILED — see the transcript above"; exit $$rc; fi; \
-	echo "make conform-iop: both rows passed on the device side"; \
+		echo "make conform-iop: THE ROW FAILED — see the transcript above"; exit $$rc; fi; \
+	echo "make conform-iop: IOP-2 passed on the device side"; \
 	$(MAKE) --no-print-directory pull-bundles
 
 # IOP-3 / IOP-10, the receiving half — read a bundle another implementation
@@ -739,14 +728,12 @@ pull-bundles:
 #
 # ⚠ **PinPointStudio provides the listener**, and it must be running before this
 # starts: the device dials and does not retry for long. What the run does, in
-# order — a hostless Session recorded and stored (one minted Shot, its Captures
-# `absent`/`outside_buffer` because a simulator has no camera), then the dial,
-# the `MSG` §3 handshake, the Session, a Stream per declared Source, the `arm`
-# answered with a Readiness measurement, one injected swing through the real
-# detector to a Candidate, and the stored Session offered and replayed.
+# order — the dial, the `MSG` §3 handshake, the Session, a Stream per declared
+# Source, the `arm` answered with a Readiness measurement, and one injected swing
+# through the real detector to a Candidate. (The stored-Session offer that used
+# to close the run is mothballed with `SessionOfferService`, #122.)
 #
-# The summary is JSON: declares, candidates tx, shots rx, offers tx/accepted,
-# errors. It is written inside the app container and copied to
+# The summary is JSON: declares, candidates tx, shots rx, errors. It is written inside the app container and copied to
 # `$(CONFORM_OUT)/interop-summary.json`.
 interop: gen
 	@if [ -z "$(HOST)" ] || [ -z "$(PSK)" ]; then \

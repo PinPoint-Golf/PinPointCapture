@@ -26,8 +26,8 @@
 | **Detect** | yes | Acoustic onset nomination from the device microphone. |
 | **Mint** | yes | Hostless operation mints its own Shots, `authority: device`. |
 | **Live** | yes | Sessions with a host, sync, heartbeat, arm. |
-| **Offline** | yes | The session store *is* the bundle (plan A9). |
-| **Markup** | yes | Device-authored annotations, host annotations stored opaque. |
+| **Offline** | yes — ⚠ **pending decision (#122)** | The session store *is* the bundle (plan A9). ⚠ Since 24 Sep 2026 the shipping app does not use it: PPC is online only, the stored-Session offer (`SessionOfferService`) is mothballed, and the bundle is deleted after delivery. The hostless code paths are still built and still exercised by the DEBUG harness, which is what `make conform` measures. See *The v1 app, and what it no longer does* below. |
+| **Markup** | yes — ⚠ **pending decision (#122)** | Device-authored annotations, host annotations stored opaque. ⚠ `AnnotationStore` is still in the build and tested (CT-I37), but the replay screen that would author annotations is mothballed (#121). |
 | **Actuate** | yes | CR-02 / erratum E58. The torch declared as an `Actuator` (`CORE` 5.19, `control: on_off`), `actuator_command` answered, `actuator_state` originated. ⚠ Claimed because the exchange is **implemented**, not because this phone owns a light: 5.19c makes an empty `actuators` list a full participant, so a device with no torch claims the profile and declares no Actuator. |
 | **Arbitrate** | **no** | Host-only by `CORE` I20. The negative test applies: this application parses `capture_request` and **never originates it**, and never originates `session_link`. |
 
@@ -41,6 +41,28 @@ set this application does not claim is measuring somebody else.
 ```
 core,capture,detect,mint,live,offline,markup,actuate
 ```
+
+### The v1 app, and what it no longer does (#121, #122)
+
+⛔ **Read this before trusting the Offline or Markup rows as claims about the shipping app.**
+On 24 September 2026 PPC was narrowed to a tripod camera that PinPoint Studio drives over
+PPCP. The PPCP spec is unchanged, and PPC will probably support offline capture again. The
+first version simply does not implement it:
+
+- **No offline capture.** The standalone UI (onboarding, local Arm, replay, the session library,
+  reconcile) and `SessionOfferService` are in `Mothballed/`, out of the build. The hostless paths
+  in `RecordingSession` and the harness remain, and `make conform` still passes them. ⚠ That
+  measures the DEBUG harness's peer, not `AppModel`, so it cannot show what the shipping app does.
+- **Nothing kept past delivery.** A clip is deleted once `PayloadTransferQueue.evictable` (the
+  library's I38 predicate) releases it. That is conformant. After the host's Stop, the upload
+  continues and the session is deleted once it has drained.
+- ⛔ **A recorded deviation from CORE 5.14g / 5.14g1 / I38.** Undelivered payload is also deleted
+  **when the link ends** and **by the sweep on connect and at launch**. 5.14g1 forbids evicting
+  payload the receiver has not confirmed "regardless of retention policy". This is deliberate
+  (Mark, 24 Sep: *"we should not be keeping anything cached on device any longer than the session
+  and shot"*). Whether it stands, together with whether a capture device's Offline profile should
+  be a MAY rather than a MUST, is an open question for the protocol, not settled here.
+- **`CONFORM_PROFILES` is unchanged** (`…,offline,markup,…`) pending that discussion.
 
 ⚠ **`arbitrate` is deliberately absent.** This is a capture peer: I20 gives
 arbitration to a peer with `role: host` and to no other (8.3d), so the profile is
@@ -1118,15 +1140,15 @@ host arbitrated the two and **held the six out**. Before E28 the same run report
 `candidates_foreign 4, adopted 4, groups 2` — two Sessions arbitrated as one. Same
 pairing, same bundles, one erratum between them.
 
-    make conform-iop IOP_TESTS=      # both rows, and the whole app suite, in one launch
+    make conform-iop IOP_TESTS=      # IOP-2, and the whole app suite, in one launch
 
 | Row | Counterpart | Command | Outcome |
 |---|---|---|---|
 | **IOP-2** — foreign camera conventions, three clocks | `ppcp-sim` `three-timebase-host.json` + `reference-host` | `make conform-iop` | **pass** |
-| **IOP-1** — the reference host, end to end, plus a session offer and its replay | `ppcp-sim` `reference-host.json` + `reference-host` | `make conform-iop` | **pass** |
+| **IOP-1** — the reference host, end to end, plus a session offer and its replay | `ppcp-sim` `reference-host.json` + `reference-host` | ~~`make conform-iop`~~ | **mothballed (#122)** — the row was the offer, and `SessionOfferService` and its test are in `Mothballed/`. Last passed before 24 Sep 2026 |
 | **IOP-3 / IOP-10** — a bundle this device wrote, imported elsewhere | PinPointStudio | `make conform-iop` then `make pull-bundles` | **written** — `docs/conformance/bundles/*.ppcpbndl`; the import is PinPointStudio's row |
 | **IOP-3 / IOP-10** — a bundle another implementation wrote, read here | `PinPointStudio/docs/conformance/bundles/pinpointstudio-host-session.ppcpbndl` | `make read-bundle FILE=…` | **pass** |
-| **Wave 2 / IOP-1 + IOP-10** — the real pair over TLS, and a stored Session offered over the wire | PinPointStudio's real `Ppcp::Listener` | `make interop HOST=… HOST2=… PSK=… IDENTITY=…` | **pass** |
+| **Wave 2 / IOP-1 + IOP-10** — the real pair over TLS, and a stored Session offered over the wire | PinPointStudio's real `Ppcp::Listener` | `make interop HOST=… HOST2=… PSK=… IDENTITY=…` | **pass** — ⚠ since #122 the run no longer offers a stored Session; the IOP-10 half is mothballed |
 | **Wave 2 / IOP-6** — both peers nominate | the same listener with `--nominate-acoustic` | the same command | **pass** |
 
 ### IOP-2 — a host whose cameras are not this one's
@@ -1139,7 +1161,7 @@ Session's `timebase_ref` is `tb:host`, so every `Shot.t0` that arrives is an
 instant on a clock this device does not own.
 
 ```
-make conform-iop      # starts this counterpart and IOP-1's, runs both rows in one launch
+make conform-iop      # starts this counterpart and runs the row (IOP-1's is mothballed, #122)
 ```
 
 Far end: `frames rx/tx 315/186 · candidates rx 2 · shots tx 1 · issued 1 ·

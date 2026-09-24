@@ -33,10 +33,26 @@ On 24 September 2026 PPC was narrowed to one job. It is a camera on a tripod, co
 | `Packages/Core/Sources/CaptureCore/SessionMatch.swift` | `SessionMatchCandidate`, B5's model. | |
 | `Tests/AppLayerTests+Onboarding.swift` | `onboardingPersists`, lifted out of `AppLayerTests`. | Paste it back into that suite. |
 
+### Catch-up delivery (#122)
+
+The retention decision was: *"delete after delivery, delete any left behind when capture stops or the connection drops, on connect clear out anything left behind."* With nothing kept on the phone past its session, there is nothing to offer a host later.
+
+| File | What it was | To reinstate |
+|---|---|---|
+| `Packages/Core/Sources/CaptureCore/Live/SessionOfferService.swift` | `MSG` §9.1: stored Sessions offered to a host on `declare`, then replayed onto the link when it accepts. It was also what rescued the clip a host's Stop cut off mid-upload. | Re-add `HostLinkSession`'s `offers` property, `attachOfferStore`, `offerStoredSessions` (on `.declared`), the `.sessionAccepted` handling, `pumpReplay` in the sync tick, and `offers?.linkLost()`, all from the history of `Sources/App/HostLinkSession.swift`. Re-attach the store in `AppModel.connect`. Restore `ConformanceHarness`'s `offering:` parameter. ⛔ Also undo the retention in `AppModel` (`sweepLeftovers`, `discard`, the link-end discard): an offer service with nothing kept has nothing to offer. `SessionOffer.swift`'s message types never left the build. |
+| `Sources/App/InteropBundleFixture.swift` | Recorded hostless bundles for the offer tests. | Only needed with the offer service. |
+| `Packages/Core/Tests/CaptureCoreTests/LiveLinkTests+Offers.swift` | The replay tests (`offeredBundle`, `offerService`, read-once, link-lost re-offer). | Paste back into `LiveLinkTests`. `ByteSource` stayed there. |
+| `Tests/ConformanceHarnessTests+Offers.swift` | IOP-1: the offer of two stored Sessions against `ppcp-sim`. | Paste back and restore the IOP-1 half of `make conform-iop`: the second `ppcp-sim` with `--expect offers_rx=2`, and `TEST_RUNNER_PPCP_IOP1_PORT`. |
+| `Tests/AppAgainstStudioTests+Offers.swift` | `offersAreCommitted`, the only route to *In Studio* before live commits existed. | Paste back into `AppAgainstStudioTests`. |
+
+`InteropTests` lost its offer assertions and summary keys (`offers_tx`, `offers_accepted`, `replay_completed`, `stored_session_offered`) at the same time. They are in that file's history.
+
 ### What stayed in the build on purpose
 
 - **The PPCP preview stream to Studio** (`PreviewProducer`, `LivePreview`, `AppModel.openPreview`). Studio's preview tile needs it.
 - **`RecordingSession`'s hostless branch** (`Control.hostless`) and `HostlessSessionTests`. The code can still record without a host; only the app no longer offers it.
 - **`AnnotationStore` / Markup.** It has no UI, and it is the evidence behind the Markup profile claim, which is under discussion (see `docs/conformance/ppcp-conformance.md` §1).
+- **`RecordingSession.close()`** and the bundle writer. The app now ends a session with `endCapture()` / `discard()`, which never write the bundle tail. `close()` still works for anything that wants a finished bundle on disk.
+- **`ClipThumbnail.swift`.** Nothing writes thumbnails any more; tests still use it.
 - **`AppModel.framing`, `runSelfTest`, `remeasure`.** Tests use them, and they cost nothing when unused.
 - **`MicToBallDistanceView`, `RememberedStudiosView`, `PairingView`, `ScanPairingCodeView`, `JoinNetworkView`, `LocalNetworkBlockedView`.** All are reachable from the settings sheet or the pairing flow.
