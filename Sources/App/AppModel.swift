@@ -568,11 +568,11 @@ public final class AppModel {
     /// opposite of what happened, and 5.15a forbids the state name that would
     /// have said so plainly.
     ///
-    /// ⚠ So a locally-disarmed device cannot tell a host it has stopped. That is
-    /// a genuine expressiveness gap of the same shape as the `shot_disposition`
-    /// one: no way to state a terminal negative. `blocked_reason` does not fit —
-    /// nothing is blocked. Raised with PinPointStudio 27 Aug 2026; their arming
-    /// timeout is the honest interim on their side.
+    /// ⚠ So a locally-disarmed device cannot tell a host it has stopped. #105
+    /// once listed that as a gap beside `shot_disposition`. It no longer is one
+    /// (24 Sep 2026): the host owns arming (#121), and a device that stops on
+    /// its own is in an error state, which `interruption` and `device_status`
+    /// already report. `shot_disposition` itself landed as CR-03.
     ///
     /// ⭐ `stayWarm` (2 Sept 2026) — a host's `disarm`.  The session screen's
     /// Stop is a pause between buckets, and the host still holds this camera's
@@ -2141,7 +2141,9 @@ extension AppModel: HostLinkSessionDelegate {
             // progress bar — and a confirmed one is done.
             let stillOwing: Bool = switch state {
             case .onDevice, .sending, .delivered: true
-            case .inStudio, .failed: false
+            // `.declined` — the host said it will not keep it (`MSG` 8.5, #105),
+            // so nothing is owed and nothing is coming.
+            case .inStudio, .failed, .declined: false
             }
 
             if let shotId = shotIdByCapture[row.captureId],

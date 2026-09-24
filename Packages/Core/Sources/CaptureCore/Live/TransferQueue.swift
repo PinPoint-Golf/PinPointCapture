@@ -103,6 +103,9 @@ public final class PayloadTransferQueue: @unchecked Sendable {
         /// 8.3c — the receiver answered `already_present`. Nothing more is sent
         /// and the Capture becomes evictable (5.14g exit 3).
         var alreadyPresent = false
+        /// `MSG` 8.5 (CR-03, #105) — the host declined this Capture's Shot.
+        /// Nothing more is sent, and the Capture is evictable (5.14g exit 5).
+        var declined = false
         /// The payload, held only while this entry is actually in flight.
         ///
         /// ⛔ **Because `payload()` reads a file.** `advance` used to call it on
@@ -163,11 +166,29 @@ public final class PayloadTransferQueue: @unchecked Sendable {
                 index += 1
                 continue
             }
+            // ⛔ `MSG` 8.5e / 8.5k — read from the LIBRARY's table, which the
+            // host's `shot_disposition` updated, never tracked here. A declined
+            // Capture is not begun, and one already in flight is ended with
+            // `payload_abort` / `declined` so the far end drops its partial copy.
+            if peer.transfer(of: queue[index].job.captureId)?.declined == true {
+                try decline(&queue[index])
+                index += 1
+                continue
+            }
             spent += try advance(&queue[index], budget: budgetBytes - spent)
             index += 1
         }
-        queue.removeAll { $0.finished || $0.alreadyPresent }
+        queue.removeAll { $0.finished || $0.alreadyPresent || $0.declined }
         return spent
+    }
+
+    private func decline(_ entry: inout Entry) throws {
+        if entry.begun {
+            try peer.payloadAbort(captureId: entry.job.captureId,
+                                  reason: PPCP_ABORT_DECLINED, channel: channel)
+        }
+        entry.declined = true
+        entry.payload = nil
     }
 
     private func advance(_ entry: inout Entry, budget: Int) throws -> Int {
@@ -246,7 +267,8 @@ public final class PayloadTransferQueue: @unchecked Sendable {
     }
 
     public var pendingCaptureIds: [String] {
-        queue.filter { $0.finished == false && $0.alreadyPresent == false }
+        queue.filter { $0.finished == false && $0.alreadyPresent == false
+                       && $0.declined == false }
             .map(\.job.captureId)
     }
 
@@ -254,7 +276,11 @@ public final class PayloadTransferQueue: @unchecked Sendable {
     /// index the receiver last acknowledged so the far end knows where to pick up.
     public var pendingForResume: [PendingCapture] {
         queue.compactMap { entry in
-            guard entry.finished == false, entry.alreadyPresent == false else { return nil }
+            // 8.5k — a Capture the host declined is never offered back to it.
+            guard entry.finished == false, entry.alreadyPresent == false,
+                  entry.declined == false,
+                  peer.transfer(of: entry.job.captureId)?.declined != true
+            else { return nil }
             return PendingCapture(captureId: entry.job.captureId,
                                   digest: entry.job.digest,
                                   bytes: entry.job.bytes,

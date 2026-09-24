@@ -105,6 +105,12 @@ public enum PeerLinkEvent: Sendable, Hashable {
     case captureRequested(shotId: String, t0Ns: Int64, t0TimebaseId: String,
                           streamIds: [String],
                           preNs: Int64, postNs: Int64, replyTo: UInt64)
+    /// `MSG` 8.5 (CR-03, #105) — the host will not keep this Shot. The library
+    /// has already released its Captures (`CORE` 5.14g exit 5) by the time this
+    /// is harvested; the event is for stopping the send and saying why.
+    /// `declined` is false for a disposition this build does not recognise,
+    /// which releases nothing (8.5g).
+    case shotDisposition(shotId: String, declined: Bool, reason: String?)
     case candidateReceived(id: String)
     /// `MSG` §8.2 — a Shot the counterpart issued.
     ///
@@ -618,6 +624,14 @@ public actor PeerLinkPump {
         case PPCP_EVENT_RELATION_UPDATE: return .relationUpdate
         case PPCP_EVENT_PAYLOAD: return .payload
         case PPCP_EVENT_CAPTURE: return .capture
+        case PPCP_EVENT_SHOT_DISPOSITION:
+            guard let msg else { break }
+            return body(msg, ppcp_body_shot_disposition.self) {
+                .shotDisposition(shotId: ppcpString($0.pointee.shot_id),
+                                 declined: ppcp_shot_disposition_is_declined($0),
+                                 reason: $0.pointee.has_reason
+                                     ? ppcpString($0.pointee.reason) : nil)
+            }
         case PPCP_EVENT_ERROR:
             guard let msg else { return .protocolError(code: "") }
             // ⛔ `code` only. `MSG` 10 makes the code the machine-readable part and

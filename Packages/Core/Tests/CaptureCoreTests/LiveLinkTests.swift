@@ -127,7 +127,7 @@ struct LiveLinkTests {
         #expect(producer.accountedThroughNs == 512 * 100_000_000)
     }
 
-    // MARK: CT-I38 / 5.14g — the four exits, and no fifth
+    // MARK: CT-I38 / 5.14g — the five exits, and no sixth
 
     /// ⛔ **The predicate is `ppcp_transfer_is_evictable` and nothing else.** A
     /// `complete` + `pending` shot Capture is **not** evictable: no receiver has
@@ -168,6 +168,61 @@ struct LiveLinkTests {
             try check(ppcp_transfer_on_already_present(table, &id))
         }
         #expect(peer.isEvictable(captureId: "cap:1"))
+    }
+
+    /// 5.14g exit 5 (CR-03, #105) — the host said it will not keep the Shot.
+    /// ⚠ Driven through the library's table, as exit 3 is above: the message is
+    /// the library's to apply, and what this application owns is what follows.
+    @Test("A declined Shot releases its Capture, and one announced after it")
+    func declinedIsAnExit() throws {
+        let peer = try Self.peer()
+        try peer.openStream(Self.videoStream)
+        try peer.announce(Self.shotCapture("cap:before"))
+        #expect(peer.isEvictable(captureId: "cap:before") == false)
+
+        try Self.decline(peer, shotId: "sht:1")
+        #expect(peer.isEvictable(captureId: "cap:before"))
+        #expect(peer.transfer(of: "cap:before")?.state == .declined)
+        #expect(peer.transfer(of: "cap:before")?.declined == true)
+
+        // MSG 8.5d — the video two seconds after the audio: released from birth.
+        try peer.announce(Self.shotCapture("cap:after"))
+        #expect(peer.isEvictable(captureId: "cap:after"))
+    }
+
+    /// MSG 8.5e / 8.5k — a declined Capture is not begun, one already in flight
+    /// is ended with `payload_abort` / `declined`, and neither is offered back to
+    /// the host on resume.
+    @Test("The queue stops a declined transfer mid-flight and never resumes it")
+    func queueStopsADeclinedTransfer() throws {
+        let peer = try Self.peer()
+        try peer.openStream(Self.videoStream)
+        let clip = Data((0..<400_000).map { UInt8($0 % 251) })
+        try peer.announce(Self.shotCapture("cap:big"))
+        let queue = PayloadTransferQueue(peer: peer)
+        try queue.enqueue(TransferJob(captureId: "cap:big", bytes: UInt64(clip.count),
+                                      digest: SessionBundleWriter.digest(of: clip)) { clip })
+
+        _ = try queue.pump(budgetBytes: 32 << 10)          // begun, not finished
+        _ = try peer.drain(.bulk)
+        #expect(queue.pendingCaptureIds == ["cap:big"])
+
+        try Self.decline(peer, shotId: "sht:1")
+        #expect(queue.pendingForResume.isEmpty, "8.5k — never offered back")
+        let spent = try queue.pump()
+        #expect(spent == 0, "8.5e — nothing more is sent")
+        #expect(queue.pendingCaptureIds.isEmpty)
+        #expect(peer.pending(.bulk) > 0, "the payload_abort is on the wire")
+        #expect(queue.evictable(from: ["cap:big"]) == ["cap:big"])
+    }
+
+    static func decline(_ peer: DevicePeer, shotId: String) throws {
+        try peer.withHandleThrowing { handle in
+            let table = UnsafeMutablePointer(mutating: ppcp_peer_transfers(handle))
+            var id = ppcp_id()
+            try check(ppcp_id_set_z(&id, shotId))
+            try check(ppcp_transfer_on_declined(table, &id))
+        }
     }
 
     // MARK: 5.11j / MSG 8.1i — preview is never queued

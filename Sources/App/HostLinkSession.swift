@@ -675,6 +675,17 @@ public final class HostLinkSession {
             // model re-reads the library's transfer table rather than inferring.
             delegate?.hostLinkTransfersChanged(self)
 
+        case .shotDisposition(let shotId, let declined, let reason):
+            // ⭐ `MSG` 8.5 (CR-03, #105) — the host will not keep this shot. The
+            // library has already released its Captures (5.14g exit 5); the
+            // queue stops sending on its next pass, and the model re-reads the
+            // table so the retention tick deletes the clip. The reason is logged
+            // because it is the one thing that says why a strike vanished.
+            PpcpLog.transferEvent(
+                declined ? "DECLINED" : "DISPOSITION",
+                detail: "shot \(shotId) — \(reason ?? "no reason given")")
+            delegate?.hostLinkTransfersChanged(self)
+
         case .linkLost:
             delegate?.hostLinkDidLoseLink(self)
 

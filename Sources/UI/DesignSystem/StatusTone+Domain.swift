@@ -49,6 +49,8 @@ public extension StatusTone {
         case .sending, .delivered: .progress
         case .inStudio: .accent
         case .failed: .error
+        // The host chose not to keep it: settled, not an error on this device.
+        case .declined: .neutral
         }
     }
 

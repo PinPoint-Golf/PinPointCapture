@@ -480,6 +480,9 @@ public struct PpcpTransferRow: Sendable, Hashable {
     public let shedPermitted: Bool
     /// 5.11j — a preview Capture is live-only and is never queued.
     public let isPreview: Bool
+    /// 5.14g exit 5 (CR-03) — the host declined this Capture's Shot. Released,
+    /// and nothing more is sent (`MSG` 8.5e, 8.5k).
+    public let declined: Bool
 
     init(_ entry: ppcp_transfer_entry) {
         captureId = ppcpString(entry.capture_id)
@@ -489,18 +492,23 @@ public struct PpcpTransferRow: Sendable, Hashable {
         case PPCP_ABSENT: .absent
         default: .complete
         }
-        state = switch entry.transfer {
+        // ⚠ A decline outranks the transfer axis for display: the owner's record
+        // of what it sent stays honest in the library, and what a person needs
+        // to know is that nothing more is coming (#105).
+        let transferState: ShotSyncState = switch entry.transfer {
         case PPCP_TRANSFER_IN_FLIGHT: .sending(progress: 0)
         case PPCP_TRANSFER_PRESENT: .delivered
         case PPCP_TRANSFER_CONFIRMED: .inStudio
         case PPCP_TRANSFER_FAILED: .failed
         default: .onDevice
         }
+        state = entry.own && entry.declined ? .declined : transferState
         bytes = entry.has_bytes ? entry.bytes : nil
         ackedIndex = entry.has_acked_index ? entry.acked_index : nil
         alreadyPresent = entry.already_present
         shedPermitted = entry.shed_permitted
         isPreview = entry.preview
+        declined = entry.own && entry.declined
     }
 }
 
@@ -526,9 +534,9 @@ public extension DevicePeer {
     }
 
     /// ⛔ **I38 / 5.14g, and it is the library's predicate rather than this
-    /// application's.** Four exits and no fifth: `confirmed`, `absent`,
-    /// `already_present`, or a clause of the specification that permitted the
-    /// owner to shed it. A retention policy is **not** an exit (5.14g1), and a
+    /// application's.** Five exits and no sixth: `confirmed`, `absent`,
+    /// `already_present`, a clause of the specification that permitted the
+    /// owner to shed it, or the host declined its Shot (exit 5, CR-03). A retention policy is **not** an exit (5.14g1), and a
     /// peer under storage pressure refuses to arm rather than dropping swings.
     ///
     /// ⚠ `ppcp_capture_is_evictable` exists too and answers over the entity alone,

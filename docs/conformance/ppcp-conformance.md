@@ -63,6 +63,10 @@ first version simply does not implement it:
   and shot"*). Whether it stands, together with whether a capture device's Offline profile should
   be a MAY rather than a MUST, is an open question for the protocol, not settled here.
 - **`CONFORM_PROFILES` is unchanged** (`…,offline,markup,…`) pending that discussion.
+- ✅ **A Shot the host declines is not part of that deviation.** Since CR-03 (#105) the host says
+  so with `shot_disposition`, 5.14g **exit 5** releases the clip, and it is deleted within one
+  retention tick, mid-link and conformant. The deviation above now covers only payload the host
+  has neither confirmed nor declined.
 
 ⚠ **`arbitrate` is deliberately absent.** This is a capture peer: I20 gives
 arbitration to a peer with `role: host` and to no other (8.3d), so the profile is
@@ -235,7 +239,8 @@ Rows in the format of [`matrix.md`](https://github.com/PinPoint-Golf/libppcp) §
 | CT-I32 | paired | host silence does not promote a Candidate the peer did not believe | D5 | — | — | impl (single-policy half passes; the silent-host half is blocked, §5) |
 | CT-I33 | injected | the canonical instant is converted once, by the nominator | D5 | — | — | pass (own half) |
 | CT-I37 | static | no path from an Annotation to a Shot, a Candidate or a relation | D8 | — | — | pass (device) |
-| CT-I38 | paired | nothing unconfirmed is evicted, whatever the retention policy | D6 | — | — | pass (owner half) |
+| CT-I38 | paired | nothing unconfirmed is evicted, whatever the retention policy; exit 5, a declined Shot, releases (CR-03) | D6, D20 | — | — | pass (owner half) |
+| CT-I40 | paired | a host's decline is final and releases the device's Captures of that Shot, before or after their announce (CR-03) | D20 | — | — | pass (owner half) |
 | CT-S4 (2, 3, 5) | injected | the zero-host path: nominate, promote, mint, extract, bundle | D5, D6 | — | — | pass |
 | CT-S4 (6) | injected | a host that answers nothing, and the 8.2i deadline that fires | D5, D9 | — | — | **pass** |
 | CT-S4 (7) | injected | link loss, local mint, `session_resume`, sync burst, then payload | D6 | — | — | impl (the sequence is asserted; the live half is blocked, §5) |
@@ -459,6 +464,14 @@ asked this question and got the pending clip back would drop a swing the consume
 has not received. `StorageFloor` is the other side of 5.14g1 — it refuses to arm
 with `blocked_by: storage_full`, which is a **measurement** (5.15a) and not a state
 name, and it never sheds.
+
+**Exit 5 (CR-03, #105) — `make test-core`.** A host's `shot_disposition` / `declined`
+releases the Capture it names and one announced after it (`declinedIsAnExit`). The
+queue then sends no more of it, ends a transfer in flight with `payload_abort` /
+`declined`, and never lists it for `session_resume` (`queueStopsADeclinedTransfer`,
+`MSG` 8.5e, 8.5k). The event reaches the application with its reason, and the
+library has already released the Capture by then (`aShotDispositionBecomesAnEvent`).
+The hosted deletion that follows is exercised on hardware, against PinPointStudio.
 
 **5.11j / CT-I36a — `pass` — `make test-core`.**
 A preview Capture announced `transfer: pending` is refused by the **library** at
@@ -1038,6 +1051,21 @@ Two consequences, both measured on the host:
 ⛔ **It is reachable in ordinary use, and it fails a *running* session rather than a long one.** §5.11's table makes `metadata` always `continuous`, and I36 requires a `continuous` Stream to account for its whole open interval — so this application announces one stream-anchored Capture per `metadata` segment. At one segment a second the table filled after ~124 seconds, and every subsequent `pumpMetadata` failed: a session still recording video and still minting Shots, quietly stopping accounting for a Stream, which is the exact defect I36 exists to prevent.
 
 **Worked around.** `MotionMetadataSource.segmentSeconds` is 10 rather than 1 — 5.11e makes the segment duration "the producing peer's alone", so this is a policy choice and a legitimate one, and it takes a session from ~2 minutes to ~21. It does not remove the ceiling; a long range session will still meet it.
+
+### Raised from hardware, 27 August — CR-03, raised and closed
+
+**F-105 — a Shot the host declined queued for ever ([#105](https://github.com/PinPoint-Golf/PinPointCapture/issues/105)).**
+The specification is not at fault here, so this was raised as a change request rather than an
+erratum. A receiver had no way to say it would not keep a Shot, and 5.14g gave the owner no way
+out. On 24 September 2026 it became
+[`libppcp` CR-03](https://github.com/PinPoint-Golf/libppcp/blob/main/docs/changerequests/CR-03-shot-disposition.md),
+raised by PinPointCapture jointly with PinPointStudio.
+- **Result:** granted as `MSG` §8.5 `shot_disposition` and `CORE` 5.14g exit 5, with I40 making a
+  decline final.
+- **Review:** three rounds by PinPointStudio and `libppcp`, errata E70–E84, closed with no open
+  specification items.
+- **What it no longer covers:** the "device disarmed at the handset" case #105 once listed beside
+  it. The host owns arming (#121).
 
 ### Raised from MVP scoping — a change request, not a defect
 

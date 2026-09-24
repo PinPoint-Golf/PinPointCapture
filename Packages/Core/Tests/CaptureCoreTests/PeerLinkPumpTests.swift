@@ -223,6 +223,49 @@ struct PeerLinkPumpTests {
         await hostPump.stop()
     }
 
+    /// `PPCP-MSG` 8.5 (CR-03, #105) — the host's decline becomes an event, and
+    /// the Capture is released by the time the application hears about it.
+    @Test("MSG 8.5 — a shot_disposition is translated, and the Capture is released")
+    func aShotDispositionBecomesAnEvent() async throws {
+        let (deviceSide, hostSide) = PipeTransport.pair()
+        let device = try DevicePeer(peerId: "peer:device", role: .capture)
+        let host = try DevicePeer(peerId: "peer:host", role: .host, listener: true)
+        let devicePump = PeerLinkPump(peer: device, transport: deviceSide,
+                                      nowNs: { Self.clock() })
+        let hostPump = PeerLinkPump(peer: host, transport: hostSide,
+                                    nowNs: { Self.clock() })
+        await devicePump.start()
+        await hostPump.start()
+
+        try await hostPump.perform { try $0.hello() }
+        try await devicePump.perform { peer in
+            try peer.hello()
+            try peer.openStream(LiveLinkTests.videoStream)
+            try peer.announce(LiveLinkTests.shotCapture("cap:declined"))
+        }
+        try await hostPump.perform { peer in
+            peer.withHandle { handle in
+                #expect(ppcp_peer_shot_disposition(handle, "sht:1", PPCP_DISPOSITION_DECLINED,
+                                                   "not_corroborated") == PPCP_OK)
+            }
+        }
+
+        let seen = await Self.collect(from: devicePump, until: { events in
+            events.contains { if case .shotDisposition = $0 { return true }; return false }
+        })
+        #expect(seen.contains {
+            if case .shotDisposition(let shot, let declined, let reason) = $0 {
+                return shot == "sht:1" && declined && reason == "not_corroborated"
+            }
+            return false
+        })
+        let released = try await devicePump.perform { $0.isEvictable(captureId: "cap:declined") }
+        #expect(released, "CORE 5.14g exit 5 — applied by the library before the event")
+
+        await devicePump.stop()
+        await hostPump.stop()
+    }
+
     /// `PPCP-MSG` 12.1 — the command becomes an event the application can act on.
     ///
     /// ⛔ Read through the pump's pointer helper while the `ppcp_msg` is alive

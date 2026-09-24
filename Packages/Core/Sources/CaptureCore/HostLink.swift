@@ -36,6 +36,13 @@ public enum ShotSyncState: Sendable, Hashable {
     case inStudio
     /// `failed` — the transfer will not complete without another attempt.
     case failed
+    /// ⭐ **The host said it will not keep this shot** — `shot_disposition` /
+    /// `declined` (`MSG` 8.5, CR-03, #105). Not a transfer state: `CORE` 5.14g
+    /// exit 5 is a *release*, and the library says so through
+    /// `ppcp_transfer_is_evictable`. It is here because it is the one answer
+    /// that used to be impossible — a declined clip sat as "Waiting to send" for
+    /// the life of the link, with nothing coming.
+    case declined
 
     /// Three words, not an icon — a golfer glancing from the mat needs a *state*.
     public var displayText: String {
@@ -51,6 +58,7 @@ public enum ShotSyncState: Sendable, Hashable {
         case .delivered: "Sent, not confirmed"
         case .inStudio: "In Studio"
         case .failed: "Send failed"
+        case .declined: "Not kept"
         }
     }
 
