@@ -1048,7 +1048,7 @@ struct DeviceSessionTests {
         await model.disarm()
         try await Task.sleep(for: .seconds(2))
 
-        let bundles = await model.libraryRows()
+        let bundles = await model.bundlesOnDevice()
         let newest = try #require(bundles.first, "no bundle was written")
         print("DEVICE-RUN bundle \(newest.sessionId) — \(newest.byteCount / 1_000_000) MB")
         #expect(newest.byteCount > 1_000_000,
@@ -1219,7 +1219,7 @@ struct DeviceSessionTests {
         await model.disarm()
         try await Task.sleep(for: .seconds(2))
 
-        let bundles = await model.libraryRows()
+        let bundles = await model.bundlesOnDevice()
         let newest = try #require(bundles.first, "no bundle was written")
         print("DEVICE-RUN bundle \(newest.sessionId) — \(newest.byteCount / 1_000_000) MB, "
               + "\(shots) shot(s) in the session")

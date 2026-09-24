@@ -14,6 +14,14 @@ one wins.
 - Dark appearance only in this pass.
 - No third-party dependencies.
 
+> ⛔ **Online only, since #121.** The app is now one status screen
+> (`Sources/UI/Capture/StatusScreen.swift`) plus a settings sheet behind its ⚙.
+> The design pack's A1–A7, B1, B3, B5, C1–C3 and `ChoiceCard` /
+> `LivePreviewProvider` are in `Mothballed/` (see its README). The *Used by*
+> lists below still name those screens: they describe how each component was
+> designed to be used, and are left as they are for the day those screens
+> come back.
+
 ---
 
 ## 1. The colour rule
@@ -208,7 +216,7 @@ Status glyph + plain-language title + mono detail line. `State` is
 - `.failed` is for the *host* handshake only. A capture step never fails to red.
 
 ### `ChoiceCard(title:, description:, chips:, isSelected:, action:)`
-`ChoiceCard.swift`
+`ChoiceCard.swift` — ⚠ mothballed with A3 and B5 (#121), not compiled.
 
 A large selectable card. Selected = 2pt accent border + accent wash + filled
 checkmark. Radius 18.
@@ -248,7 +256,7 @@ the HTML.
 | Toggles, steppers, sliders | the system control, untinted | — |
 | Every glyph | **SF Symbols**: `camera`, `mic`, `wifi`, `wifi.slash`, `checkmark.circle.fill`, `exclamationmark.circle.fill`, `info.circle`, `gyroscope`, `qrcode.viewfinder`, `cable.connector`, `arrow.down.circle`, `chevron.right`, `play.fill`, `backward.frame`, `forward.frame`, `line.diagonal`, `circle`, `scribble` | a redrawn path or an inline SVG port |
 | The 393×852 frame, the drawn status bar, the home indicator | the real device — no bezel, no status bar, respect safe areas | — |
-| A tab bar | **there is none.** The capture screen is the app root; the C1 host chip opens the B3 sheet, and *Session · 41* opens C3 | a `TabView` |
+| A tab bar | **there is none.** The status screen is the app root and its ⚙ opens the settings sheet (#121) | a `TabView` |
 | Motion | system defaults — sheet presentation, list insertion, a crossfade for connection-state change. The armed pill dot may pulse slowly, honouring Reduce Motion | custom animation in this pass |
 
 Two further "do not build" notes:

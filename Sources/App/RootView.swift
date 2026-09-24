@@ -1,9 +1,12 @@
 //  RootView.swift
 //  The app shell.
 //
-//  ⛔ THERE IS NO TAB BAR. The capture screen is the app root; the host chip on C1
-//  opens the host sheet, and *Session · n* opens the library. A camera-first app
-//  should not carry a tab bar over a full-bleed preview.
+//  ⛔ **ONE SCREEN (#121).** PPC is a camera on a tripod that PPS drives over
+//  PPCP, so the root is `StatusScreen` — connection and recording, readable from
+//  the mat — and everything else is a sheet behind its ⚙. The design pack's
+//  capture stack (C1 preview, C2 replay, C3 library), onboarding (A1–A7) and
+//  the host panel (B1, B3, B5) are in `Mothballed/`, with what reinstating each
+//  one needs.
 //
 //  Every screen in the app is presented from here. Screens themselves own no
 //  navigation — they take Core values and hand back closures — so this file is
@@ -12,28 +15,19 @@
 import SwiftUI
 import CaptureCore
 
-/// Pushed destinations. Sheets are separate, because a sheet is a presentation
-/// decision rather than a place in a stack.
-enum AppRoute: Hashable {
-    case sessionLibrary
-    case replay(Shot)
-    /// A8 — the microphone-to-ball distance (D7). ⚠ A push rather than a sheet:
-    /// it is a setting a golfer returns to, not a decision blocking a flow.
-    case micToBallDistance
-    /// B3a — `RV` 7.4b's revocation list (#96). ⚠ A push for the same reason A8
-    /// is one: a setting, returned to, not a step in a flow.
+/// Pushed inside the settings sheet.
+enum SettingsRoute: Hashable {
+    /// B3a — `RV` 7.4b's revocation list (#96).
     case rememberedStudios
-    /// A6 outside onboarding (#97). ⛔ The phone is re-placed every session, so
-    /// the screen that checks the placement cannot be first-run only.
-    case framingCheck
+    /// A8 — the microphone-to-ball distance (D7). It feeds every Candidate's
+    /// `tof_correction`, so it survives the cut.
+    case micToBallDistance
 }
 
 /// Modally presented screens.
 enum AppSheet: Identifiable {
-    /// B3, from the C1 host chip.
-    case hostPanel
-    /// B1, modal from A7 or from the host sheet.
-    case connectHost
+    /// Behind the ⚙.
+    case settings
     /// B1a — scanning a `ppcp:` code (`RV` §4). ⛔ The `failure` is carried on the
     /// case because 4.2b/4.4a/4.4b are three different sentences and the screen
     /// has to know which one it is showing.
@@ -42,22 +36,15 @@ enum AppSheet: Identifiable {
     case joinNetwork(ssid: String)
     /// B6, inferred from a connection failure — never from a permission query.
     case localNetworkBlocked
-    /// B5, before anything is merged.
-    case reconcileSession
-    /// A8, presented from onboarding — which cannot push an `AppRoute`.
-    case micToBallDistance
     /// B2 — the handshake, while it is happening.
     case pairing
 
     var id: String {
         switch self {
-        case .hostPanel: "hostPanel"
-        case .connectHost: "connectHost"
+        case .settings: "settings"
         case .scanPairingCode: "scanPairingCode"
         case .joinNetwork: "joinNetwork"
         case .localNetworkBlocked: "localNetworkBlocked"
-        case .reconcileSession: "reconcileSession"
-        case .micToBallDistance: "micToBallDistance"
         case .pairing: "pairing"
         }
     }
@@ -68,7 +55,7 @@ struct RootView: View {
     /// ⛔ Backgrounding suspends the socket. E3.5 owns reconnecting; this level
     /// owns not lying about it in the meantime.
     @Environment(\.scenePhase) private var scenePhase
-    @State private var path: [AppRoute] = []
+    @State private var settingsPath: [SettingsRoute] = []
     @State private var sheet: AppSheet?
     /// The SSID whose configuration was just removed, if any (`RV` 6b). ⚠ Not a
     /// failure and not an error — it is the sentence that makes "left in the
@@ -86,16 +73,6 @@ struct RootView: View {
     /// store is the truth and a stale screen here is a screen that offers to
     /// forget something already gone.
     @State private var rememberedStudios: [StoredPairing] = []
-    /// C3's list. ⚠ Same reasoning as `rememberedStudios`: re-read from the
-    /// store so a swipe-to-delete removes the row rather than leaving a stale
-    /// one behind.
-    @State private var recordedBundles: [RecordedBundle] = []
-    /// The stored pairing behind the link that is currently up, if there is one
-    /// — what puts *Forget this Studio* on B3's status card beside its name.
-    ///
-    /// ⚠ Read when the panel opens rather than computed per render: it is a file
-    /// read, and SwiftUI would repeat it on every layout pass.
-    @State private var rememberedForCurrentLink: StoredPairing?
     private let rendezvous = RendezvousCoordinator()
     /// Held only between the consent sheet and the resumed walk. ⛔ `RV` 4.4c —
     /// the payload is not retained after the pairing it establishes has ended.
@@ -105,21 +82,15 @@ struct RootView: View {
         Group {
             #if DEBUG
             if let id = DebugLaunch.screenID {
-                // `-ppcpScreen A6` on the launch command line. Never reachable in
+                // `-ppcpScreen S3` on the launch command line. Never reachable in
                 // a release build — the whole gallery compiles out.
                 DebugScreenGallery(screenID: id, model: model)
                     .task { model.refreshCapability() }
-            } else if model.hasCompletedOnboarding {
-                captureStack
             } else {
-                onboarding
+                statusScreen
             }
             #else
-            if model.hasCompletedOnboarding {
-                captureStack
-            } else {
-                onboarding
-            }
+            statusScreen
             #endif
         }
         .sheet(item: $sheet, content: sheetContent(for:))
@@ -135,37 +106,18 @@ struct RootView: View {
         } message: {
             Text(NetworkJoin.leftNetworkExplanation)
         }
-        // ⛔ **The injection, and it was missing.** `ArmedScreen` and
-        // `FramingCheckScreen` read `\.livePreview` from the environment; with
-        // nothing supplying one they silently fall back to `.placeholder` and
-        // render exactly what they rendered before the seam existed. The whole
-        // camera fix was a no-op on the device because of this line's absence —
-        // a default that makes a missing wire *look* deliberate is precisely the
-        // failure this pass was written to remove.
-        .environment(\.livePreview, LivePreviewProvider { caption in
-            // ⚠ A preview layer attached to a session that is not running is a
-            // black rectangle, and "black screen" and "camera not running" look
-            // identical on a tripod at two metres. Cold shows the caption.
-            model.captureStatus.state == .cold
-                ? AnyView(LiveCapturePreviewPlaceholder(caption: caption))
-                : AnyView(CameraPreview(device: model.captureDevice,
-                                        placeholderLabel: caption))
-        })
         .preferredColorScheme(.dark)
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .background:
                 Task { await model.linkDidEnterBackground() }
             case .active:
-                // ⛔ **`RV` §3, and this is where (b) starts.** Foreground only,
-                // and only with no link up: the coordinator reads what pairings
-                // this device holds, browses for a host that resolves against one
-                // of them (3.4b/3.4c), and dials it. No code, no pairing step.
-                // ⚠ It does nothing at all on a device that has never paired.
-                // ⚠ Was `beginSearchingForHost()`. It now also raises the
-                // foreground flag and starts the wired reconcile loop, both of
-                // which are LEVELS the rest of the app reads — see
-                // `AppModel.sceneDidBecomeActive()`.
+                // ⛔ **`RV` §3.** Foreground only, and only with no link up: the
+                // coordinator reads what pairings this device holds, browses for
+                // a host that resolves against one of them (3.4b/3.4c), and dials
+                // it. It also raises the foreground flag and starts the wired
+                // reconcile loop — see `AppModel.sceneDidBecomeActive()`.
+                model.refreshPermissions()
                 model.sceneDidBecomeActive()
             default:
                 break
@@ -173,178 +125,103 @@ struct RootView: View {
         }
     }
 
-    private var onboarding: some View {
-        OnboardingFlow(
-            model: model,
-            onConnectHost: { sheet = .connectHost },
-            // ⛔ Straight to B1a. The pairing step is B1 for this purpose, so
-            // sending it through B1 again would be a screen presenting itself.
-            onScanPairingCode: { sheet = .scanPairingCode(failure: nil) },
-            // ⚠ Named from the LINK, not from the pairing store: this reports
-            // what is connected right now, and a remembered Studio that is not
-            // on the network is neither.
-            hostName: model.hostLink.hostName,
-            isPaired: model.link?.hasSettled == true,
-            onOpenMicToBallDistance: { sheet = .micToBallDistance },
-            onFinish: {}
+    // MARK: The status screen — the app root
+
+    private var statusScreen: some View {
+        StatusScreen(
+            connection: connectionStatus,
+            recording: recordingStatus,
+            problem: problem,
+            onOpenSystemSettings: systemSettingsAction,
+            onOpenSettings: {
+                reloadRememberedStudios()
+                settingsPath = []
+                sheet = .settings
+            },
+            debugAccessory: ringStatsAccessory
         )
-    }
-
-    // MARK: Capture stack — C1 is the root
-
-    private var captureStack: some View {
-        NavigationStack(path: $path) {
-            ArmedScreen(
-                capture: model.captureStatus,
-                hostLink: model.hostLink,
-                session: model.session,
-                lastShot: model.session.shots.last,
-                onOpenHost: { sheet = .hostPanel },
-                onOpenSession: { path.append(.sessionLibrary) },
-                onReplayLastShot: {
-                    guard let shot = model.session.shots.last else { return }
-                    path.append(.replay(shot))
-                },
-                // ⛔ **Ending a session goes somewhere** (Mark, 25 August 2026:
-                // "even then we seem to be stuck in capture"). C1 is the root and
-                // has no back, so closing a session left a golfer on a cold
-                // camera with no acknowledgement that anything had happened. The
-                // library IS the receipt — what was captured, and what is still
-                // waiting to reach Studio — and it is the half of A7 that was
-                // worth keeping.
-                onDisarm: {
-                    model.disarm()
-                    path.append(.sessionLibrary)
-                },
-                onArm: { Task { await model.arm() } },
-                candidateCount: model.candidateCount,
-                recordingError: model.recordingError,
-                hostSearch: hostSearchStatus,
-                // ⚠ Only where exactly ONE is held: "Looking for Bay 3" is a
-                // promise, and with three remembered Studios the sweep is not
-                // looking for any particular one of them (3.4b resolves whichever
-                // advertisement answers).
-                searchingForName: rememberedStudios.count == 1
-                    ? rememberedStudios.first?.displayName : nil,
-                // ⛔ Never read by this screen until now, which is why *Arm*
-                // could sit there doing nothing with no explanation.
-                capabilityError: model.capabilityError,
-                onCheckFraming: { path.append(.framingCheck) },
-                // ⛔ **E1.1's instrument, debug builds only.** The exit criterion
-                // is "twenty fragments, rolling, **at the claimed rate**" — the
-                // rate clause cannot be read off a directory listing, and a
-                // device run without this produces an impression.
-                //
-                // ⚠ Passed as a laid-out accessory rather than floated over the
-                // screen. It was an `.overlay` with a hand-tuned top inset and
-                // that inset was wrong on every device that was not the one it
-                // was measured on; `ArmedScreen` now places it under the
-                // telemetry rail by construction. `nil` outside DEBUG, so the
-                // designed screen is unchanged in a release build.
-                debugAccessory: ringStatsAccessory
-            )
-            .task { reloadRememberedStudios() }
-            .task {
-                // ⛔ **Enumerate FIRST, and nothing did on this path.**
-                // `AppModel.init` seeds `capability` with `claimed: []`, so
-                // `bestMode` — and therefore `activeMode` — is nil until
-                // `refreshCapability()` runs. Its only callers were
-                // `OnboardingFlow` and the debug gallery, so on **every launch
-                // after onboarding was completed** the app had no usable mode:
-                // `warmUp` refused, `arm()` refused after it, and *Arm* was a
-                // dead button on every device. It failed silently until the
-                // guards were given sentences, and then said "No usable capture
-                // format was found on this device" — which was true, and was
-                // about a fresh `AppModel` rather than about the camera.
-                //
-                // ⚠ Cheap and permission-free: `AVCaptureDevice` discovery lists
-                // formats without authorisation, which is why A1 can run it
-                // before asking for anything.
-                model.refreshCapability()
-                // ⚠ Warm before arming so C1 shows a live preview cold, and so
-                // arming costs no AE/AF settling (REQ-STATE-2).
-                await model.warmUp()
-                model.refreshHealth()
+        .task { reloadRememberedStudios() }
+        .task {
+            // ⛔ **Enumerate first.** `AppModel.init` seeds `capability` with
+            // `claimed: []`, so `activeMode` is nil — and warm, arm and preview
+            // all refuse — until `refreshCapability()` runs.
+            //
+            // ⚠ The permission prompts are what onboarding's A4 used to ask for;
+            // with onboarding gone they are asked here, once, on first launch.
+            // Not under test: an app-hosted suite must not raise system dialogs.
+            //
+            // ⚠ **No `warmUp()` here any more.** With no host it held the camera
+            // — and its privacy light — on indefinitely; arm and preview both
+            // warm the camera themselves when the host asks.
+            if AppModel.isUnderTest == false {
+                await model.requestCapturePermissions()
             }
-            // C1 is full-bleed. The preview is the screen; a nav bar over it would
-            // cost exactly the area the golfer needs to be judged in.
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: AppRoute.self, destination: destination(for:))
+            model.refreshCapability()
+            model.refreshHealth()
         }
     }
 
-    @ViewBuilder
-    private func destination(for route: AppRoute) -> some View {
-        switch route {
-        case .sessionLibrary:
-            SessionLibraryScreen(
-                session: model.session,
-                transferQueue: model.transferQueue,
-                hostName: model.hostLink.hostName,
-                recordedBundles: recordedBundles,
-                onSelectShot: { path.append(.replay($0)) },
-                onPauseTransfer: { model.transferQueue?.isPaused.toggle() },
-                onOpenMicToBallDistance: { path.append(.micToBallDistance) },
-                onDeleteBundle: { deleteRecordedBundle(sessionId: $0.sessionId) }
-            )
-            .task { reloadRecordedBundles() }
-
-        case .framingCheck:
-            // ⚠ The same screen onboarding uses, and it re-runs the measurement
-            // rather than showing the one from the first session — which is the
-            // whole reason to come back to it.
-            FramingCheckScreen(
-                framing: model.framing,
-                onUse120fps: { Task { await model.remeasure(atMost: 120) } },
-                onArm: {
-                    Task {
-                        await model.arm()
-                        path.removeLast()
-                    }
-                }
-            )
-            .task {
-                await model.warmUp()
-                await model.runSelfTest()
+    /// `RV` §3 and the live link, as the status screen says it.
+    ///
+    /// ⚠ The link wins when there is one; the search is only described when
+    /// there is nothing up.
+    private var connectionStatus: StatusScreen.Connection {
+        let name = model.hostLink.hostName
+        if model.link != nil {
+            switch model.hostLink.state {
+            case .connected, .weak, .resyncing:
+                return .connected(name: name, transport: model.hostLink.transport)
+            case .lost:
+                return .lost(name: name)
+            case .pairing, .none:
+                return .pairing(name: name)
             }
-
-        case .rememberedStudios:
-            // ⛔ B3a — `RV` 7.4b's *individually revocable*. `pairings()` and
-            // `revoke(_:)` were written under D7 and had no caller until #96.
-            RememberedStudiosView(
-                pairings: rememberedStudios,
-                onForget: { forget(sessionId: $0.sessionId) },
-                onDone: { path.removeLast() })
-
-        case .micToBallDistance:
-            // ⚠ 8.1d — the setting Mark asked for on 23 August 2026. It reaches
-            // every Candidate's `tof_correction` through `CandidateFactory`, and
-            // it takes effect on the next arm rather than mid-session.
-            MicToBallDistanceView(
-                distance: $model.micToBallDistance,
-                wasChosen: model.micToBallDistanceWasChosen,
-                isSessionOpen: model.recording != nil,
-                onDone: { path.removeLast() })
-
-        case .replay(let shot):
-            ReplayScreen(
-                shot: shot,
-                // ⛔ Stated by the caller, not defaulted. Nothing records video
-                // (E1.1), and a screen that discovers this for itself is a
-                // screen that will quietly start lying when one of them changes.
-                hasVideo: false,
-                // ⚠ REQ-STATE-4 / REQ-RES-1. Reviewing never disarms. The capture
-                // status handed to C2 is the live one, which is why its title bar
-                // can honestly say "still armed".
-                capture: model.captureStatus,
-                onDone: { path.removeLast() },
-                onCompare: {},
-                onStepFrame: { _ in },
-                onTogglePlayback: {},
-                onCycleSpeed: {},
-                onSelectTool: { _ in }
-            )
         }
+        if model.stayDisconnected { return .disconnected }
+        if let diagnosis = model.reconnectDiagnosis {
+            return .diagnosis(diagnosis)
+        }
+        // ⛔ Not "no host": nothing is held, so no browse was performed and none
+        // would help. `ReconnectOutcome.noPairingsHeld` is a different sentence
+        // from "your Studio did not appear".
+        if rememberedStudios.isEmpty { return .notPaired }
+        if let silence = model.reconnectSilence {
+            return .notFound(seconds: Int(Double(silence.searchedForNs) / 1_000_000_000))
+        }
+        // ⚠ A name only where exactly ONE is held: "Looking for Bay 3" is a
+        // promise, and with three remembered Studios the sweep is not looking
+        // for any particular one of them.
+        return .searching(name: rememberedStudios.count == 1
+                          ? rememberedStudios.first?.displayName : nil)
+    }
+
+    private var recordingStatus: StatusScreen.Recording {
+        if model.captureStatus.state == .armed { return .recording }
+        if model.isSettling { return .arming }
+        return model.captureStatus.state == .warm ? .warm : .idle
+    }
+
+    /// The one sentence that stops this phone doing its job, if there is one.
+    /// ⛔ Never read by the old C1 until #97, which is why *Arm* could sit there
+    /// doing nothing with no explanation.
+    private var problem: String? {
+        if model.permissions.canCapture == false,
+           model.permissions.camera != .notRequested,
+           model.permissions.microphone != .notRequested {
+            return "Camera and microphone access are both needed. "
+                + "Settings — PinPointCapture."
+        }
+        return model.recordingError ?? model.capabilityError
+    }
+
+    /// Offered beside the problem only when the remedy is a permission.
+    private var systemSettingsAction: (() -> Void)? {
+        model.permissions.canCapture ? nil : { openSystemSettings() }
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     // MARK: Sheets
@@ -352,81 +229,53 @@ struct RootView: View {
     @ViewBuilder
     private func sheetContent(for sheet: AppSheet) -> some View {
         switch sheet {
-        case .hostPanel:
-            NavigationStack {
-                HostPanelView(
-                    link: model.hostLink,
-                    capture: model.captureStatus,
-                    queue: model.transferQueue,
-                    storage: model.storage,
-                    // nil while nothing is open — `subLine` omits the clause.
-                    sessionStart: model.recording == nil ? nil : model.session.start,
-                    // The reviewer switcher. ⛔ `#if DEBUG` at the call site too,
-                    // so a release binary contains no path from the shell into
-                    // `PreviewFixtures`.
-                    onSelectReviewState: Self.reviewStateHandler(model),
-                    measuredMethod: model.capability.measured?.method,
-                    onDone: { self.sheet = nil },
-                    // ⛔ **Six titles, one behaviour, until now.** Every state
-                    // was wired to `sheet = .connectHost`, so *Disconnect* on a
-                    // live link opened the connect screen and *Pause sending*
-                    // opened it too. Each title now does what it says, and the
-                    // one this app cannot perform is disabled rather than lying.
-                    onPrimaryAction: primaryHostAction,
-                    onOpenMicToBallDistance: {
-                        self.sheet = nil
-                        path.append(.micToBallDistance)
-                    },
-                    // ⛔ 7.4b — the several-Studios case. The single one a golfer
-                    // actually has is the row below, on the status card.
+        case .settings:
+            NavigationStack(path: $settingsPath) {
+                SettingsView(
+                    connectedHostName: model.link == nil ? nil : model.hostLink.hostName,
+                    isLinked: model.link != nil,
+                    // ⚠ Straight to B1a. B1 (discover / enter a code / cable)
+                    // is mothballed; the code is the one route that works.
+                    onPair: { self.sheet = .scanPairingCode(failure: nil) },
                     onOpenRememberedStudios: {
-                        self.sheet = nil
                         reloadRememberedStudios()
-                        path.append(.rememberedStudios)
+                        settingsPath.append(.rememberedStudios)
                     },
-                    // ⛔ **Forget, where the Studio is named** (Mark, 25 August
-                    // 2026). 4.4d — untrusted display text, so it names a row and
-                    // is never an identifier; the identity is the `sessionId`.
-                    rememberedHostName: rememberedForCurrentLink
-                        .map { $0.displayName ?? "this Studio" },
-                    onForgetHost: rememberedForCurrentLink.map { held in
-                        {
-                            forget(sessionId: held.sessionId)
-                            rememberedForCurrentLink = nil
+                    // ⛔ **Disconnect drops the LINK and keeps it dropped.** Not
+                    // the pairing — that is *Forget* — and the wired loop would
+                    // otherwise re-publish this phone within 2 s. 6b / 4.4c: the
+                    // user ended this session, so the network this app
+                    // configured goes and the decoded payload is released.
+                    onDisconnect: {
+                        self.sheet = nil
+                        Task {
+                            await model.disconnectAndStayDisconnected()
+                            if let left = await rendezvous.endPairing() { leftNetwork = left }
                         }
+                    },
+                    onOpenMicToBallDistance: { settingsPath.append(.micToBallDistance) },
+                    onDone: { self.sheet = nil })
+                .navigationDestination(for: SettingsRoute.self) { route in
+                    switch route {
+                    case .rememberedStudios:
+                        // ⛔ B3a — `RV` 7.4b's *individually revocable*.
+                        RememberedStudiosView(
+                            pairings: rememberedStudios,
+                            onForget: { forget(sessionId: $0.sessionId) },
+                            onDone: { settingsPath.removeLast() })
+                    case .micToBallDistance:
+                        // ⚠ 8.1d. It takes effect on the next arm rather than
+                        // mid-session.
+                        MicToBallDistanceView(
+                            distance: $model.micToBallDistance,
+                            wasChosen: model.micToBallDistanceWasChosen,
+                            isSessionOpen: model.recording != nil,
+                            onDone: { settingsPath.removeLast() })
                     }
-                )
-                .task { refreshRememberedForCurrentLink() }
+                }
             }
-            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(PPMetrics.Radius.sheet)
-
-        case .connectHost:
-            ConnectHostView(
-                // ⛔ **No invented host.** These were `PreviewFixtures.hostName`
-                // and a hardcoded "paired yesterday", and tapping the row
-                // assigned `PreviewFixtures.connected` — an app reporting a
-                // paired Studio, a measured clock offset and a transfer queue
-                // with no socket open anywhere. Discovery is E16.1; until it
-                // exists there is no row.
-                discoveredHostName: nil,
-                discoveredHostDetail: nil,
-                onCancel: { self.sheet = nil },
-                onConnectToDiscoveredHost: {},
-                onEnterCode: { self.sheet = .scanPairingCode(failure: nil) },
-                // ⛔ The list belongs here too: this is the screen a golfer
-                // reaches when the Studio they expected has not appeared.
-                // ⚠ Offered only when something is held — a list of nothing is
-                // not a destination.
-                onOpenRememberedStudios: rememberedStudios.isEmpty ? nil : {
-                    self.sheet = nil
-                    path.append(.rememberedStudios)
-                },
-                onCode: { uri in Task { await scan(uri) } },
-                onUseCable: {},
-                onCaptureWithoutHost: { self.sheet = nil }
-            )
 
         case .scanPairingCode(let failure):
             NavigationStack {
@@ -457,9 +306,7 @@ struct RootView: View {
         case .localNetworkBlocked:
             NavigationStack {
                 LocalNetworkBlockedView(
-                    onOpenSettings: {},
-                    onConnectByCable: {},
-                    onCaptureAlone: { self.sheet = nil },
+                    onOpenSettings: { openSystemSettings() },
                     onTryAgain: { self.sheet = nil }
                 )
             }
@@ -517,27 +364,6 @@ struct RootView: View {
                     })
             }
             .interactiveDismissDisabled()
-
-        case .micToBallDistance:
-            NavigationStack {
-                MicToBallDistanceView(
-                    distance: $model.micToBallDistance,
-                    wasChosen: model.micToBallDistanceWasChosen,
-                    isSessionOpen: model.recording != nil,
-                    onDone: { self.sheet = nil })
-            }
-
-        case .reconcileSession:
-            NavigationStack {
-                ReconcileSessionView(
-                    candidates: [],
-                    shotCount: model.session.shots.count,
-                    onSelect: { _ in },
-                    onReview: { self.sheet = nil },
-                    // ⛔ REQ-OFF-12. Never auto-merge; both outcomes are explicit.
-                    onSendAsNewSession: { self.sheet = nil }
-                )
-            }
         }
     }
 
@@ -565,87 +391,6 @@ struct RootView: View {
         #endif
     }
 
-    /// `RV` §3, as the C1 chip says it.
-    ///
-    /// ⛔ **This is the first thing in the application to render the search.**
-    /// `AppModel` has published `isSearchingForHost`, `reconnectSilence` and
-    /// `reconnectDiagnosis` since D7 and nothing read them, so a device quietly
-    /// looking for its Studio and one that had given up looked identical.
-    ///
-    /// ⚠ `nil` once a link is up — the chip names the host instead.
-    private var hostSearchStatus: ArmedScreen.HostSearch? {
-        guard model.link == nil else { return nil }
-        if let diagnosis = model.reconnectDiagnosis {
-            return .diagnosis(diagnosis)
-        }
-        if let silence = model.reconnectSilence {
-            return .notFound(seconds: Int(Double(silence.searchedForNs) / 1_000_000_000))
-        }
-        if model.isSearchingForHost {
-            return .looking
-        }
-        // ⛔ Not "no host": nothing is held, so no browse was performed and none
-        // would help. `ReconnectOutcome.noPairingsHeld` is a different sentence
-        // from "your Studio did not appear", and this is where that matters.
-        return rememberedStudios.isEmpty ? .nothingHeld : nil
-    }
-
-    /// What B3's full-width button does, per state.
-    ///
-    /// ⛔ **Disconnect drops the LINK and nothing else.** Not the pairing — that
-    /// is *Forget*, on the status card — and not capture, which §9.2 and the
-    /// colour rule keep running through every host problem. A golfer who
-    /// disconnects is still recording, and the reconnection sweep can find the
-    /// same Studio again on the next foreground.
-    ///
-    /// ⚠ `.weak` is `nil` on purpose: its title offers a cable and there is no
-    /// cable path in this application (E15). A disabled button that says why
-    /// beats a live one that silently does something else — the same rule the
-    /// connection log and diagnostic export rows already follow.
-    private var primaryHostAction: (() -> Void)? {
-        switch model.hostLink.state {
-        case .none:
-            { self.sheet = .connectHost }
-        case .connected:
-            {
-                Task {
-                    await model.disconnect(.normal)
-                    // 6b / 4.4c — the user ended this session with the host, so
-                    // the network this app configured goes and the decoded
-                    // payload is released. Same reasoning as B2's Cancel.
-                    if let left = await rendezvous.endPairing() { leftNetwork = left }
-                }
-            }
-        case .pairing:
-            { Task { await model.disconnect(.cancelled) } }
-        case .lost:
-            // 3.6a — look again, which is exactly what the sweep does.
-            //
-            // ⛔ **The dead session has to be torn down first.** A transport
-            // that dies while this app stays foregrounded (PPS switched off)
-            // only changes what `HostLinkSession.hostLink` *reports* —
-            // `phase` moves to `.closed`/`.failed` and the state reads
-            // `.lost` — but nothing clears `AppModel.link` on that path; only
-            // an explicit `disconnect()` does, which backgrounding already
-            // calls but a live "lost" screen never did. So
-            // `beginSearchingForHost()`'s `link == nil` guard — there to stop
-            // a *second* search racing a live link — silently blocked this
-            // button on a link that was already dead. Found live: PPS
-            // restarted while the app stayed foregrounded, and "Find the
-            // host again" did nothing.
-            {
-                Task {
-                    await model.disconnect(.cancelled)
-                    model.beginSearchingForHost()
-                }
-            }
-        case .resyncing:
-            { model.transferQueue?.isPaused.toggle() }
-        case .weak:
-            nil
-        }
-    }
-
     /// The platform outcome as B2's sentence. ⛔ `RendezvousCoordinator.PersistOutcome`
     /// does not cross into `Sources/UI`; this is the seam.
     private static func remembered(from outcome: RendezvousCoordinator.PersistOutcome)
@@ -669,37 +414,6 @@ struct RootView: View {
     /// writes.
     private func reloadRememberedStudios() {
         rememberedStudios = (try? PairingSecretStore.pairings()) ?? []
-    }
-
-    /// ⚠ Re-read rather than mutated, same reasoning as `reloadRememberedStudios()`.
-    private func reloadRecordedBundles() {
-        recordedBundles = model.libraryRows()
-    }
-
-    /// C3's swipe-to-delete. ⛔ The bytes go; there is no soft delete.
-    private func deleteRecordedBundle(sessionId: String) {
-        model.deleteRecordedBundle(sessionId: sessionId)
-        reloadRecordedBundles()
-    }
-
-    /// Matches the live link to the pairing it was established from.
-    ///
-    /// ⛔ **`HostLinkSession.sessionId` IS the stored pairing's key on both
-    /// paths, and that is worth stating because 7.4e invites the opposite
-    /// assumption.** A scanned code stores under `code.sessionId` and connects
-    /// with it; `ReconnectCoordinator` hands back `ReconnectedHost.sessionId`,
-    /// documented as *the Session the pairing was established for* — the held
-    /// pairing's id, not a fresh one. 7.4e governs the `sid` **transmitted**
-    /// inside the channel, which this app never reuses: `PpcpTransport` draws a
-    /// fresh PSK identity per connection under 5.3a1.
-    private func refreshRememberedForCurrentLink() {
-        reloadRememberedStudios()
-        guard let sessionId = model.link?.sessionId else {
-            rememberedForCurrentLink = nil
-            return
-        }
-        rememberedForCurrentLink = rememberedStudios
-            .first { $0.sessionId == sessionId }
     }
 
     /// The whole of `RV` §4.4 in one place: decode, expiry, the network, then the
@@ -758,28 +472,6 @@ struct RootView: View {
             // `RV` §8 — inferred from the symptom, never from a permission query.
             sheet = blocked ? .localNetworkBlocked
                             : .scanPairingCode(failure: .noEndpointReachable(triedCount: tried))
-        }
-    }
-
-    /// ⛔ `nil` in a release build: no switcher, and no reachable fixture.
-    private static func reviewStateHandler(_ model: AppModel) -> ((HostLinkState) -> Void)? {
-        #if DEBUG
-        { model.hostLink = link(for: $0) }
-        #else
-        nil
-        #endif
-    }
-
-    /// Fixture link state for the reviewer switcher, so each state shows the
-    /// telemetry the design specifies rather than an empty card.
-    private static func link(for state: HostLinkState) -> HostLink {
-        switch state {
-        case .connected: PreviewFixtures.connected
-        case .weak: PreviewFixtures.weak
-        case .lost: PreviewFixtures.lost
-        case .resyncing: PreviewFixtures.resyncing
-        case .pairing: PreviewFixtures.pairing
-        case .none: HostLink(state: .none)
         }
     }
 }

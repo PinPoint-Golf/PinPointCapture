@@ -86,8 +86,9 @@ public final class AppModel {
     /// ⚠ Starts claiming **nothing**. Three of its rows need pose detection that
     /// does not exist (E8.2); `light` is filled by the self-test.
     public var framing: FramingStatus = FramingStatus()
+    /// ⚠ Fixed since onboarding went (#121) — A4 was the only screen that set
+    /// it. It still shapes what each Candidate retains.
     public var audioRetention: AudioRetention = .aroundImpactOnly
-    public var captureContext: CaptureContext = .standalone
 
     // MARK: The microphone-to-ball distance (D7)
 
@@ -107,13 +108,6 @@ public final class AppModel {
     /// differently from a choice — "1.5 m (assumed)" is not "1.5 m" — because a
     /// default that reads as a measurement is A12's failure mode.
     public var micToBallDistanceWasChosen: Bool { MicToBallDistanceStore.hasBeenSet() }
-
-    /// ⛔ Persisted. It was a plain `false`, so every launch replayed all seven
-    /// onboarding screens — including the permission sequence, whose design rests
-    /// on being asked once and in order.
-    public var hasCompletedOnboarding: Bool = OnboardingStateStore.hasCompleted() {
-        didSet { OnboardingStateStore.setCompleted(hasCompletedOnboarding) }
-    }
 
     private let device: any CaptureDevice
     private let permissionsService = PermissionsService()
@@ -145,11 +139,9 @@ public final class AppModel {
         if let transport = error as? TransportError, case .channelClosed(let why) = transport {
             switch why {
             case .peerClosed, .cancelled, .normal:
-                return "Studio disconnected. Recording continues on this phone; shots are kept here "
-                     + "and sent to Studio when it reconnects."
+                return "Studio disconnected."
             default:
-                return "The connection to Studio failed. Recording continues on this phone; shots "
-                     + "are kept here and sent to Studio when it reconnects."
+                return "The connection to Studio failed."
             }
         }
         if let hosted = error as? HostedSessionError, case .streamRefused(_, let kind, _, _) = hosted {
@@ -711,6 +703,8 @@ public final class AppModel {
                         hostDisplayName: String?,
                         declaration: PpcpDeclaration? = nil,
                         listener: Bool = false) async {
+        // A new link is the end of a deliberate Disconnect (#121).
+        stayDisconnected = false
         await disconnect()
         do {
             let session = try HostLinkSession(transport: transport,
@@ -809,6 +803,11 @@ public final class AppModel {
     /// that genuinely belongs on this transition.
     public func sceneDidBecomeActive() {
         isActive = true
+        // ⚠ A deliberate Disconnect lasts until the next foreground or pairing,
+        // not for ever: a phone left on a tripod that never reconnected again
+        // would be a phone somebody has to walk over to.
+        stayDisconnected = false
+        updateIdleTimer()
         // ⛔ **HERE, NOT INSIDE beginSearchingForHost() — THERE ARE TWO LOOPS.**
         // The guard was first written one level down and did not work, because
         // `startWiredReconcile()` is a SIBLING call, not a nested one: a 2 s
@@ -915,6 +914,10 @@ public final class AppModel {
     }
 
     public func beginSearchingForHost() {
+        // ⛔ Settings → Disconnect means disconnected. Without this the wired
+        // loop re-published the phone within 2 s and the host dialled straight
+        // back in (#121).
+        guard stayDisconnected == false else { return }
         // ⛔ **The cable is not the radio, and this is not part of the browse.**
         // It is here because this is the moment §3 already decided on — the app
         // became active with no link up — and because a second entry point for
@@ -1076,7 +1079,7 @@ public final class AppModel {
     /// **a pairing is held, no link is up, and the app is active ⇒ the listener
     /// is up and publishing the CURRENT pairing set.** Anything else ⇒ it is down.
     private func reconcileWiredListening() {
-        guard isActive, link == nil else {
+        guard isActive, link == nil, stayDisconnected == false else {
             if wiredListener != nil { Task { await stopWiredListening() } }
             return
         }
@@ -1206,10 +1209,31 @@ public final class AppModel {
     /// the foreground and the screen, and a phone that auto-locks mid-session
     /// stops recording. The link is included as well as the recording because
     /// backgrounding drops the link, and a dropped wired link is expensive.
+    ///
+    /// ⛔ **And while waiting for a host, too (#121).** It used to be
+    /// `recording != nil || link != nil`, so a phone on a tripod waiting for
+    /// Studio auto-locked, was backgrounded, and stopped both the search and the
+    /// wired listener — the one state in which it had to stay findable. The app
+    /// is now a status screen that is set down and left, so the screen stays on
+    /// whenever the app is in front; iOS restores the idle timer on its own when
+    /// it is not.
     private func updateIdleTimer() {
         #if canImport(UIKit)
-        UIApplication.shared.isIdleTimerDisabled = (recording != nil || link != nil)
+        UIApplication.shared.isIdleTimerDisabled = true
         #endif
+    }
+
+    /// Set by Settings → Disconnect; cleared by the next foreground or pairing.
+    /// Both reconnection paths — the browse and the wired listener — read it.
+    public private(set) var stayDisconnected = false
+
+    /// Settings → Disconnect. ⚠ Drops the link and keeps it dropped: see
+    /// ``stayDisconnected``.
+    public func disconnectAndStayDisconnected() async {
+        stayDisconnected = true
+        stopSearchingForHost()
+        await stopWiredListening()
+        await disconnect(.normal)
     }
 
     /// Refreshes the observable link state from the session. ⚠ Called on the
@@ -1223,18 +1247,15 @@ public final class AppModel {
     /// A handshake that failed, surfaced rather than swallowed.
     public private(set) var hostLinkError: String?
 
-    // MARK: The session library (C3)
+    // MARK: What is on this phone
 
-    /// The sessions actually on this phone.
+    /// The session bundles this phone is holding.
     ///
-    /// ⛔ **`SessionStore.bundles()` had no caller outside tests.** The library
-    /// screen rendered `PreviewFixtures.session` — 41 invented shots dated 21
-    /// August — while real bundles accumulated in the container, unlisted.
-    ///
-    /// ⚠ Ids, dates and sizes only. What is *inside* a bundle needs the reader
-    /// and a projection over a peer (E4.1), and the screen states that rather
-    /// than implying the rows are complete.
-    public func libraryRows() -> [RecordedBundle] {
+    /// ⚠ Was `libraryRows()`, the C3 session library's source. The library is
+    /// mothballed (#121) — online only, nothing is browsed on the phone — and
+    /// this stays because it is how a test, or the retention sweep, sees what
+    /// the container actually holds.
+    public func bundlesOnDevice() -> [RecordedBundle] {
         guard let bundles = try? store.bundles() else { return [] }
         return bundles.map { bundle in
             let values = try? bundle.directory.resourceValues(
@@ -1243,38 +1264,6 @@ public final class AppModel {
                 sessionId: bundle.sessionId,
                 fileDate: values?.contentModificationDate ?? .distantPast,
                 byteCount: Self.directorySize(bundle.directory))
-        }
-    }
-
-    /// C3's swipe-to-delete. ⛔ Device-local only — there is no host-side
-    /// deletion or sync-state tracking yet, so this removes the bundle this
-    /// phone holds and nothing else.
-    /// ⛔ **`try?` here was the whole bug.** A delete that failed looked exactly
-    /// like one that worked: the row stayed, nothing was said, and the sessions
-    /// "came back". Reported on hardware 27 Aug — the same shape as `warmUp`
-    /// shipping a dead *Arm* for weeks because a guard returned silently. When a
-    /// refusal can happen, it has to say so.
-    ///
-    /// ⛔ **And the session being recorded right now is in this list**, with an
-    /// open file handle on it. Removing its directory underneath the writer
-    /// leaves a `RecordingSession` appending to an unlinked inode — bytes going
-    /// nowhere, and a bundle that reappears the moment anything re-reads the
-    /// store. Refused explicitly, with the remedy named.
-    public func deleteRecordedBundle(sessionId: String) {
-        guard let bundles = try? store.bundles(),
-              let bundle = bundles.first(where: { $0.sessionId == sessionId }) else {
-            recordingError = "That session is no longer on this phone."
-            return
-        }
-        if let recording, recording.sessionId == sessionId {
-            recordingError = "That session is still recording. End the session first, then delete it."
-            return
-        }
-        do {
-            try store.delete(bundle)
-            recordingError = nil
-        } catch {
-            recordingError = "Could not delete that session: \(error.localizedDescription)"
         }
     }
 

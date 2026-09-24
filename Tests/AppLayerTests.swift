@@ -140,20 +140,6 @@ struct FixtureRemovalTests {
         }
     }
 
-    @Test("Onboarding completion survives a relaunch")
-    func onboardingPersists() throws {
-        let suite = "ppcp.tests.onboarding"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
-
-        #expect(OnboardingStateStore.hasCompleted(in: defaults) == false)
-        OnboardingStateStore.setCompleted(true, in: defaults)
-        // ⛔ The whole point: a *second* read, as a fresh launch would do.
-        #expect(OnboardingStateStore.hasCompleted(in: defaults))
-        OnboardingStateStore.reset(in: defaults)
-        #expect(OnboardingStateStore.hasCompleted(in: defaults) == false)
-    }
-
     @Test("A minted shot is labelled from the session anchor, not from the wall clock")
     func shotsAreLabelledFromTheAnchor() throws {
         // ⚠ The assertion is exact, deliberately. "Near `Date()`" would pass just
@@ -180,14 +166,14 @@ struct FixtureRemovalTests {
         #expect(shot.displayDetail.contains("timed, not filmed"))
     }
 
-    @Test("The library lists what is on disk, not what a fixture describes")
-    func libraryListsRealBundles() throws {
+    @Test("What is on the phone is read from disk, not from a fixture")
+    func bundlesOnDeviceAreReal() throws {
         let root = URL.temporaryDirectory
             .appendingPathComponent("ppcp-library-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let model = AppModel(store: SessionStore(root: root))
         // ⛔ Nothing written yet, so nothing listed. It used to list 41 shots.
-        #expect(model.libraryRows().isEmpty)
+        #expect(model.bundlesOnDevice().isEmpty)
     }
 }

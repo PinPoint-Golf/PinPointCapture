@@ -39,7 +39,7 @@ Camera, microphone, encoder, motion, storage and network primitives (REQ-PORT-1,
 
 | Area | Files | Port surface it implements |
 |---|---|---|
-| Capture | `CaptureDevice.swift`, `AVFoundationCaptureDevice.swift`, `CameraPreview.swift` | `CaptureCore.CaptureDevice` |
+| Capture | `CaptureDevice.swift`, `AVFoundationCaptureDevice.swift` (`CameraPreview.swift`, the on-phone preview, is mothballed — #121) | `CaptureCore.CaptureDevice` |
 | Permissions | `PermissionsService.swift` | `CaptureCore.Permissions` |
 | Device data | `DeviceProfiles.swift`, `DeviceProfiles.json` | REQ-PORT-10 |
 | **PPCP transport** | `Network/PpcpTransport.swift` | `CaptureCore.ByteChannel`, `PeerTransport`, `PeerTransportConnector`, `PeerTransportListener` |

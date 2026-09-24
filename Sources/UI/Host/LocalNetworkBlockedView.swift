@@ -7,9 +7,10 @@
 //  **inferred from connection failure** and presented as this screen rather
 //  than as a generic error (REQ-DISC-6).
 //
-//  ⚠ Copy order carries the design. The reassurance — "It has no effect on
-//  capture — you can record all day like this" — comes *immediately*, before
-//  the fix. A refusal must cost a golfer a network, not a session.
+//  ⛔ **Online only (#121).** There is no capturing without a host any more, so
+//  the old reassurance ("you can record all day like this") and the *Capture on
+//  my own* route were false and are gone. What remains true: a cable does not
+//  need this permission.
 //
 
 import SwiftUI
@@ -18,19 +19,19 @@ import CaptureCore
 public struct LocalNetworkBlockedView: View {
 
     private let onOpenSettings: () -> Void
-    private let onConnectByCable: () -> Void
-    private let onCaptureAlone: () -> Void
+    /// `nil` hides the row. ⚠ There is no cable action to take from here — a
+    /// wired link comes up by itself when the phone is plugged in — so the
+    /// caller normally passes `nil` and the sentence below carries the advice.
+    private let onConnectByCable: (() -> Void)?
     private let onTryAgain: () -> Void
 
     public init(
         onOpenSettings: @escaping () -> Void,
-        onConnectByCable: @escaping () -> Void,
-        onCaptureAlone: @escaping () -> Void,
+        onConnectByCable: (() -> Void)? = nil,
         onTryAgain: @escaping () -> Void
     ) {
         self.onOpenSettings = onOpenSettings
         self.onConnectByCable = onConnectByCable
-        self.onCaptureAlone = onCaptureAlone
         self.onTryAgain = onTryAgain
     }
 
@@ -45,7 +46,7 @@ public struct LocalNetworkBlockedView: View {
                         .foregroundStyle(Color.ppError)
                         .accessibilityHidden(true)
 
-                    Text("Without it the app cannot reach a host on Wi-Fi. It has no effect on capture — you can record all day like this.")
+                    Text("Without it this phone cannot reach Studio on Wi-Fi. A USB cable to the Mac does not need it.")
                         .font(.ppSupporting)
                         .foregroundStyle(Color(.secondaryLabel))
                 }
@@ -74,18 +75,17 @@ public struct LocalNetworkBlockedView: View {
                                   action: onOpenSettings)
             }
 
-            // 3. The two routes that do not need the permission at all.
-            Section {
-                HostDisclosureRow(title: "Connect by cable",
-                                  detail: "Does not need this permission",
-                                  action: onConnectByCable)
-                HostDisclosureRow(title: "Capture on my own",
-                                  detail: "Send to Studio later",
-                                  action: onCaptureAlone)
-            } header: {
-                // The section header slot, wearing the eyebrow's face — this is
-                // the header, not a hand-drawn label above the list.
-                EyebrowLabel("Or carry on without it")
+            // 3. The route that does not need the permission at all.
+            if let onConnectByCable {
+                Section {
+                    HostDisclosureRow(title: "Connect by cable",
+                                      detail: "Does not need this permission",
+                                      action: onConnectByCable)
+                } header: {
+                    // The section header slot, wearing the eyebrow's face — this
+                    // is the header, not a hand-drawn label above the list.
+                    EyebrowLabel("Or carry on without it")
+                }
             }
         }
         .listStyle(.insetGrouped)
@@ -111,8 +111,6 @@ public struct LocalNetworkBlockedView: View {
     NavigationStack {
         LocalNetworkBlockedView(
             onOpenSettings: {},
-            onConnectByCable: {},
-            onCaptureAlone: {},
             onTryAgain: {}
         )
     }

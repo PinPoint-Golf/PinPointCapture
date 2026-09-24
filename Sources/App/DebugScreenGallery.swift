@@ -7,10 +7,9 @@
 //  ⚠ DEBUG ONLY. The whole file compiles out of a release build, so there is no
 //  route into it from a shipped app.
 //
-//  This exists because verifying sixteen screens otherwise means sixteen taps by
-//  a human holding the phone. It is also the seed of the review mode
-//  REQ-STANDALONE-6 requires: Apple expects a reviewer to be able to walk the
-//  full path without a host present, and a screen selector is most of that.
+//  This exists because verifying every screen otherwise means a tap per screen
+//  by a human holding the phone. ⚠ Since #121 the app is one status screen and
+//  a settings sheet; the S-cases render each status state from fixtures.
 //
 //  Argument parsing is via UserDefaults, which reads `-key value` launch
 //  arguments for free — no hand-rolled argv walking.
@@ -21,12 +20,12 @@ import SwiftUI
 import CaptureCore
 
 enum DebugLaunch {
-    /// `-ppcpScreen A6`. Nil in normal use, and the app boots normally.
+    /// `-ppcpScreen S1`. Nil in normal use, and the app boots normally.
     static var screenID: String? {
         UserDefaults.standard.string(forKey: "ppcpScreen")?.uppercased()
     }
 
-    /// `-ppcpRingStats 1` — render E1.1's counter overlay over a cold C1.
+    /// `-ppcpRingStats 1` — render E1.1's counter overlay on a cold status screen.
     ///
     /// ⛔ **A review affordance, and it exists because this overlay has been in
     /// the wrong place three times.** It only draws while armed or after a run,
@@ -43,52 +42,6 @@ enum DebugLaunch {
         return value > 0 && value <= Int(UInt16.max) ? UInt16(value) : nil
     }
 
-    /// `-ppcpHostState lost`, for the four B3 states and C1's host chip.
-    static var hostState: HostLinkState {
-        switch UserDefaults.standard.string(forKey: "ppcpHostState")?.lowercased() {
-        case "pairing": .pairing
-        case "weak": .weak
-        case "lost": .lost
-        case "resyncing", "back": .resyncing
-        case "none": .none
-        default: .connected
-        }
-    }
-
-    static var link: HostLink {
-        switch hostState {
-        case .connected: PreviewFixtures.connected
-        case .weak: PreviewFixtures.weak
-        case .lost: PreviewFixtures.lost
-        case .resyncing: PreviewFixtures.resyncing
-        case .pairing: PreviewFixtures.pairing
-        case .none: HostLink(state: .none)
-        }
-    }
-
-    /// The transfer queue each B3 state is designed around.
-    ///
-    /// ⚠ Not `PreviewFixtures.transferQueue` — that carries C3's numbers, and
-    /// feeding it to B3 makes the Connected state report a backlog when the design
-    /// says `nothing`. The whole point of Connected is that there is nothing
-    /// waiting; a queue there reads as Weak wearing the wrong colour.
-    static var queue: TransferQueue {
-        switch hostState {
-        case .connected, .pairing, .none:
-            TransferQueue()
-        case .weak:
-            TransferQueue(pendingShotIDs: (0..<3).map { _ in UUID() },
-                          bytesRemaining: 71_000_000, totalShots: 3)
-        case .lost:
-            TransferQueue(pendingShotIDs: (0..<6).map { _ in UUID() },
-                          bytesRemaining: 118_000_000, totalShots: 6)
-        case .resyncing:
-            TransferQueue(pendingShotIDs: (0..<6).map { _ in UUID() },
-                          bytesRemaining: 61_000_000,
-                          currentShotOrdinal: 3, totalShots: 6)
-        }
-    }
-
     /// B3a's list (#96). ⛔ **Fixtures, never `PairingSecretStore.pairings()`** —
     /// a review screen that read the real store would show a reviewer somebody
     /// else's pairings, and one that wrote to it could forget a real one.
@@ -103,24 +56,6 @@ enum DebugLaunch {
                       counterpartPeerId: nil,
                       networkName: nil,
                       savedAt: Date(timeIntervalSince1970: 1_755_120_000))
-    ]
-
-    static let reconciliationCandidates: [SessionMatchCandidate] = [
-        SessionMatchCandidate(
-            title: "Wednesday range · 18:20",
-            detail: "Studio holds 29 shots from a launch monitor",
-            likelihood: .likely,
-            evidence: [
-                .init(label: "Shot spacing matches", value: "29 of 29"),
-                .init(label: "Largest disagreement", value: "41 ms",
-                      spokenValue: "41 milliseconds")
-            ]
-        ),
-        SessionMatchCandidate(
-            title: "Wednesday lesson · 16:05",
-            detail: "12 shots, face-on cameras",
-            likelihood: .unlikely
-        )
     ]
 }
 
@@ -139,35 +74,6 @@ struct DebugScreenGallery: View {
     @ViewBuilder
     private var screen: some View {
         switch screenID {
-        case "A1": WelcomeScreen(capability: model.capability,
-                                 onGetStarted: {}, onHavePairingCode: {})
-        case "A2": HowItWorksScreen(onContinue: {})
-        case "A3": HostOrStandaloneScreen(selection: model.captureContext,
-                                          onSelect: { model.captureContext = $0 },
-                                          onContinue: {})
-        case "A4": PermissionsScreen(permissions: model.permissions,
-                                     audioRetention: model.audioRetention,
-                                     onChangeAudioRetention: {},
-                                     onAllowLocalNetwork: {},
-                                     onContinue: {})
-        case "A5": PlacementGuidanceScreen(onCheckFraming: {})
-        case "A6": FramingCheckScreen(framing: model.framing,
-                                      onUse120fps: {}, onArm: {})
-        case "A7": ReadyToCaptureScreen(capability: model.capability,
-                                        storage: model.storage,
-                                        retainedSecondsPerShot: 3.0,
-                                        onStartSession: {}, onConnectHost: {})
-
-        // The pairing STEP (onboarding), as distinct from B1 the screen.
-        case "PAIR": PairStepScreen(onScanPairingCode: {}, onContinue: {}, onSkip: {})
-        case "PAIRED": PairStepScreen(hostName: "Bay 3 — Mac Studio",
-                                      isPaired: true,
-                                      onScanPairingCode: {}, onContinue: {}, onSkip: {})
-        case "B1": ConnectHostView(discoveredHostName: PreviewFixtures.hostName,
-                                   discoveredHostDetail: "On this network · paired yesterday",
-                                   onCancel: {}, onConnectToDiscoveredHost: {},
-                                   onEnterCode: {}, onUseCable: {},
-                                   onCaptureWithoutHost: {})
         case "B2": PairingView(link: PreviewFixtures.pairing,
                                agreedMode: PreviewFixtures.capability.bestMode,
                                viewpoint: PreviewFixtures.framingMarginalLight.viewpoint,
@@ -180,22 +86,6 @@ struct DebugScreenGallery: View {
                                 isCameraLocked: true,
                                 remembered: .remembered,
                                 onCancel: {}, onForget: {})
-        case "B3": HostPanelView(link: DebugLaunch.link,
-                                 capture: PreviewFixtures.armed,
-                                 queue: DebugLaunch.queue,
-                                 storage: model.storage,
-                                 currentTransferProgress: DebugLaunch.hostState == .resyncing
-                                     ? 0.61 : nil,
-                                 sessionStart: PreviewFixtures.session.start,
-                                 onSelectReviewState: { _ in },
-                                 onDone: {}, onPrimaryAction: {},
-                                 onOpenConnectionLog: {}, onExportDiagnostics: {},
-                                 onOpenMicToBallDistance: {},
-                                 onOpenRememberedStudios: {},
-                                 // The single-Studio case, which is the one a
-                                 // golfer has (#96).
-                                 rememberedHostName: "Bay 3 — Mac Studio",
-                                 onForgetHost: {})
         // B3a — `RV` 7.4b's revocation list (#96). ⚠ Fixtures, not the real
         // store: this gallery must not read or write a pairing.
         case "B3A": RememberedStudiosView(
@@ -203,72 +93,29 @@ struct DebugScreenGallery: View {
                         onForget: { _ in })
         case "B4": JoinNetworkView(ssid: "PinPoint-Bay3", onJoin: {},
                                    onStayOnCurrentNetwork: {})
-        case "B5": ReconcileSessionView(
-                        candidates: DebugLaunch.reconciliationCandidates,
-                        selectedCandidateID: DebugLaunch.reconciliationCandidates.first?.id,
-                        shotCount: PreviewFixtures.session.shots.count,
-                        coverageNotice: "Shots 30 to 41 have no launch monitor record. "
-                            + "They will arrive as video only.",
-                        onSelect: { _ in }, onReview: {}, onSendAsNewSession: {})
-        case "B6": LocalNetworkBlockedView(onOpenSettings: {}, onConnectByCable: {},
-                                           onCaptureAlone: {}, onTryAgain: {})
+        case "B6": LocalNetworkBlockedView(onOpenSettings: {}, onTryAgain: {})
 
-        // Cold, and unable to arm — the state a simulator is always in, and the
-        // one a phone lands in when a permission is missing (#97).
-        case "C1C": ArmedScreen(capture: CaptureStatus(state: .cold),
-                                hostLink: HostLink(state: .none),
-                                session: PreviewFixtures.session,
-                                lastShot: nil,
-                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
-                                onDisarm: {}, onArm: {},
-                                hostSearch: .nothingHeld,
-                                capabilityError: "Camera and microphone access are both "
-                                    + "needed before this device can capture. "
-                                    + "Settings — PinPointCapture.",
-                                onCheckFraming: {})
-        case "C1L": ArmedScreen(capture: PreviewFixtures.armed,
-                                hostLink: HostLink(state: .none),
-                                session: PreviewFixtures.session,
-                                lastShot: PreviewFixtures.session.shots.last,
-                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
-                                onDisarm: {}, onArm: {},
-                                hostSearch: .looking, searchingForName: "Bay 3 — Mac Studio")
-        case "C1N": ArmedScreen(capture: PreviewFixtures.armed,
-                                hostLink: HostLink(state: .none),
-                                session: PreviewFixtures.session,
-                                lastShot: PreviewFixtures.session.shots.last,
-                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
-                                onDisarm: {}, onArm: {},
-                                hostSearch: .notFound(seconds: 45),
-                                searchingForName: "Bay 3 — Mac Studio")
-        case "C1A": ArmedScreen(capture: PreviewFixtures.armed,
-                                hostLink: HostLink(state: .none),
-                                session: PreviewFixtures.session,
-                                lastShot: PreviewFixtures.session.shots.last,
-                                onOpenHost: {}, onOpenSession: {}, onReplayLastShot: {},
-                                onDisarm: {}, onArm: {},
-                                hostSearch: .nothingHeld)
-        case "C1": ArmedScreen(capture: PreviewFixtures.armed,
-                               hostLink: DebugLaunch.link,
-                               session: PreviewFixtures.session,
-                               lastShot: PreviewFixtures.session.shots.last,
-                               // ⚠ Fixed `now`, 12 s after the last shot's impact.
-                               // Left at the real clock the fixture's timestamps sit
-                               // in the future and "12 s ago" renders as "0 s ago".
-                               now: PreviewFixtures.at(19, 36, 14),
-                               onOpenHost: {}, onOpenSession: {},
-                               onReplayLastShot: {}, onDisarm: {})
-                    .toolbar(.hidden, for: .navigationBar)
-        case "C2": ReplayScreen(shot: PreviewFixtures.shots[0],
-                                hasVideo: true,
-                                capture: PreviewFixtures.armed,
-                                onDone: {}, onCompare: {}, onStepFrame: { _ in },
-                                onTogglePlayback: {}, onCycleSpeed: {},
-                                onSelectTool: { _ in })
-        case "C3": SessionLibraryScreen(session: PreviewFixtures.session,
-                                        transferQueue: PreviewFixtures.transferQueue,
-                                        hostName: PreviewFixtures.hostName,
-                                        onSelectShot: { _ in }, onPauseTransfer: {})
+        // The status screen (#121), one case per state it can show.
+        case "S1": status(.connected(name: "Bay 3 — Mac Studio", transport: .cable),
+                          .recording)
+        case "S2": status(.connected(name: "Bay 3 — Mac Studio", transport: .wifi), .warm)
+        case "S3": status(.searching(name: "Bay 3 — Mac Studio"), .idle)
+        case "S4": status(.notFound(seconds: 45), .idle)
+        case "S5": status(.notPaired, .idle)
+        case "S6": status(.lost(name: "Bay 3 — Mac Studio"), .recording)
+        case "S7": status(.pairing(name: "Bay 3 — Mac Studio"), .arming)
+        case "S8": status(.diagnosis("Bay 3 — Mac Studio refused this phone's pairing."),
+                          .idle)
+        case "S9": status(.disconnected, .idle)
+        // Cold, and unable to capture — the state a simulator is always in.
+        case "S10": StatusScreen(connection: .searching(name: nil), recording: .idle,
+                                 problem: "Camera and microphone access are both needed. "
+                                     + "Settings — PinPointCapture.",
+                                 onOpenSystemSettings: {}, onOpenSettings: {})
+        case "SET": SettingsView(connectedHostName: "Bay 3 — Mac Studio", isLinked: true,
+                                 onPair: {}, onOpenRememberedStudios: {},
+                                 onDisconnect: {}, onOpenMicToBallDistance: {},
+                                 onDone: {})
 
         // ⛔ Not a designed screen. D9's conformance harness, which runs this
         // device's peer over a plaintext loopback socket against `ppcp-sim`.
@@ -283,9 +130,20 @@ struct DebugScreenGallery: View {
             ContentUnavailableView(
                 "Unknown screen \"\(screenID)\"",
                 systemImage: "questionmark.square.dashed",
-                description: Text("Try A1–A7, B1–B6 (B2A, B3A), C1–C3, D9 or D14.")
+                description: Text("Try S1–S10, SET, B2, B2A, B3A, B4, B6, D9 or D14.")
             )
         }
+    }
+
+    private func status(_ connection: StatusScreen.Connection,
+                        _ recording: StatusScreen.Recording) -> some View {
+        StatusScreen(connection: connection, recording: recording,
+                     onOpenSettings: {},
+                     debugAccessory: DebugLaunch.forcesRingStats
+                        ? AnyView(RingStatsOverlay(stats: RingStats(), expectedFPS: 240,
+                                                   isLive: false))
+                        : nil)
+            .toolbar(.hidden, for: .navigationBar)
     }
 }
 
