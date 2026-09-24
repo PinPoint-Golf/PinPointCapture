@@ -3,8 +3,13 @@
 
 This is the source of the board at
 https://github.com/orgs/PinPoint-Golf/projects/1 — 16 epic parents, 52 capability
-levels as their sub-issues, 7 decisions, 5 measurement epics, 2 release gates and
-a 9-item v2/v3 shelf. 91 issues, plus the 16 labels they use.
+levels as their sub-issues, 8 decisions, 5 measurement epics, 2 release gates and
+a 10-item v2/v3 shelf. 93 issues, plus the 16 labels they use.
+
+⛔ **Releases were re-cut on 24 Sep 2026** (see `RELEASE_RECUT` below and
+delivery-scope.md's header): v1 is the online release, v2 brings offline
+capture back, v3 holds the niceties. A level's `release=` argument is the
+original PRD §10 split; `RELEASE_RECUT` overrides it and is what the board shows.
 
 It is kept because the board and `delivery-scope.md` must not drift. When a level
 is added, split or reworded in the scope document, change it here too and re-run:
@@ -60,6 +65,30 @@ def level(id, title, cap, components, exitc, reqs, release="v1",
     return dict(id=id, title=title, cap=cap, components=components, exit=exitc,
                 reqs=reqs, release=release, layer=layer, blocked=blocked,
                 note=note, deps=deps)
+
+# ⛔ The re-cut of 24 Sep 2026 (Mark): v1 = the online release, a tripod camera
+# PinPointStudio drives over PPCP (#121/#122), including the rig measurements and
+# App Store work; v2 = offline capture returns; v3 = the niceties. Anything not
+# named keeps the release its definition gives it. An epic takes the earliest
+# release among its levels.
+RELEASE_RECUT = {
+    # v2 — offline capture
+    "E4.1": "v2", "E4.2": "v2",
+    "E9.1": "v2", "E9.2": "v2", "E9.3": "v2", "E9.4": "v2",
+    "E13.3": "v2", "D-REV-1": "v2",
+    "E18": "v2", "E21": "v2",
+    # v3 — the niceties
+    "E4.3": "v3",
+    "E5.1": "v3", "E5.2": "v3", "E5.3": "v3",
+    "E6.1": "v3", "E6.2": "v3", "E6.3": "v3",
+    "E7.1": "v3", "E7.2": "v3", "E7.3": "v3",
+    "E8.1": "v3", "E8.2": "v3", "E8.3": "v3",
+    "E10.2": "v3", "E10.3": "v3", "D-REV-2": "v3",
+    "E11.2": "v3",
+    "E12.1": "v3", "E12.2": "v3", "E12.3": "v3",
+    "E14.3": "v3", "OPEN-7": "v3",
+    "E17": "v3", "E19": "v3", "E20": "v3",
+}
 
 EPICS = [
  dict(id="E1", title="Clip capture: bytes on the ring", layer="platform",
@@ -631,6 +660,11 @@ EPICS = [
   ]),
 ]
 
+for _e in EPICS:
+    for _l in _e["levels"]:
+        _l["release"] = RELEASE_RECUT.get(_l["id"], _l["release"])
+    _e["release"] = min(_l["release"] for _l in _e["levels"])
+
 DECISIONS = [
  ("OPEN-3","Minimum device tier — is 120 fps the floor, and at what resolution and light level?",
   "Gates the A1 verdict, **E8.1**, and **E-M3/E-M4**.",
@@ -671,6 +705,12 @@ DECISIONS = [
    "A diagnostic mode left on by a user who was helping debug something in March is a retention posture nobody chose.",
    "Recommendation stands: it expires with the session.",
    "\"Expires with the session\" and \"expires on restart\" are different implementations, not different wordings — settle it before E10.3 is built."], None),
+ ("D-OFF-1","Is Offline a MAY for a capture device, and does #122's deletion stand?",
+  "Gates the **Offline** and **Markup** rows of `ppcp-conformance.md` §1 and `CONFORM_PROFILES`.",
+  ["Since #122 the v1 app deletes undelivered payload at link end and on connect — a deliberate deviation from CORE 5.14g / 5.14g1 / I38, recorded in `ppcp-conformance.md` §1.",
+   "The v1 app implements neither Offline nor Markup; the DEBUG harness still passes both, and that is what `make conform` measures.",
+   "Mark, 24 Sep: \"PPCP is not changed, PPC will likely support this in the future … Conform profiles may need to change offline to may from must? happy to chat about this.\"",
+   "Settle together: the profile's obligation for a capture device, whether the deletion stands, and what `CONFORM_PROFILES` claims."], "decision"),
 ]
 
 MEASUREMENT = [
@@ -770,6 +810,13 @@ SHELF = [
    "Constrained high-speed session takes batched request lists over a limited surface set (REQ-PORT-9)",
    "Device profiles as data keyed by model — Android's device population makes a code-based approach untenable (REQ-PORT-10)",
    "Depends on OPEN-7 and on E14.3's port surface artefact"]),
+ ("V2-OFF","Offline capture returns","v2","§4, §16",
+  "v1 is online only (#121, #122). v2 brings back capture without a host, from what was set aside in `Mothballed/` rather than from the design pack.",
+  ["Start from `Mothballed/README.md` — every file there says what it was and what reinstating it needs",
+   "The stored-Session offer (`SessionOfferService`, `MSG` §9.1) and its tests, and the IOP-1 half of `make conform-iop`",
+   "The session library (C3), onboarding (A1–A7) and a local Arm — never again arming a hostless session by accident",
+   "⛔ Revisit #122's retention: an offer service with nothing kept has nothing to offer, and link-end deletion is the 5.14g1 deviation **D-OFF-1** owns",
+   "E4.1/E4.2, E9.1–E9.4 and E13.3 are the decomposed levels this covers"]),
 ]
 
 # ---------------------------------------------------------------- rendering
@@ -820,7 +867,7 @@ def labels_for(l, e):
 issues = []
 for e in EPICS:
     issues.append(dict(kind="epic", key=e["id"], title=f"{e['id']} — {e['title']}",
-                       body=epic_body(e), labels=["epic", f"layer: {e['layer']}", "release: v1"],
+                       body=epic_body(e), labels=["epic", f"layer: {e['layer']}", f"release: {e['release']}"],
                        parent=None))
     for l in e["levels"]:
         issues.append(dict(kind="level", key=l["id"], title=f"{l['id']} — {l['title']}",
@@ -829,7 +876,7 @@ for e in EPICS:
 for id, title, gates, points, blocked in DECISIONS:
     body = [f"> {gates}", "", "## Position", ""] + [f"- {p}" for p in points]
     body += ["", "This is a **decision**, not engineering work. Closing it unblocks the levels named above.", ""]
-    lab = ["decision", "release: v1"]
+    lab = ["decision", f"release: {RELEASE_RECUT.get(id, 'v1')}"]
     if blocked: lab.append(BLOCK_LABEL[blocked])
     issues.append(dict(kind="decision", key=id, title=f"{id} — {title}",
                        body="\n".join(body).rstrip()+FOOTER, labels=lab, parent=None))
@@ -853,6 +900,7 @@ for id, title, desc, points, reqs, note in RELEASE:
                        labels=["release-gate", "release: v1"], parent=None))
 
 for id, title, rel, prd, desc, points in SHELF:
+    rel = RELEASE_RECUT.get(id, rel)
     body = [f"> {desc}", "", f"**PRD:** {prd} · **Release:** {rel}", "", "## Scope", ""]
     body += [f"- {p}" for p in points]
     body += ["", "Held on the shelf so requirements tracing here read as **deferred**, not missing. "
@@ -869,5 +917,5 @@ print(f"{len(issues)} issues:", dict(c))
 print(f"{len(LABELS)} labels")
 assert c["epic"] == 16, c["epic"]
 assert c["level"] == 52, c["level"]
-assert len(issues) == 91, len(issues)
+assert len(issues) == 93, len(issues)
 print("counts check out")

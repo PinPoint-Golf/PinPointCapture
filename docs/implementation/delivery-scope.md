@@ -10,6 +10,7 @@
 | Traceability | [`traceability.md`](traceability.md) — every requirement to its epic, level and evidence |
 | Scope of this document | The `PinPointCapture` repository only. Work owned by `libppcp` or `PinPointStudio` appears as a **named external dependency** on an epic, never as an epic here. |
 | Horizon | PRD v1 decomposed in full. PRD v2 and v3 carry epic IDs and one-line scope so the board can hold them, but are not decomposed. |
+| ⛔ **Release re-cut, 24 Sep 2026** | **v1 is the online release**: a tripod camera PinPointStudio drives over PPCP (#121, #122), plus the rig measurements and the App Store work. It should now be largely complete. **v2 brings offline capture back** (E4.1/E4.2, E9, E13.3, E18, E21, and **V2-OFF**, the `Mothballed/` umbrella). **v3 holds the niceties**: replay, markup, compare, framing, iPad, shot context, the connection log and diagnostic mode, the priority rule, the Android port surface, and E17/E19/E20/E22–E25. The **Release** column below shows the re-cut; it no longer mirrors PRD §10.1–§10.3 one for one. `backlog.py`'s `RELEASE_RECUT` is the same mapping in code. |
 | Purpose | To seed a GitHub Project v2 board. Every **capability level** below is intended to become an issue; every epic, a milestone or parent issue. |
 
 **How to read it.** §1 is the audit — what the build actually is today, verified against the tree rather than against the commit log. §2 restates that by architectural layer, because the layering is a PRD requirement (REQ-PORT-1) and the port surface has to stay legible. §3 is the epics and their capability levels, which is the part that becomes the board. §4 sequences them. §5–§7 carry the decisions, the measurement work and the release gates that engineering waits on. §8 is the v2/v3 shelf.
@@ -18,7 +19,7 @@
 
 Each epic is cut into **capability levels** — `E1.1`, `E1.2`, `E1.3` — where every level is independently shippable and demonstrably more capable than the one before it. Level 1 is generally *the mechanism exists and can be seen working*; level 2 is *it satisfies the MUSTs*; level 3 and beyond are the SHOULDs, the hardening, and anything that waits on a measurement.
 
-They are deliberately **not** called v1/v2/v3, because the PRD already uses that vocabulary for product releases (§10.1–§10.3) and the two would collide on the board. Each level instead carries a **Release** column naming the PRD release it belongs to, so both readings are available at once.
+They are deliberately **not** called v1/v2/v3, because the PRD already uses that vocabulary for product releases (§10.1–§10.3) and the two would collide on the board. Each level instead carries a **Release** column naming the release it belongs to, so both readings are available at once. ⚠ Since the 24 Sep re-cut (header), that column is the product's release plan, not a copy of PRD §10.
 
 **Status legend.**
 
@@ -163,7 +164,7 @@ Sixteen of the design handoff's seventeen screens are built to the specified fid
 
 ## 3. Epics and capability levels
 
-Sixteen engineering epics cut into **fifty-two capability levels**, plus five measurement epics and two release epics. Nine further epics hold the v2/v3 shelf (§8).
+Sixteen engineering epics cut into **fifty-two capability levels**, plus five measurement epics and two release epics. Ten further items hold the v2/v3 shelf (§8), one of them the V2-OFF umbrella.
 
 ---
 
@@ -234,9 +235,9 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
-| **E4.1** | **Sessions survive a relaunch** | Session/shot projection over `SessionStore` ○ · session list ○ · the open session resumed after a cold start ○ | v1 | Kill the app mid-session and reopen it: the session is there, open, and complete |
-| **E4.2** | **Per-shot sync state** | local / sent / confirmed as an independent store, not a cache ◐ · nothing unconfirmed evicted ✅ · C3 bound to the store ▨ · transfer banner from the real queue ▨ | v1 | `In Studio` means the host confirmed it, and no other state can produce that chip |
-| **E4.3** | **Context on a shot** | Club tagging on C1 and C3 ○ · session naming ○ · roster and calibration state carried ◐ | v1 | A shot list a coach can read. *Voice* club tagging is v2 (**E19**) |
+| **E4.1** | **Sessions survive a relaunch** | Session/shot projection over `SessionStore` ○ · session list ○ · the open session resumed after a cold start ○ | v2| Kill the app mid-session and reopen it: the session is there, open, and complete |
+| **E4.2** | **Per-shot sync state** | local / sent / confirmed as an independent store, not a cache ◐ · nothing unconfirmed evicted ✅ · C3 bound to the store ▨ · transfer banner from the real queue ▨ | v2| `In Studio` means the host confirmed it, and no other state can produce that chip |
+| **E4.3** | **Context on a shot** | Club tagging on C1 and C3 ○ · session naming ○ · roster and calibration state carried ◐ | v3| A shot list a coach can read. *Voice* club tagging is v2 (**E19**) |
 
 **Dependencies.** **E1.2** (thumbnails), **E2.1** (shots to list), **E3.4** (sync state to be true about).
 
@@ -248,9 +249,9 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
-| **E5.1** | **It plays** | Frame reader over the stored clip, addressed in **time** and never by index ○ · playback ○ · C2's frame area replacing the placeholder ▨ | v1 | A shot plays back on the device, timeline zeroed on impact |
-| **E5.2** | **Frame-accurate** | Bi-directional stepping at capture rate ○ · speed control ○ · impact fiducial and top-of-backswing anchor as scrub targets ▨ | v1 | Step backwards through impact frame by frame at 150 fps |
-| **E5.3** | **Reviewing costs nothing** | Demonstrated armed-and-reviewing under contention; the yield mechanism itself is **E11.2** ○ | v1 | C2's "still armed" is true under load, not just in copy |
+| **E5.1** | **It plays** | Frame reader over the stored clip, addressed in **time** and never by index ○ · playback ○ · C2's frame area replacing the placeholder ▨ | v3| A shot plays back on the device, timeline zeroed on impact |
+| **E5.2** | **Frame-accurate** | Bi-directional stepping at capture rate ○ · speed control ○ · impact fiducial and top-of-backswing anchor as scrub targets ▨ | v3| Step backwards through impact frame by frame at 150 fps |
+| **E5.3** | **Reviewing costs nothing** | Demonstrated armed-and-reviewing under contention; the yield mechanism itself is **E11.2** ○ | v3| C2's "still armed" is true under load, not just in copy |
 
 **Dependencies.** **E1.2**, **E4.1**. REQ-BUF-2's fragment length is what makes reverse stepping tractable and must not be renegotiated here.
 
@@ -262,9 +263,9 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
-| **E6.1** | **Draw on a frame** | Drawing surface; line, circle, freehand ○ · 48pt targets that do not shrink ○ · anchored to shot id + frame timestamp ✅ | v1 | A line drawn near impact stays on the frame it was drawn on |
-| **E6.2** | **It persists** | `AnnotationStore` bound and persisted ◐ · lossless round trip through the bundle ✅ · no path from an Annotation to a Shot or relation ✅ | v1 | Markup survives a relaunch and an export; **CT-I37** holds in the app |
-| **E6.3** | **It reaches Studio** | Device-originated annotations on the wire ◐ | v1 | A line drawn on the phone appears in PinPoint. **External: PinPointStudio must accept them** |
+| **E6.1** | **Draw on a frame** | Drawing surface; line, circle, freehand ○ · 48pt targets that do not shrink ○ · anchored to shot id + frame timestamp ✅ | v3| A line drawn near impact stays on the frame it was drawn on |
+| **E6.2** | **It persists** | `AnnotationStore` bound and persisted ◐ · lossless round trip through the bundle ✅ · no path from an Annotation to a Shot or relation ✅ | v3| Markup survives a relaunch and an export; **CT-I37** holds in the app |
+| **E6.3** | **It reaches Studio** | Device-originated annotations on the wire ◐ | v3| A line drawn on the phone appears in PinPoint. **External: PinPointStudio must accept them** |
 
 **Dependencies.** **E5.1**, **E3.4**.
 
@@ -278,9 +279,9 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 | Level | Capability | Release | Exit criterion |
 |---|---|---|---|
-| **E7.1** | **Designed** — the comparison screen, its transport model and its entry points on C2 and D1 | v1 | A design pass at the fidelity of the rest of the handoff |
-| **E7.2** | **Synchronised on impact** — dual timeline, two decoders under the priority rule, aligned on **impact, not clip start** | v1 | REQ-REPLAY-4 satisfied |
-| **E7.3** | **Overlay and onion-skin** — beyond anything the PRD requires | v2 | Deferred deliberately |
+| **E7.1** | **Designed** — the comparison screen, its transport model and its entry points on C2 and D1 | v3| A design pass at the fidelity of the rest of the handoff |
+| **E7.2** | **Synchronised on impact** — dual timeline, two decoders under the priority rule, aligned on **impact, not clip start** | v3| REQ-REPLAY-4 satisfied |
+| **E7.3** | **Overlay and onion-skin** — beyond anything the PRD requires | v3| Deferred deliberately |
 
 **Dependencies.** **E5.2**. A design decision.
 
@@ -292,9 +293,9 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
-| **E8.1** | **The light gate is real** | Achievable exposure and ISO measured from a warm session ▨ · the marginal-light row and its stated consequence ▨ · *Use 120 fps* re-enumerating and re-measuring rather than relabelling ▨ | v1 | A6's light row carries measured numbers, and the 120 fps trade produces a genuinely different measurement |
-| **E8.2** | **The pose checks are real** | Vision body pose — framing validation, not analysis ○ · in frame at address **and** at top of backswing ○ · steadiness from `MotionMetadataSource` ◐ | v1 | The checklist changes as you move in front of the phone |
-| **E8.3** | **It classifies itself** | Viewpoint self-classification — "DTL, right-handed" — reported, not asked ○ | v1 (SHOULD) | The device says what view it is; the user never configures it |
+| **E8.1** | **The light gate is real** | Achievable exposure and ISO measured from a warm session ▨ · the marginal-light row and its stated consequence ▨ · *Use 120 fps* re-enumerating and re-measuring rather than relabelling ▨ | v3| A6's light row carries measured numbers, and the 120 fps trade produces a genuinely different measurement |
+| **E8.2** | **The pose checks are real** | Vision body pose — framing validation, not analysis ○ · in frame at address **and** at top of backswing ○ · steadiness from `MotionMetadataSource` ◐ | v3| The checklist changes as you move in front of the phone |
+| **E8.3** | **It classifies itself** | Viewpoint self-classification — "DTL, right-handed" — reported, not asked ○ | v3 (SHOULD) | The device says what view it is; the user never configures it |
 
 **Dependencies.** A device and a warm capture session. **E1 is not required** — a warm session suffices, which is what makes this parallelisable from day one.
 
@@ -308,10 +309,10 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
-| **E9.1** | **A bundle off the device** | Share sheet / Files export of the complete session bundle ○ · C3's *Export the whole session* wired ▨ | v1 | A range session leaves the phone as one file |
-| **E9.2** | **Resumable and idempotent** | Chunked, resumable, content-addressed ○ · idempotent re-import ✅ · metadata and sensor streams **before** video ○ · completeness explicit, never inferred ✅ · any subset of streams a valid bundle ✅ | v1 | Interrupt a transfer: the partial session does not present as whole. Re-import twice: a no-op. **CT-I34** holds |
-| **E9.3** | **Reconciliation without merging** | `SessionMatch` candidates with evidence rows into B5 ◐ · explicit confirmation, never auto-merge ◐ · coverage gaps surfaced ✅ | v1 | B5 shows real candidates against a Studio that already holds part of the session |
-| **E9.4** | **Storage discipline** | Low free-space warning ○ · **refuse to arm** below a floor ○ | v1 | The app refuses a session it cannot keep, rather than losing swings |
+| **E9.1** | **A bundle off the device** | Share sheet / Files export of the complete session bundle ○ · C3's *Export the whole session* wired ▨ | v2| A range session leaves the phone as one file |
+| **E9.2** | **Resumable and idempotent** | Chunked, resumable, content-addressed ○ · idempotent re-import ✅ · metadata and sensor streams **before** video ○ · completeness explicit, never inferred ✅ · any subset of streams a valid bundle ✅ | v2| Interrupt a transfer: the partial session does not present as whole. Re-import twice: a no-op. **CT-I34** holds |
+| **E9.3** | **Reconciliation without merging** | `SessionMatch` candidates with evidence rows into B5 ◐ · explicit confirmation, never auto-merge ◐ · coverage gaps surfaced ✅ | v2| B5 shows real candidates against a Studio that already holds part of the session |
+| **E9.4** | **Storage discipline** | Low free-space warning ○ · **refuse to arm** below a floor ○ | v2| The app refuses a session it cannot keep, rather than losing swings |
 
 **Dependencies.** **E1.3**, **E4.1**. External: **PinPointStudio** importing a bundle this device wrote — this side already writes two and checks them in.
 
@@ -326,8 +327,8 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
 | **E10.1** | **One file a maintainer can diagnose from** | Bundle assembly: sync residual history, achieved frame intervals, drop counts, thermal timeline, detection events with confidences, transfer queue history, capability triple ○ · user-initiated export, attachable to an issue ○ | v1 | A "it lost sync" report arrives with everything needed and no follow-up question |
-| **E10.2** | **The connection log** | The log screen behind B3's row ○ | v1 | Link transitions are legible after the fact |
-| **E10.3** | **Diagnostic mode** | Lowered candidate emission threshold ○ · sub-threshold audio retained ○ · **default off, expiring with the session** ○ | v1 (SHOULD) | False *negatives* become diagnosable. **Waits on decision D-REV-2** |
+| **E10.2** | **The connection log** | The log screen behind B3's row ○ | v3| Link transitions are legible after the fact |
+| **E10.3** | **Diagnostic mode** | Lowered candidate emission threshold ○ · sub-threshold audio retained ○ · **default off, expiring with the session** ○ | v3 (SHOULD) | False *negatives* become diagnosable. **Waits on decision D-REV-2** |
 
 **Dependencies.** **E1.3**, **E2.2**, **E3.5** supply the series.
 
@@ -342,7 +343,7 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 | Level | Capability | Components | Release | Exit criterion |
 |---|---|---|---|---|
 | **E11.1** | **Interruptions recover and report** | Automatic re-arm after a call, audio interruption or backgrounding ▨ · the gap reported explicitly with B3's *Back* treatment ▨ · keepalive lapse → cold ○ | v1 | Take a call mid-session: the app re-arms itself and says exactly what it missed |
-| **E11.2** | **The priority rule enforced** | Replay never disarms and never tears down the capture session ○ · replay yields decode bandwidth, smoothness and resolution before the ring drops a frame ○ | v1 | Under induced contention the ring loses nothing and replay visibly degrades first. **CT-I36a under load** closes |
+| **E11.2** | **The priority rule enforced** | Replay never disarms and never tears down the capture session ○ · replay yields decode bandwidth, smoothness and resolution before the ring drops a frame ○ | v3| Under induced contention the ring loses nothing and replay visibly degrades first. **CT-I36a under load** closes |
 | **E11.3** | **Thermal and battery honest** | Thermal state surfaced and acted on ◐ · the 90-minute battery target verified ⛔ · charging trade-off stated ⛔ | v1 | REQ-RES-4 is a *verified* requirement rather than a stated one. **Waits on E-M4** |
 
 **Note.** `InterruptionMonitor` writes an honest `InterruptionRecord` with a `recovered` flag, and `AVCaptureSession` resumes itself after a suspension — but nothing in `AppModel` returns the state to `.armed` or surfaces the gap. That is what E11.1 closes.
@@ -355,9 +356,9 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 
 | Level | Capability | Release | Exit criterion |
 |---|---|---|---|
-| **E12.1** | **It runs properly on iPad** — size-class routing, no regressions, onboarding and pairing as centred sheets rather than a redesign | v1 | Every existing screen is correct on an iPad in both orientations |
-| **E12.2** | **The two-pane** — permanent landscape capture-left, review-right; larger status type across the top | v1 | UC-3 on one device without swapping screens |
-| **E12.3** | **External display** — the lesson second screen | v2 (**E20**) | Deferred |
+| **E12.1** | **It runs properly on iPad** — size-class routing, no regressions, onboarding and pairing as centred sheets rather than a redesign | v3| Every existing screen is correct on an iPad in both orientations |
+| **E12.2** | **The two-pane** — permanent landscape capture-left, review-right; larger status type across the top | v3| UC-3 on one device without swapping screens |
+| **E12.3** | **External display** — the lesson second screen | v3 (**E20**) | Deferred |
 
 **Dependencies.** **E1.2**, **E5.1**. Scheduling E12.2 before them produces two placeholders side by side.
 
@@ -371,7 +372,7 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 |---|---|---|---|---|
 | **E13.1** | **Failures are visible** | `capabilityError` and `recordingError` rendered rather than silently held ▨ · no-sessions-yet, storage floor reached, thermal limit reached ○ | v1 | No failure mode in the app is silent, and §9.2's one rule is never quietly broken |
 | **E13.2** | **Review mode** | A simulated paired host walking arm → capture → detect → review → transfer ○ | v1 | An App Store reviewer with no host and no golf club can exercise the whole path. **Gates E-R2** |
-| **E13.3** | **The standalone audit** | Every capability's stated standalone behaviour verified against REQ-STANDALONE-1 ○ | v1 | No feature errors where the PRD requires a defined offline path |
+| **E13.3** | **The standalone audit** | Every capability's stated standalone behaviour verified against REQ-STANDALONE-1 ○ | v2| No feature errors where the PRD requires a defined offline path |
 
 **Dependencies.** **E1**–**E5**.
 
@@ -385,7 +386,7 @@ Sixteen engineering epics cut into **fifty-two capability levels**, plus five me
 |---|---|---|---|
 | **E14.1** | **`libppcp` tagged and consumed by version** — `Package.swift` off the sibling path onto the versioned git URL | v1 | A clean checkout builds without a sibling repository |
 | **E14.2** | **CI** — `test-core`, `test-app` and `conform` on every push; RT-17's standing TLS review recorded as a recurring check | v1 | The conformance claim cannot silently rot |
-| **E14.3** | **The port surface published** — enumerated as a documented artefact rather than an emergent property (REQ-PORT-2) | v1 | A second-platform implementer has one page to read. The Core README has a start; it is not yet the artefact |
+| **E14.3** | **The port surface published** — enumerated as a documented artefact rather than an emergent property (REQ-PORT-2) | v3| A second-platform implementer has one page to read. The Core README has a start; it is not yet the artefact |
 | **E14.4** | **Version support-window policy** — N releases back, written, plus the app's behaviour facing an unknown host dialect | v1 | REQ-VER-3 satisfied. **Waits on OPEN-5** |
 
 ---
@@ -479,6 +480,7 @@ These belong on the board as decision issues with an owner, not as engineering t
 | **OPEN-7** | How much core logic is shared vs. reimplemented per platform? | Android (**E25**) only | Not a v1 gate. Decide when the port surface is enumerated in **E14.3** |
 | **D-REV-1** | REQ-SHOT-6 narrowed to **live** nominators; file-imported launch monitor records reconciled through `ShotLink`, not candidate nomination | **E9.3** | PRD review comment 2, still open. Needs a protocol-side answer and a PRD edit |
 | **D-REV-2** | REQ-OBS-4's diagnostic mode must state its exit | **E10.3** | PRD review comment 4. The PRD's own recommendation: it expires with the session |
+| **D-OFF-1** | Is **Offline** a MAY for a capture device, and does #122's deletion stand? | `ppcp-conformance.md` §1, `CONFORM_PROFILES` | Raised 24 Sep 2026. The v1 app deletes undelivered payload at link end and on connect — a recorded deviation from CORE 5.14g1 / I38 — and implements neither Offline nor Markup, while the DEBUG harness still passes both. Mark: *"Conform profiles may need to change offline to may from must? happy to chat about this."* |
 | **D-ID-1** | **Duplicate requirement ID.** `REQ-RES-1/2` names both §7.3's resolution target and §9.2's priority rule | The traceability matrix | **Resolved in the PRD**: §7.3's pair renamed `REQ-RESOL-1/2`. Every existing reference in code and design means the §9.2 sense and stays correct |
 
 ---
@@ -514,15 +516,16 @@ Carried as epic IDs so the board can hold them without pretending they are scope
 
 | ID | Epic | Release | PRD |
 |---|---|---|---|
-| **E17** | Advisory pose for replay annotation, under REQ-POSE-1..4's provenance rules | v2 | §2.3, §10.2 |
+| **E17** | Advisory pose for replay annotation, under REQ-POSE-1..4's provenance rules | v3| §2.3, §10.2 |
 | **E18** | Upload triage — real swing / golfer in frame / club moved | v2 | §10.2 |
-| **E19** | Voice club tagging, as a second consumer of the open audio stream | v2 | §10.2 |
-| **E20** | Second screen for host-computed results | v2 | UC-5, §10.2 |
+| **E19** | Voice club tagging, as a second consumer of the open audio stream | v3| §10.2 |
+| **E20** | Second screen for host-computed results | v3| UC-5, §10.2 |
 | **E21** | Offline sensor capture and export — **IMU first**, then HackMotion via `libwrist`, in that order and for the stated reason | v2 | §16.3–§16.6 |
 | **E22** | Multi-device stereo, where the acoustic oracle stops being corroborative | v3 | UC-6, §10.3 |
 | **E23** | Relayed BLE sensors as a new stream type, not a new protocol | v3 | §10.3 |
 | **E24** | Camera phase alignment for co-timed stereo frames | v3 | §10.3 |
 | **E25** | **Android** — the port REQ-PORT-1..14 exist to make possible | v3 | §17 |
+| **V2-OFF** | **Offline capture returns**, starting from `Mothballed/README.md`: the offer service, the library, onboarding and a local Arm, and a revisit of #122's retention | v2 | §4, §16 |
 
 **Never (PRD §2.2)** — metrics, diagnostic conditions, normative corridors, or any artefact a PinPoint producer could consume.
 
@@ -532,7 +535,8 @@ Carried as epic IDs so the board can hold them without pretending they are scope
 
 A suggested shape, offered rather than assumed:
 
-- **Issue per capability level** (`E3.2 — Synchronised`), with the components as a task list. **Epic as a parent issue or milestone** (`E3 — The live host link`). Fifty-two v1 level-issues across sixteen epics is a board you can actually run; sixteen epic-issues is not, and 159 requirement-issues is worse.
+- **Issue per capability level** (`E3.2 — Synchronised`), with the components as a task list. **Epic as a parent issue or milestone** (`E3 — The live host link`). Fifty-two level-issues across sixteen epics is a board you can actually run; sixteen epic-issues is not, and 159 requirement-issues is worse.
+- **Views, since the 24 Sep re-cut:** a board per release (*v1 — online*, *v2 — offline*, *v3 — niceties*), each filtered on `release:vN`, beside an unfiltered board and the original table.
 - **Fields:** `Epic` · `Level` · `Release` (v1/v2/v3, from the level's Release column) · `Layer` (Protocol / Core / Platform / UI — record the *primary* where a level spans several) · `Blocked on` (a phone / a rig / a decision / another repo / nothing) · `Requirements` (the REQ- ids from the matrix) · `Conformance rows` (what it unblocks in `ppcp-conformance.md`).
 - **Decisions from §5 as issues in a separate view**, so a decision blocking three levels is one item rather than three notes.
 - **§6 and §7 as their own views** — they run on a different clock from engineering and should not compete for the same columns.

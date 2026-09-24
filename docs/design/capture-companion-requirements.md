@@ -398,6 +398,8 @@ Host-controlled, three capture states crossed with review state.
 
 ## 10. Application functionality
 
+> ⛔ **The releases were re-cut on 24 September 2026.** v1 is the **online** release, a tripod camera driven by PinPoint Studio (OPEN-6, decided). v2 brings **offline capture** back. v3 holds everything else below that is a nicety: replay, markup, comparison, framing, iPad. §10.1–§10.3 are kept as written; they record what each release was *originally* meant to contain. The release a piece of work is now planned for is the **Release** column of [`delivery-scope.md`](../implementation/delivery-scope.md).
+
 ### 10.1 v1
 
 **Guided setup and framing validation.** Case UC-1 users will place the device badly and will not know it.
